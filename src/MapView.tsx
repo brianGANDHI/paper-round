@@ -1,10 +1,9 @@
 import { useEffect } from 'react'
 import { CircleMarker, MapContainer, Polyline, TileLayer, useMap, useMapEvents } from 'react-leaflet'
 import 'leaflet/dist/leaflet.css'
+import { SIDE_COLOR } from './colors'
 import { sideAt } from './geo'
 import type { Pt, Route, Side } from './types'
-
-const SIDE_COLOR: Record<Side, string> = { both: '#4f7cff', left: '#1fa971', right: '#f08c00' }
 
 function Follow({ pos }: { pos: Pt | null }) {
   const map = useMap()
@@ -14,10 +13,15 @@ function Follow({ pos }: { pos: Pt | null }) {
   return null
 }
 
-function Fit({ points }: { points: Pt[] }) {
+/** `bottomFrac` keeps the fitted route clear of a panel covering that fraction of the map. */
+function Fit({ points, bottomFrac }: { points: Pt[]; bottomFrac: number }) {
   const map = useMap()
   useEffect(() => {
-    if (points.length > 1) map.fitBounds(points.map((p) => [p.lat, p.lng] as [number, number]), { padding: [30, 30] })
+    if (points.length < 2) return
+    map.fitBounds(
+      points.map((p) => [p.lat, p.lng] as [number, number]),
+      { paddingTopLeft: [30, 70], paddingBottomRight: [30, 30 + Math.round(map.getSize().y * bottomFrac)] },
+    )
     // Fit once per route load, not on every point added.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [points.length > 1])
@@ -47,11 +51,16 @@ interface Props {
   route: Route
   position: Pt | null
   handled?: ReadonlySet<string>
+  /** Keep the map centred on the position; otherwise the whole route is fitted. */
   follow?: boolean
+  /** When fitting, include the live position (round overview, not setup). */
+  fitPosition?: boolean
+  /** Fraction of the map height covered by a bottom panel, kept clear when fitting. */
+  bottomFrac?: number
   onTap?: (p: Pt) => void
 }
 
-export function MapView({ route, position, handled, follow, onTap }: Props) {
+export function MapView({ route, position, handled, follow, fitPosition, bottomFrac = 0, onTap }: Props) {
   const start = position ?? route.points[0] ?? { lat: 51.5, lng: -0.12 }
   return (
     <MapContainer center={[start.lat, start.lng]} zoom={16} className="map" zoomControl={false}>
@@ -85,9 +94,11 @@ export function MapView({ route, position, handled, follow, onTap }: Props) {
         />
       )}
       <Clicks onTap={onTap} />
-      {follow ? <Follow pos={position} /> : <Fit points={route.points} />}
+      {follow ? (
+        <Follow pos={position} />
+      ) : (
+        <Fit points={fitPosition && position ? [...route.points, position] : route.points} bottomFrac={bottomFrac} />
+      )}
     </MapContainer>
   )
 }
-
-export { SIDE_COLOR }

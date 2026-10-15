@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
+import { SIDE_COLOR } from './colors'
 import { haversine, sideAt, simplify, snapToPath } from './geo'
 import { useGps } from './device'
-import { MapView, SIDE_COLOR } from './MapView'
+import { MapView } from './MapView'
 import type { Pt, Route, Side, Stop } from './types'
 
 type Mode = 'view' | 'bundle' | 'nothrow' | Side
@@ -88,7 +89,7 @@ export function Setup({ route, onChange }: Props) {
 
   return (
     <div className="screen">
-      <MapView route={shown} position={fix} follow={recording} onTap={onTap} />
+      <MapView route={shown} position={fix} follow={recording} bottomFrac={0.45} onTap={onTap} />
       <div className="panel">
         {error && <p className="warn">{error}</p>}
         {recording ? (

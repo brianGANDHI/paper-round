@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { SIDE_COLOR } from './colors'
 import { alertBundle, alertNoThrow, unlockAudio, useGps, useWakeLock } from './device'
 import { approachingStops, sideAt, snapToPath } from './geo'
-import { MapView, SIDE_COLOR } from './MapView'
+import { MapView } from './MapView'
 import type { RoundState, Route, Stop } from './types'
 
 interface Props {
@@ -14,7 +15,9 @@ const SIDE_TEXT = { both: 'BOTH SIDES', left: 'LEFT SIDE', right: 'RIGHT SIDE' }
 
 export function Round({ route, round, onRound }: Props) {
   const [started, setStarted] = useState(false)
-  const [alerted, setAlerted] = useState<Stop | null>(null)
+  const [overview, setOverview] = useState(false)
+  // Alerts wait their turn so a bundle prompt can never hide a no-throw warning.
+  const [queue, setQueue] = useState<Stop[]>([])
   const seen = useRef(new Set<string>())
   const idxRef = useRef(0)
   const { fix, error } = useGps(started)
@@ -30,17 +33,20 @@ export function Round({ route, round, onRound }: Props) {
     if (!snap) return
     idxRef.current = snap.idx
     setSnapIdx(snap.idx)
-    const next = approachingStops(fix, snap.idx, route.stops, handled).find((s) => !seen.current.has(s.id))
-    if (!next) return
-    seen.current.add(next.id)
-    setAlerted(next)
-    if (next.type === 'bundle') alertBundle()
-    else alertNoThrow()
+    const fresh = approachingStops(fix, snap.idx, route.stops, handled).filter((s) => !seen.current.has(s.id))
+    if (!fresh.length) return
+    fresh.forEach((s) => seen.current.add(s.id))
+    setQueue((q) => [...q, ...fresh])
+    if (fresh.some((s) => s.type === 'nothrow')) alertNoThrow()
+    else alertBundle()
   }, [fix, route, handled])
+
+  const current = queue.find((s) => s.type === 'nothrow') ?? queue[0]
+  const drop = (id: string) => setQueue((q) => q.filter((s) => s.id !== id))
 
   const markHandled = (id: string) => {
     onRound({ handledStopIds: [...round.handledStopIds, id] })
-    setAlerted(null)
+    drop(id)
   }
 
   const reset = () => {
@@ -48,7 +54,7 @@ export function Round({ route, round, onRound }: Props) {
     seen.current.clear()
     idxRef.current = 0
     setSnapIdx(0)
-    setAlerted(null)
+    setQueue([])
     onRound({ handledStopIds: [] })
   }
 
@@ -76,29 +82,40 @@ export function Round({ route, round, onRound }: Props) {
 
   return (
     <div className="screen">
-      <MapView route={route} position={fix} handled={handled} follow />
+      <MapView
+        route={route}
+        position={fix}
+        handled={handled}
+        follow={!overview}
+        fitPosition
+        bottomFrac={0.12}
+      />
       <div className="badge" style={{ background: SIDE_COLOR[side] }}>{SIDE_TEXT[side]}</div>
       {(error || !wake) && <div className="warn top">{error ?? 'Screen may lock: keep the phone awake.'}</div>}
       <div className="panel slim">
         <span>{remaining} special stop{remaining === 1 ? '' : 's'} left</span>
-        <button className="chip" onClick={reset}>Reset</button>
+        <span className="chips">
+          <button className="chip" onClick={() => setOverview((o) => !o)}>{overview ? 'Follow me' : 'Whole route'}</button>
+          <button className="chip" onClick={reset}>Reset</button>
+        </span>
       </div>
-      {alerted && (
-        <div className={alerted.type === 'nothrow' ? 'overlay red' : 'overlay blue'}>
-          {alerted.type === 'nothrow' ? (
+      {current && (
+        <div className={current.type === 'nothrow' ? 'overlay red' : 'overlay blue'}>
+          {current.type === 'nothrow' ? (
             <>
               <h1>NO THROW</h1>
-              <p>{alerted.label ?? 'This house does not want the paper.'}</p>
+              <p>{current.label ?? 'This house does not want the paper.'}</p>
             </>
           ) : (
             <>
               <h1>BUNDLE DROP</h1>
-              {alerted.qty && <p className="qty">{alerted.qty}</p>}
-              <p>{alerted.label ?? 'Bundle stop ahead'}</p>
+              {current.qty && <p className="qty">{current.qty}</p>}
+              <p>{current.label ?? 'Bundle stop ahead'}</p>
             </>
           )}
-          <button className="big" onClick={() => markHandled(alerted.id)}>Handled</button>
-          <button className="chip light" onClick={() => setAlerted(null)}>Dismiss</button>
+          <button className="big" onClick={() => markHandled(current.id)}>Handled</button>
+          <button className="chip light" onClick={() => drop(current.id)}>Dismiss</button>
+          {queue.length > 1 && <p className="more">{queue.length - 1} more waiting</p>}
         </div>
       )}
     </div>

@@ -4,7 +4,7 @@ Offline PWA for a fixed newspaper round. React + Vite, data in localStorage, no 
 
 ## Use
 1. **Setup**: tap *Trace route*, drive the round, tap *Stop and save*. Then add bundle drops and no-throw houses (tap the map or *Mark here*), and set the delivery side (both/left/right) from any point on the route. Left/right is relative to your direction of travel.
-2. **Round**: tap *Start round* (unlocks sound, keeps the screen awake). You only get alerts for bundle drops and no-throw houses. Tap *Handled* to tick one off; *Reset* starts the round again.
+2. **Round**: tap *Start round* (unlocks sound, keeps the screen awake). You only get alerts for bundle drops and no-throw houses. Tap *Handled* to tick one off (several alerts queue up, no-throw first); *Whole route* zooms out to the entire round and *Follow me* returns; *Reset* starts the round again.
 
 ## iPhone notes
 - Safari has no vibration API, so the no-throw warning is a flashing red screen plus a tone (the phone's silent switch mutes it). Vibration is used where supported.
