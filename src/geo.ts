@@ -30,6 +30,44 @@ function distToSegment(
   return { dist: Math.hypot(p[0] - (a[0] + t * dx), p[1] - (a[1] + t * dy)), t }
 }
 
+const lerp = (a: Pt, b: Pt, t: number): Pt => ({
+  lat: a.lat + (b.lat - a.lat) * t,
+  lng: a.lng + (b.lng - a.lng) * t,
+})
+
+/** Compass bearing from a to b in degrees (0 = north, clockwise). */
+export function bearing(a: Pt, b: Pt): number {
+  const dLng = rad(b.lng - a.lng)
+  const y = Math.sin(dLng) * Math.cos(rad(b.lat))
+  const x =
+    Math.cos(rad(a.lat)) * Math.sin(rad(b.lat)) -
+    Math.sin(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.cos(dLng)
+  return ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360
+}
+
+/** Distance from the start of the path to each point, in metres. */
+export function cumulativeDistances(points: Pt[]): number[] {
+  const out = points.length ? [0] : []
+  for (let i = 1; i < points.length; i++) out.push(out[i - 1] + haversine(points[i - 1], points[i]))
+  return out
+}
+
+/** Evenly spaced direction markers along the path. */
+export function arrowsAlong(points: Pt[], spacingM: number): { pos: Pt; bearing: number }[] {
+  const out: { pos: Pt; bearing: number }[] = []
+  let next = spacingM / 2
+  let walked = 0
+  for (let i = 0; i < points.length - 1; i++) {
+    const len = haversine(points[i], points[i + 1])
+    while (len > 0 && next <= walked + len) {
+      out.push({ pos: lerp(points[i], points[i + 1], (next - walked) / len), bearing: bearing(points[i], points[i + 1]) })
+      next += spacingM
+    }
+    walked += len
+  }
+  return out
+}
+
 /** Douglas-Peucker simplification, tolerance in metres. */
 export function simplify(points: Pt[], toleranceM: number): Pt[] {
   if (points.length < 3) return points.slice()
@@ -61,6 +99,10 @@ export interface Snap {
   /** Segment start index. */
   idx: number
   dist: number
+  /** Position along that segment: 0 at its start, 1 at its end. */
+  t: number
+  /** The closest point on the path. */
+  point: Pt
 }
 
 /**
@@ -75,8 +117,8 @@ export function snapToPath(pos: Pt, points: Pt[], prevIdx = 0): Snap | null {
   const search = (from: number, to: number): Snap | null => {
     let best: Snap | null = null
     for (let i = Math.max(0, from); i < Math.min(points.length - 1, to); i++) {
-      const { dist } = distToSegment(p, xy[i], xy[i + 1])
-      if (!best || dist < best.dist) best = { idx: i, dist }
+      const { dist, t } = distToSegment(p, xy[i], xy[i + 1])
+      if (!best || dist < best.dist) best = { idx: i, dist, t, point: lerp(points[i], points[i + 1], t) }
     }
     return best
   }

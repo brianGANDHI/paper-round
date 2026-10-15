@@ -1,11 +1,19 @@
 import { useState } from 'react'
+import { Icon, type IconName } from './Icon'
 import { Round } from './Round'
 import { Setup } from './Setup'
 import { loadRound, loadRoute, saveRound, saveRoute } from './storage'
 import type { RoundState, Route } from './types'
 
+type Tab = 'round' | 'setup'
+
+const TABS: { id: Tab; label: string; icon: IconName }[] = [
+  { id: 'round', label: 'Round', icon: 'navigation' },
+  { id: 'setup', label: 'Setup', icon: 'sliders' },
+]
+
 export default function App() {
-  const [tab, setTab] = useState<'round' | 'setup'>('round')
+  const [tab, setTab] = useState<Tab>('round')
   const [route, setRoute] = useState<Route>(loadRoute)
   const [round, setRound] = useState<RoundState>(loadRound)
 
@@ -27,14 +35,18 @@ export default function App() {
     <div className="app">
       <main>
         {tab === 'round' ? (
-          <Round route={route} round={round} onRound={updateRound} />
+          <Round route={route} round={round} onRound={updateRound} onGoSetup={() => setTab('setup')} />
         ) : (
           <Setup route={route} onChange={updateRoute} />
         )}
       </main>
-      <nav>
-        <button className={tab === 'round' ? 'on' : ''} onClick={() => setTab('round')}>Round</button>
-        <button className={tab === 'setup' ? 'on' : ''} onClick={() => setTab('setup')}>Setup</button>
+      <nav className="tabbar" aria-label="Main">
+        {TABS.map((t) => (
+          <button key={t.id} aria-current={tab === t.id ? 'page' : undefined} onClick={() => setTab(t.id)}>
+            <Icon name={t.icon} size={24} fill={tab === t.id} />
+            <span>{t.label}</span>
+          </button>
+        ))}
       </nav>
     </div>
   )

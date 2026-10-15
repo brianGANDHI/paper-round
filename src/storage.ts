@@ -1,3 +1,4 @@
+import { normalizeRoute } from './routeEdit'
 import type { RoundState, Route } from './types'
 
 const ROUTE_KEY = 'paperround.route.v1'
@@ -22,7 +23,7 @@ function save(key: string, value: unknown) {
   }
 }
 
-export const loadRoute = () => load<Route>(ROUTE_KEY, emptyRoute())
+export const loadRoute = () => normalizeRoute(load<Route>(ROUTE_KEY, emptyRoute()))
 export const saveRoute = (r: Route) => save(ROUTE_KEY, r)
 export const loadRound = () => load<RoundState>(ROUND_KEY, { handledStopIds: [] })
 export const saveRound = (r: RoundState) => save(ROUND_KEY, r)
