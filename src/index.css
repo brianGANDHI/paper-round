@@ -1168,6 +1168,84 @@ button.row:active:not(:disabled) {
 }
 
 /* ------------------------------------------------------------------ *
+ * Editing the route: handles on the map, the side picker, a compact sheet
+ * ------------------------------------------------------------------ */
+.vertex,
+.mid {
+  display: grid;
+  place-items: center;
+  touch-action: none;
+}
+
+.vertex span {
+  display: block;
+  width: 16px;
+  height: 16px;
+  border: 3px solid #fff;
+  border-radius: 50%;
+  background: #1c1c1e;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+  transition: width 0.12s, height 0.12s;
+}
+
+.vertex.on span {
+  width: 24px;
+  height: 24px;
+  background: var(--tint);
+  box-shadow: 0 0 0 5px rgba(0, 122, 255, 0.3), 0 1px 4px rgba(0, 0, 0, 0.45);
+}
+
+.mid span {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  font: 700 15px/1 var(--font);
+  color: #555;
+  background: rgba(255, 255, 255, 0.95);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+}
+
+.seg-dot {
+  display: inline-block;
+  flex: none;
+  width: 10px;
+  height: 10px;
+  margin-right: 6px;
+  border-radius: 50%;
+}
+
+.segmented button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.brush {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.brush-label {
+  padding: 0 4px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--label-2);
+}
+
+.sheet.compact {
+  max-height: 44%;
+}
+
+.sheet.compact.expanded {
+  max-height: 90%;
+}
+
+/* ------------------------------------------------------------------ *
  * Action sheet (a short list of choices that slides up from the bottom)
  * ------------------------------------------------------------------ */
 .scrim.bottom {

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { divIcon, type DivIcon } from 'leaflet'
+import { divIcon, type DivIcon, type Marker as LeafletMarker } from 'leaflet'
 import {
   AttributionControl,
   CircleMarker,
@@ -106,6 +106,74 @@ function arrowIcon(bearing: number): DivIcon {
   return icon
 }
 
+const vertexIcons = new Map<boolean, DivIcon>()
+/** A point on the route you can drag. The box is bigger than the dot so a finger can find it. */
+function vertexIcon(selected: boolean): DivIcon {
+  let icon = vertexIcons.get(selected)
+  if (!icon) {
+    icon = divIcon({ className: selected ? 'vertex on' : 'vertex', html: '<span></span>', iconSize: [44, 44], iconAnchor: [22, 22] })
+    vertexIcons.set(selected, icon)
+  }
+  return icon
+}
+
+let midIconCache: DivIcon | undefined
+/** The "+" halfway along a stretch: tap it to add a point there. */
+const midIcon = () => (midIconCache ??= divIcon({ className: 'mid', html: '<span>+</span>', iconSize: [36, 36], iconAnchor: [18, 18] }))
+
+/** Stretches shorter than this are too small for a "+" handle. */
+const MID_HANDLE_MIN_M = 30
+
+const where = (e: { target: unknown }): Pt => {
+  const at = (e.target as LeafletMarker).getLatLng()
+  return { lat: at.lat, lng: at.lng }
+}
+
+interface HandlesProps {
+  points: Pt[]
+  selected: number | null
+  onTap?: (index: number) => void
+  onDrag?: (index: number, pos: Pt) => void
+  onDrop?: (index: number, pos: Pt) => void
+  onMid?: (segment: number) => void
+}
+
+/** Draggable handles on every point, and "+" handles on the longer stretches between them. */
+function EditHandles({ points, selected, onTap, onDrag, onDrop, onMid }: HandlesProps) {
+  return (
+    <>
+      {points.slice(0, -1).map((a, i) => {
+        const b = points[i + 1]
+        if (haversine(a, b) < MID_HANDLE_MIN_M) return null
+        return (
+          <Marker
+            key={`m${i}`}
+            position={[(a.lat + b.lat) / 2, (a.lng + b.lng) / 2]}
+            icon={midIcon()}
+            keyboard={false}
+            eventHandlers={{ click: () => onMid?.(i) }}
+          />
+        )
+      })}
+      {points.map((p, i) => (
+        <Marker
+          key={`v${i}`}
+          position={toLatLng(p)}
+          icon={vertexIcon(i === selected)}
+          draggable
+          keyboard={false}
+          zIndexOffset={i === selected ? 1000 : 500}
+          eventHandlers={{
+            click: () => onTap?.(i),
+            drag: (e) => onDrag?.(i, where(e)),
+            dragend: (e) => onDrop?.(i, where(e)),
+          }}
+        />
+      ))}
+    </>
+  )
+}
+
 interface Props {
   route: Route
   position: Pt | null
@@ -120,8 +188,19 @@ interface Props {
   bottomFrac?: number
   /** A stretch of the route to emphasise. */
   highlight?: Pt[]
-  /** Show a dot on every route point, for drawing. */
-  vertices?: boolean
+  /** Show draggable handles on the route's points, for editing. Sections are drawn on their true lines. */
+  editable?: boolean
+  /** The point picked in the editor. */
+  selectedPoint?: number | null
+  onPointTap?: (index: number) => void
+  onPointDrag?: (index: number, pos: Pt) => void
+  onPointDrop?: (index: number, pos: Pt) => void
+  onMidTap?: (segment: number) => void
+  /** Tapping a section's line selects it. */
+  selectable?: boolean
+  onSectionTap?: (index: number) => void
+  /** A labelled pin, for example where a stretch being painted starts. It is a ring in `color`, so it reads apart from the route's own markers. */
+  pin?: { pos: Pt; label: string; color: string } | null
   view?: ViewCmd
   onTap?: (p: Pt) => void
 }
@@ -135,7 +214,15 @@ export function MapView({
   fitPosition,
   bottomFrac = 0,
   highlight,
-  vertices,
+  editable,
+  selectedPoint = null,
+  onPointTap,
+  onPointDrag,
+  onPointDrop,
+  onMidTap,
+  selectable,
+  onSectionTap,
+  pin,
   view,
   onTap,
 }: Props) {
@@ -143,7 +230,7 @@ export function MapView({
   // With nothing to show yet, open on Australia (decided once, when the map first appears).
   const [opensOnDefault] = useState(() => !start)
   // Each section is drawn from its own path, so a road driven twice shows both passes side by side.
-  const views = useMemo(() => passViews(route), [route])
+  const views = useMemo(() => passViews(route, !!editable), [route, editable])
   // A stop passed more than once only counts as finished when every pass of it is handled.
   const finished = useMemo(() => {
     if (!handled) return null
@@ -182,18 +269,18 @@ export function MapView({
       {views.map((v) => (
         <Polyline key={v.index} positions={v.points.map(toLatLng)} pathOptions={{ ...LINE, color: SIDE_COLOR[v.side], weight: 6, opacity: 1, interactive: false }} />
       ))}
+      {selectable &&
+        views.map((v) => (
+          <Polyline
+            key={`h${v.index}`}
+            positions={v.points.map(toLatLng)}
+            pathOptions={{ ...LINE, color: '#000', weight: 30, opacity: 0, bubblingMouseEvents: false }}
+            eventHandlers={{ click: () => onSectionTap?.(v.index) }}
+          />
+        ))}
       {arrows.map((a, i) => (
         <Marker key={i} position={toLatLng(a.pos)} icon={arrowIcon(a.bearing)} interactive={false} keyboard={false} />
       ))}
-      {vertices &&
-        route.points.map((p, i) => (
-          <CircleMarker
-            key={i}
-            center={toLatLng(p)}
-            radius={4.5}
-            pathOptions={{ color: '#fff', weight: 2, fillColor: '#1c1c1e', fillOpacity: 1, interactive: false }}
-          />
-        ))}
       {route.points.length > 1 && first && last && (
         <>
           <CircleMarker center={toLatLng(first)} radius={8} pathOptions={{ color: '#fff', weight: 3, fillColor: '#34c759', fillOpacity: 1, interactive: false }}>
@@ -203,6 +290,12 @@ export function MapView({
             <Tooltip className="pin-label" permanent direction="top" offset={[0, -8]}>{endsWhereItStarts ? 'Start & End' : 'End'}</Tooltip>
           </CircleMarker>
         </>
+      )}
+      {pin && (
+        <CircleMarker center={toLatLng(pin.pos)} radius={9} pathOptions={{ color: pin.color, weight: 5, fillColor: '#fff', fillOpacity: 1, interactive: false }}>
+          {/* Below the pin, because the route's Start and End labels sit above theirs. */}
+          <Tooltip className="pin-label" permanent direction="bottom" offset={[0, 10]}>{pin.label}</Tooltip>
+        </CircleMarker>
       )}
       {route.stops.map((s) => (
         <CircleMarker
@@ -224,6 +317,9 @@ export function MapView({
           <CircleMarker center={toLatLng(position)} radius={22} pathOptions={{ stroke: false, fillColor: '#007aff', fillOpacity: 0.16, interactive: false }} />
           <CircleMarker center={toLatLng(position)} radius={9} pathOptions={{ color: '#fff', weight: 3.5, fillColor: '#007aff', fillOpacity: 1, interactive: false }} />
         </>
+      )}
+      {editable && (
+        <EditHandles points={route.points} selected={selectedPoint} onTap={onPointTap} onDrag={onPointDrag} onDrop={onPointDrop} onMid={onMidTap} />
       )}
       <Clicks onTap={onTap} />
       {opensOnDefault && <FitRegion bottomFrac={bottomFrac} />}

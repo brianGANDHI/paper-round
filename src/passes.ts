@@ -49,8 +49,9 @@ function shareOnGround(path: Pt[], distanceToOther: (p: Pt) => number): number {
  * The sections of a route as they should be drawn. A section that goes over ground an
  * earlier one already covers (the other half of an out-and-back, say) is shifted to the
  * side so both can be seen, and says which section it repeats and which way it goes.
+ * With `flat`, every section is on its true line, which is what you want while moving points.
  */
-export function passViews(route: Route): PassView[] {
+export function passViews(route: Route, flat = false): PassView[] {
   if (route.points.length < 2) return []
   const secs = sections(route)
   const paths = secs.map((s) => route.points.slice(s.idx, s.endIdx + 1))
@@ -68,7 +69,7 @@ export function passViews(route: Route): PassView[] {
     return {
       index: s.index,
       side: s.side,
-      points: offsetPath(paths[i], covered.length * PASS_OFFSET_M),
+      points: flat ? paths[i] : offsetPath(paths[i], covered.length * PASS_OFFSET_M),
       repeatOf,
       reversed,
     }

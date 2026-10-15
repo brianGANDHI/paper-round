@@ -1,14 +1,21 @@
 import { useState } from 'react'
 import { Icon } from './Icon'
 import { formatDistance, routeLength } from './routeEdit'
-import { Banner } from './ui'
-import type { Route } from './types'
+import { BRUSH_OPTIONS } from './sideOptions'
+import { Banner, Segmented } from './ui'
+import type { Route, Side } from './types'
 
 interface Props {
   route: Route
   recording: boolean
   tracePoints: number
   drawing: boolean
+  /** The side new points are drawn on. */
+  brush: Side
+  onBrush: (side: Side) => void
+  /** The point picked on the map, if any. */
+  selectedPoint: number | null
+  onDeletePoint: () => void
   gpsError: string | null
   onDraw: () => void
   onDone: () => void
@@ -50,56 +57,74 @@ export function RouteTab(p: Props) {
 
   // Searching only helps while finding the area to draw in.
   const searching = p.drawing || !ready
+  const searchBox = searching && (
+    <form
+      className="search"
+      role="search"
+      onSubmit={(e) => {
+        e.preventDefault()
+        p.onFind(query)
+      }}
+    >
+      <Icon name="search" size={18} />
+      <input
+        type="search"
+        enterKeyHint="search"
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        placeholder="Search for a street or town"
+        aria-label="Search for a street or town"
+      />
+    </form>
+  )
 
-  return (
-    <>
-      {searching && (
-        <form
-          className="search"
-          role="search"
-          onSubmit={(e) => {
-            e.preventDefault()
-            p.onFind(query)
-          }}
-        >
-          <Icon name="search" size={18} />
-          <input
-            type="search"
-            enterKeyHint="search"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search for a street or town"
-            aria-label="Search for a street or town"
-          />
-        </form>
-      )}
-
-      {p.drawing ? (
-        <>
+  if (p.drawing) {
+    return (
+      <>
+        <div className="brush">
+          <div className="brush-label">New points are thrown on</div>
+          <Segmented label="Side for the points you add" value={p.brush} options={BRUSH_OPTIONS} onChange={p.onBrush} />
+        </div>
+        <div className="btn-row">
+          <button className="btn secondary" disabled={n === 0} onClick={p.onUndo}>
+            <Icon name="undo" size={18} />
+            Undo
+          </button>
+          <button className="btn primary" onClick={p.onDone}>
+            Done
+          </button>
+        </div>
+        {p.selectedPoint !== null ? (
           <div className="group">
             <div className="row">
               <div className="grow">
-                <div className="title">Tap along your route</div>
-                <div className="sub">In the order you drive it. Zoom in for the bends.</div>
+                <div className="title">
+                  Point {p.selectedPoint + 1} of {n}
+                </div>
+                <div className="sub">Drag it to move it.</div>
               </div>
-            </div>
-            <div className="row">
-              <div className="title">{points(n)}</div>
-              <div className="grow" />
-              <div className="trail">{ready ? length : ''}</div>
+              <button className="btn plain danger small" onClick={p.onDeletePoint}>
+                Delete Point
+              </button>
             </div>
           </div>
-          <div className="btn-row">
-            <button className="btn secondary" disabled={n === 0} onClick={p.onUndo}>
-              <Icon name="undo" size={18} />
-              Undo
-            </button>
-            <button className="btn primary" onClick={p.onDone}>
-              Done
-            </button>
-          </div>
-        </>
-      ) : ready ? (
+        ) : (
+          <p className="footnote">
+            {points(n)}
+            {ready ? ` · ${length}` : ''}. Tap the map to add points in the order you drive. Change the side above to start a new section.
+            Drag a point to move it, tap it to delete it, or tap a + to add a point there.
+          </p>
+        )}
+        {searchBox}
+      </>
+    )
+  }
+
+  return (
+    <>
+      {searchBox}
+
+      {ready ? (
         <>
           <div className="group">
             <div className="row">

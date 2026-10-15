@@ -1,7 +1,9 @@
+import { useEffect } from 'react'
 import { SIDE_COLOR } from './colors'
 import { Icon } from './Icon'
 import type { PassView } from './passes'
 import { formatDistance, sections } from './routeEdit'
+import { BRUSH_OPTIONS } from './sideOptions'
 import { Banner, Empty, Segmented } from './ui'
 import type { Route, Side } from './types'
 
@@ -16,8 +18,12 @@ interface Props {
   /** How each section is drawn, which says which ones repeat an earlier one. */
   views: PassView[]
   focus: number | null
-  splitting: boolean
-  onSplitting: (on: boolean) => void
+  /** Whether the paint tool is on, which side it paints with, and whether a stretch has been started. */
+  painting: boolean
+  onPainting: (on: boolean) => void
+  brush: Side
+  onBrush: (side: Side) => void
+  paintStarted: boolean
   onFocus: (index: number) => void
   onSide: (index: number, side: Side) => void
   onMerge: (index: number) => void
@@ -26,7 +32,27 @@ interface Props {
   onNext: () => void
 }
 
-export function SidesTab({ route, views, focus, splitting, onSplitting, onFocus, onSide, onMerge, onRepeat, onBack, onNext }: Props) {
+export function SidesTab({
+  route,
+  views,
+  focus,
+  painting,
+  onPainting,
+  brush,
+  onBrush,
+  paintStarted,
+  onFocus,
+  onSide,
+  onMerge,
+  onRepeat,
+  onBack,
+  onNext,
+}: Props) {
+  // A section picked on the map comes into view in the list.
+  useEffect(() => {
+    if (focus !== null) document.getElementById(`section-${focus}`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+  }, [focus])
+
   if (route.points.length < 2) {
     return (
       <Empty
@@ -47,16 +73,36 @@ export function SidesTab({ route, views, focus, splitting, onSplitting, onFocus,
   const repeated = views.some((v) => v.repeatOf !== null)
   return (
     <>
-      <p className="footnote">
-        Choose the side you throw on for each section. Left and right are as you face the way you drive, and the arrows on the map show that direction.
-        Driving a street twice, say down it and back? Tap Repeat on its section to add the second pass, then choose the side for that pass.
-      </p>
+      {!painting && (
+        <p className="footnote">
+          Left and right are as you face the way you drive, and the arrows on the map show that direction. Tap a line on the map to pick its
+          section, or paint a stretch of road with a side.
+        </p>
+      )}
+
+      <button className="btn secondary block" data-on={painting || undefined} onClick={() => onPainting(!painting)}>
+        <Icon name={painting ? 'check' : 'droplet'} size={20} strokeWidth={2.2} />
+        {painting ? 'Done Painting' : 'Paint a Stretch'}
+      </button>
+      {painting && (
+        <>
+          <div className="brush">
+            <div className="brush-label">Paint with</div>
+            <Segmented label="Side to paint with" value={brush} options={BRUSH_OPTIONS} onChange={onBrush} />
+          </div>
+          <Banner>
+            {paintStarted
+              ? 'Now tap the route where the stretch ends.'
+              : 'Tap the route where the stretch starts, then where it ends. Pick a section first if the road is driven twice.'}
+          </Banner>
+        </>
+      )}
 
       {secs.map((s) => {
         const view = views[s.index]
         const note = view?.repeatOf != null ? `${view.reversed ? 'back along' : 'again along'} section ${view.repeatOf + 1}` : ''
         return (
-          <div key={s.idx} className={focus === s.index ? 'card on' : 'card'} onClick={() => onFocus(s.index)}>
+          <div key={s.idx} id={`section-${s.index}`} className={focus === s.index ? 'card on' : 'card'} onClick={() => onFocus(s.index)}>
             <div className="card-head">
               <span className="dot" style={{ background: SIDE_COLOR[s.side] }} />
               <div className="grow">
@@ -95,16 +141,6 @@ export function SidesTab({ route, views, focus, splitting, onSplitting, onFocus,
       })}
 
       {repeated && <p className="footnote">Passes over the same road are drawn side by side on the map, so you can tell them apart.</p>}
-
-      <button className="btn secondary block" data-on={splitting || undefined} onClick={() => onSplitting(!splitting)}>
-        <Icon name={splitting ? 'check' : 'plus'} size={20} strokeWidth={2.4} />
-        {splitting ? 'Done Adding Changes' : 'Add a Side Change'}
-      </button>
-      {splitting && (
-        <Banner>
-          Tap the route on the map where the side changes. The new section starts there. If a road is driven twice, select the section you mean first.
-        </Banner>
-      )}
 
       <button className="btn primary block" onClick={onNext}>
         Next: Add Stops

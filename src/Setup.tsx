@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useDialogs } from './confirm'
 import { useGps } from './device'
-import { haversine, simplify } from './geo'
+import { SIDE_COLOR, SIDE_LABEL } from './colors'
+import { haversine, sideAt, simplify } from './geo'
 import { searchPlaces } from './geocode'
 import { Icon } from './Icon'
 import { MapView, type ViewCmd } from './MapView'
@@ -9,13 +10,21 @@ import { passViews } from './passes'
 import { RouteTab } from './RouteTab'
 import {
   appendPoint,
+  deletePoint,
+  formatDistance,
+  insertPoint,
   MAX_STOP_OFFSET_M,
+  movePoint,
+  nearestOnRoute,
+  ON_ROUTE_M,
+  paintStretch,
   removeLastPoint,
   removeSplit,
   repeatSection,
+  routeLength,
   sections,
+  segmentCount,
   setSectionSide,
-  splitAt,
   stopAt,
   type RepeatMode,
 } from './routeEdit'
@@ -26,7 +35,7 @@ import type { Pt, Route, Side, Stop, StopType } from './types'
 
 type Tab = 'route' | 'sides' | 'stops'
 /** What a tap on the map does. */
-type Tool = 'none' | 'draw' | 'split' | 'place'
+type Tool = 'none' | 'draw' | 'paint' | 'place'
 
 const TAB_OPTIONS: { value: Tab; label: string }[] = [
   { value: 'route', label: 'Route' },
@@ -58,11 +67,22 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
   const [stopType, setStopType] = useState<StopType>('nothrow')
   const [stopQty, setStopQty] = useState('')
   const [stopLabel, setStopLabel] = useState('')
+  /** The side new points are drawn on, and the side painted onto a stretch. */
+  const [brush, setBrush] = useState<Side>('both')
+  const [selectedPoint, setSelectedPoint] = useState<number | null>(null)
+  /** A point being dragged: shown at its new place until it is dropped. */
+  const [drag, setDrag] = useState<{ index: number; pos: Pt } | null>(null)
+  /** Where the stretch being painted starts, once its first end is tapped. */
+  const [paintStart, setPaintStart] = useState<Pt | null>(null)
   const { fix, error } = useGps(true)
   const { confirm, choose, dialog } = useDialogs()
   const lastRef = useRef<Pt | null>(null)
   const viewKey = useRef(0)
   const moved = useRef(false)
+  const dragFrame = useRef(0)
+  const dragNext = useRef<{ index: number; pos: Pt } | null>(null)
+
+  useEffect(() => () => cancelAnimationFrame(dragFrame.current), [])
 
   const goTo = (cmd: Omit<ViewCmd, 'key'>) => {
     moved.current = true
@@ -86,19 +106,74 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
     setTab(t)
     setTool('none')
     setNotice(null)
+    setSelectedPoint(null)
+    setPaintStart(null)
   }
 
   const secs = sections(route)
   const views = useMemo(() => passViews(route), [route])
   const hasRoute = route.points.length > 1
-  const showing: Route = recording ? { ...route, points: trace, sideChanges: [], stops: [] } : route
+  const showing: Route = recording
+    ? { ...route, points: trace, sideChanges: [], stops: [] }
+    : drag
+      ? movePoint(route, drag.index, drag.pos)
+      : route
   const highlight = focus !== null ? views[focus]?.points : undefined
+  /** When a road is driven twice both passes lie under a tap, so a picked section says which one is meant. */
+  const overlapping = views.some((v) => v.repeatOf !== null)
 
   // Route tab
   const startDraw = () => {
+    // Carry on with the side the route already ends on.
+    const segs = segmentCount(route)
+    if (segs) setBrush(sideAt(route, segs - 1))
     setTool('draw')
     setExpanded(false)
     setNotice(null)
+    setSelectedPoint(null)
+  }
+
+  const finishDraw = () => {
+    setTool('none')
+    setSelectedPoint(null)
+  }
+
+  const undo = () => {
+    setSelectedPoint(null)
+    onChange(removeLastPoint(route))
+  }
+
+  const tapPoint = (index: number) => setSelectedPoint((now) => (now === index ? null : index))
+
+  // Dragging redraws the route as it moves, at most once a frame, and saves it only when dropped.
+  const dragPoint = (index: number, pos: Pt) => {
+    dragNext.current = { index, pos }
+    if (dragFrame.current) return
+    dragFrame.current = requestAnimationFrame(() => {
+      dragFrame.current = 0
+      setDrag(dragNext.current)
+    })
+  }
+
+  const dropPoint = (index: number, pos: Pt) => {
+    cancelAnimationFrame(dragFrame.current)
+    dragFrame.current = 0
+    dragNext.current = null
+    setDrag(null)
+    onChange(movePoint(route, index, pos))
+  }
+
+  const removePoint = () => {
+    if (selectedPoint === null) return
+    onChange(deletePoint(route, selectedPoint))
+    setSelectedPoint(null)
+  }
+
+  const addPointInside = (segment: number) => {
+    const added = insertPoint(route, segment)
+    if (!added) return
+    onChange(added.route)
+    setSelectedPoint(added.vertex)
   }
 
   const startRecord = async () => {
@@ -188,6 +263,33 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
     setNotice(`Added section ${last + 1}, ${mode === 'back' ? 'back along' : 'again along'} section ${index + 1}. Choose which side to throw on for this pass.`)
   }
 
+  /** Paint with a side: tap where the stretch starts, then where it ends. */
+  const paintTap = (p: Pt) => {
+    const picked = focus !== null ? secs[focus] : undefined
+    const range = overlapping && picked ? { from: picked.idx, to: picked.endIdx } : undefined
+    if (!paintStart) {
+      const snap = nearestOnRoute(route, p, range)
+      if (!snap || snap.dist > ON_ROUTE_M) return setNotice('Tap on the route to mark where the stretch starts.')
+      setNotice(null)
+      return setPaintStart(snap.point)
+    }
+    const result = paintStretch(route, paintStart, p, brush, range)
+    setPaintStart(null)
+    if (!result) return setNotice('Tap on the route, away from where the stretch started, to mark where it ends.')
+    onChange(result.route)
+    // Sections have been renumbered, so no section stays picked.
+    setFocus(null)
+    const length = routeLength(result.route.points.slice(result.from, result.to + 1))
+    setNotice(`Painted ${formatDistance(length)} for ${SIDE_LABEL[brush].toLowerCase()}.`)
+  }
+
+  const setPainting = (on: boolean) => {
+    setTool(on ? 'paint' : 'none')
+    setPaintStart(null)
+    setNotice(null)
+    if (on) setExpanded(false)
+  }
+
   // Stops tab
   const addStops = (stops: Stop[]) => onChange({ ...route, stops: [...route.stops, ...stops] })
 
@@ -203,14 +305,11 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
 
   const onTap = (p: Pt) => {
     if (tool === 'draw') {
-      onChange(appendPoint(route, p))
-    } else if (tool === 'split') {
-      const chosen = focus !== null ? secs[focus] : undefined
-      const next = splitAt(route, p, chosen ? { from: chosen.idx, to: chosen.endIdx } : undefined)
-      if (!next) return setNotice('Tap on the route, away from its very start and end.')
-      setNotice(null)
-      setFocus(null)
-      onChange(next)
+      // With a point picked, the first tap just puts it down.
+      if (selectedPoint !== null) return setSelectedPoint(null)
+      onChange(appendPoint(route, p, brush))
+    } else if (tool === 'paint') {
+      paintTap(p)
     } else if (tool === 'place') {
       placeStop(p)
     }
@@ -223,9 +322,17 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
         position={fix}
         follow={recording}
         fit={tool !== 'draw'}
-        bottomFrac={0.5}
+        bottomFrac={tool === 'draw' || tool === 'paint' ? 0.42 : 0.5}
         highlight={tab === 'sides' ? highlight : undefined}
-        vertices={tool === 'draw'}
+        editable={tool === 'draw'}
+        selectedPoint={selectedPoint}
+        onPointTap={tapPoint}
+        onPointDrag={dragPoint}
+        onPointDrop={dropPoint}
+        onMidTap={addPointInside}
+        selectable={tab === 'sides' && tool === 'none'}
+        onSectionTap={setFocus}
+        pin={paintStart ? { pos: paintStart, label: 'From here', color: SIDE_COLOR[brush] } : null}
         view={view}
         onTap={onTap}
       />
@@ -239,11 +346,15 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
       <Sheet
         expanded={expanded}
         onExpandedChange={setExpanded}
+        compact={tool === 'draw' || tool === 'paint'}
+        // While drawing or painting, the sheet is just that tool's controls, so the map gets the room.
         header={
-          <div className="head-stack">
-            <RouteChip name={routeName} onClick={onGoRoutes} />
-            <Segmented tabs label="Setup step" value={tab} options={TAB_OPTIONS} onChange={switchTab} />
-          </div>
+          tool === 'draw' || tool === 'paint' ? undefined : (
+            <div className="head-stack">
+              <RouteChip name={routeName} onClick={onGoRoutes} />
+              <Segmented tabs label="Setup step" value={tab} options={TAB_OPTIONS} onChange={switchTab} />
+            </div>
+          )
         }
       >
         {notice && <Banner>{notice}</Banner>}
@@ -253,10 +364,14 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
             recording={recording}
             tracePoints={trace.length}
             drawing={tool === 'draw'}
+            brush={brush}
+            onBrush={setBrush}
+            selectedPoint={selectedPoint}
+            onDeletePoint={removePoint}
             gpsError={error}
             onDraw={startDraw}
-            onDone={() => setTool('none')}
-            onUndo={() => onChange(removeLastPoint(route))}
+            onDone={finishDraw}
+            onUndo={undo}
             onClear={clearRoute}
             onRecord={startRecord}
             onStopRecord={stopRecord}
@@ -269,8 +384,11 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
             route={route}
             views={views}
             focus={focus}
-            splitting={tool === 'split'}
-            onSplitting={(on) => setTool(on ? 'split' : 'none')}
+            painting={tool === 'paint'}
+            onPainting={setPainting}
+            brush={brush}
+            onBrush={setBrush}
+            paintStarted={paintStart !== null}
             onFocus={focusSection}
             onSide={changeSide}
             onMerge={merge}

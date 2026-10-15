@@ -39,6 +39,8 @@ export function Segmented<T extends string>({ value, options, onChange, label, t
 interface SheetProps {
   expanded: boolean
   onExpandedChange: (expanded: boolean) => void
+  /** Shorter by default, to leave more of the map visible while editing it. */
+  compact?: boolean
   /** Stays put while the body scrolls. */
   header?: ReactNode
   children: ReactNode
@@ -48,11 +50,11 @@ interface SheetProps {
 const SWIPE_PX = 24
 
 /** A bottom sheet over the map. Swipe or tap the grabber to switch between medium and tall. */
-export function Sheet({ expanded, onExpandedChange, header, children }: SheetProps) {
+export function Sheet({ expanded, onExpandedChange, compact, header, children }: SheetProps) {
   const startY = useRef<number | null>(null)
 
   return (
-    <section className={expanded ? 'sheet expanded' : 'sheet'}>
+    <section className={`sheet${compact ? ' compact' : ''}${expanded ? ' expanded' : ''}`}>
       <button
         className="sheet-grab"
         aria-label={expanded ? 'Show less' : 'Show more'}
