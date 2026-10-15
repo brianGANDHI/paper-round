@@ -30,7 +30,9 @@ import {
 } from './routeEdit'
 import { SidesTab } from './SidesTab'
 import { StopsTab } from './StopsTab'
+import { loadFollowRoads, saveFollowRoads } from './storage'
 import { Banner, RouteChip, Segmented, Sheet } from './ui'
+import { useRoadFollow } from './useRoadFollow'
 import type { Pt, Route, Side, Stop, StopType } from './types'
 
 type Tab = 'route' | 'sides' | 'stops'
@@ -69,6 +71,8 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
   const [stopLabel, setStopLabel] = useState('')
   /** The side new points are drawn on, and the side painted onto a stretch. */
   const [brush, setBrush] = useState<Side>('both')
+  /** Taps follow roads instead of joining with straight lines. Needs internet, so it is the drawer's choice. */
+  const [follow, setFollow] = useState(loadFollowRoads)
   const [selectedPoint, setSelectedPoint] = useState<number | null>(null)
   /** A point being dragged: shown at its new place until it is dropped. */
   const [drag, setDrag] = useState<{ index: number; pos: Pt } | null>(null)
@@ -76,6 +80,7 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
   const [paintStart, setPaintStart] = useState<Pt | null>(null)
   const { fix, error } = useGps(true)
   const { confirm, choose, dialog } = useDialogs()
+  const roads = useRoadFollow({ route, side: brush, active: tool === 'draw' && follow, onRoute: onChange, onNotice: setNotice })
   const lastRef = useRef<Pt | null>(null)
   const viewKey = useRef(0)
   const moved = useRef(false)
@@ -140,7 +145,15 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
 
   const undo = () => {
     setSelectedPoint(null)
+    // A road lookup is cancelled, and a stretch of road comes off in one go.
+    if (roads.undo()) return
     onChange(removeLastPoint(route))
+  }
+
+  const changeFollow = (on: boolean) => {
+    setFollow(on)
+    saveFollowRoads(on)
+    setNotice(null)
   }
 
   const tapPoint = (index: number) => setSelectedPoint((now) => (now === index ? null : index))
@@ -307,7 +320,8 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
     if (tool === 'draw') {
       // With a point picked, the first tap just puts it down.
       if (selectedPoint !== null) return setSelectedPoint(null)
-      onChange(appendPoint(route, p, brush))
+      if (follow) roads.tap(p)
+      else onChange(appendPoint(route, p, brush))
     } else if (tool === 'paint') {
       paintTap(p)
     } else if (tool === 'place') {
@@ -332,7 +346,13 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
         onMidTap={addPointInside}
         selectable={tab === 'sides' && tool === 'none'}
         onSectionTap={setFocus}
-        pin={paintStart ? { pos: paintStart, label: 'From here', color: SIDE_COLOR[brush] } : null}
+        pin={
+          roads.finding
+            ? { pos: roads.finding, label: 'Finding road…', color: SIDE_COLOR[brush] }
+            : paintStart
+              ? { pos: paintStart, label: 'From here', color: SIDE_COLOR[brush] }
+              : null
+        }
         view={view}
         onTap={onTap}
       />
@@ -366,6 +386,9 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
             drawing={tool === 'draw'}
             brush={brush}
             onBrush={setBrush}
+            follow={follow}
+            onFollow={changeFollow}
+            finding={roads.finding !== null}
             selectedPoint={selectedPoint}
             onDeletePoint={removePoint}
             gpsError={error}

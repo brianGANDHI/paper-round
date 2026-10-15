@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest'
 import { haversine, occurrences, sideAt } from './geo'
 import {
   appendPoint,
+  appendPoints,
   defaultRepeatSide,
   deletePoint,
   insertPoint,
+  isDuplicateTap,
   movePoint,
   nearestOnRoute,
   normalizeRoute,
@@ -344,6 +346,64 @@ describe('drawing with a side', () => {
     const r = draw(['left', 'left', 'left', 'right'])
     expect(r.sideChanges).toHaveLength(2)
     expect(removeLastPoint(r).sideChanges).toEqual([{ idx: 0, side: 'left' }])
+  })
+})
+
+describe('adding several points at once', () => {
+  const empty = (): Route => ({ points: [], sideChanges: [], stops: [] })
+  const run = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, i) => pt(from + i))
+
+  it('is the same as tapping each point in turn', () => {
+    const existing: Route = { ...road(3), sideChanges: [{ idx: 0, side: 'left' }] }
+    for (const side of ['left', 'right'] as const) {
+      const oneByOne = run(3, 8).reduce((r, p) => appendPoint(r, p, side), existing)
+      expect(appendPoints(existing, run(3, 8), side)).toEqual(oneByOne)
+    }
+  })
+
+  it('starts a single new section where the side changes, however many points follow', () => {
+    const existing: Route = { ...road(3), sideChanges: [{ idx: 0, side: 'left' }] }
+    const r = appendPoints(existing, run(3, 8), 'right')
+    expect(r.points).toHaveLength(9)
+    expect(r.sideChanges).toEqual([
+      { idx: 0, side: 'left' },
+      { idx: 2, side: 'right' },
+    ])
+  })
+
+  it('stays in the same section when the side is the same', () => {
+    const existing: Route = { ...road(3), sideChanges: [{ idx: 0, side: 'left' }] }
+    expect(appendPoints(existing, run(3, 8), 'left').sideChanges).toEqual([{ idx: 0, side: 'left' }])
+  })
+
+  it('can build a whole route from nothing, thrown on the chosen side', () => {
+    const r = appendPoints(empty(), run(0, 4), 'right')
+    expect(r.points).toHaveLength(5)
+    expect(r.sideChanges).toEqual([{ idx: 0, side: 'right' }])
+  })
+
+  it('skips points that sit on the one before, and leaves the route alone if all of them do', () => {
+    const r = road(3)
+    const nudge = (p: Pt): Pt => ({ lat: p.lat + 0.00001, lng: p.lng })
+    expect(appendPoints(r, [nudge(pt(2)), nudge(pt(2))], 'left')).toBe(r)
+    expect(appendPoints(r, [nudge(pt(2)), pt(3)], 'both').points).toHaveLength(4)
+  })
+
+  it('does nothing for no points', () => {
+    const r = road(3)
+    expect(appendPoints(r, [], 'left')).toBe(r)
+  })
+})
+
+describe('taps on the last point', () => {
+  it('count as double taps only when they land on it', () => {
+    const r = road(3)
+    expect(isDuplicateTap(r, { lat: pt(2).lat + 0.00001, lng: 0 })).toBe(true)
+    expect(isDuplicateTap(r, pt(3))).toBe(false)
+  })
+
+  it('have nothing to double on an empty route', () => {
+    expect(isDuplicateTap({ points: [] }, pt(0))).toBe(false)
   })
 })
 

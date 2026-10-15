@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { activeRoute, addRoute, createLibrary } from './library'
-import { canSave, loadLibrary, saveLibrary } from './storage'
+import { canSave, loadFollowRoads, loadLibrary, saveFollowRoads, saveLibrary } from './storage'
 import type { Route } from './types'
 
 /** A stand-in for the phone's local storage. */
@@ -105,6 +105,11 @@ describe('a phone that refuses to store anything', () => {
   it('still opens, with a blank route', () => {
     expect(loadLibrary().routes).toHaveLength(1)
   })
+
+  it('still lets Follow roads be switched, though it starts off next time', () => {
+    expect(() => saveFollowRoads(true)).not.toThrow()
+    expect(loadFollowRoads()).toBe(false)
+  })
 })
 
 describe('a phone that stores normally', () => {
@@ -113,5 +118,37 @@ describe('a phone that stores normally', () => {
     vi.stubGlobal('localStorage', store)
     expect(canSave()).toBe(true)
     expect(store.data.size).toBe(0)
+  })
+})
+
+describe('the Follow roads switch', () => {
+  let store: ReturnType<typeof fakeStorage>
+
+  beforeEach(() => {
+    store = fakeStorage()
+    vi.stubGlobal('localStorage', store)
+  })
+
+  it('starts off, so nothing goes to the road service until someone asks', () => {
+    expect(loadFollowRoads()).toBe(false)
+  })
+
+  it('stays as it was left', () => {
+    saveFollowRoads(true)
+    expect(loadFollowRoads()).toBe(true)
+    saveFollowRoads(false)
+    expect(loadFollowRoads()).toBe(false)
+  })
+
+  it('is kept apart from the routes', () => {
+    saveFollowRoads(true)
+    expect(store.data.has('paperround.library.v2')).toBe(false)
+  })
+
+  it('reads anything unexpected as off', () => {
+    for (const junk of ['{not json', '"yes"', '1', 'null', '[]']) {
+      store.data.set('paperround.followRoads', junk)
+      expect(loadFollowRoads()).toBe(false)
+    }
   })
 })

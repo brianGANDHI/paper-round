@@ -13,6 +13,10 @@ interface Props {
   /** The side new points are drawn on. */
   brush: Side
   onBrush: (side: Side) => void
+  /** Taps follow roads (which needs internet), and whether a road is being looked up right now. */
+  follow: boolean
+  onFollow: (on: boolean) => void
+  finding: boolean
   /** The point picked on the map, if any. */
   selectedPoint: number | null
   onDeletePoint: () => void
@@ -85,10 +89,21 @@ export function RouteTab(p: Props) {
           <div className="brush-label">New points are thrown on</div>
           <Segmented label="Side for the points you add" value={p.brush} options={BRUSH_OPTIONS} onChange={p.onBrush} />
         </div>
-        <div className="btn-row">
+        <div className="btn-row tools">
+          {/* While a road is being looked up, this cancels that tap instead of taking back the one before. */}
           <button className="btn secondary" disabled={n === 0} onClick={p.onUndo}>
-            <Icon name="undo" size={18} />
-            Undo
+            <Icon name={p.finding ? 'x' : 'undo'} size={18} />
+            {p.finding ? 'Cancel' : 'Undo'}
+          </button>
+          <button
+            className="btn secondary"
+            data-on={p.follow || undefined}
+            aria-pressed={p.follow}
+            title="Taps follow the streets. Needs internet."
+            onClick={() => p.onFollow(!p.follow)}
+          >
+            <Icon name="route" size={18} />
+            Follow roads
           </button>
           <button className="btn primary" onClick={p.onDone}>
             Done
@@ -111,8 +126,11 @@ export function RouteTab(p: Props) {
         ) : (
           <p className="footnote">
             {points(n)}
-            {ready ? ` · ${length}` : ''}. Tap the map to add points in the order you drive. Change the side above to start a new section.
-            Drag a point to move it, tap it to delete it, or tap a + to add a point there.
+            {ready ? ` · ${length}` : ''}.{' '}
+            {p.follow
+              ? 'Tap the map and the route follows the streets there (routing by OSRM, run by FOSSGIS).'
+              : 'Tap the map to add points in the order you drive, or turn on Follow roads (needs internet) to have each tap follow the streets.'}{' '}
+            Change the side above to start a new section. Drag a point to move it, tap it to delete it, or tap a + to add a point there.
           </p>
         )}
         {searchBox}

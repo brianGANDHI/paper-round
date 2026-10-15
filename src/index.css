@@ -535,6 +535,19 @@ p {
   gap: 10px;
 }
 
+/* Three tools in one row, as when drawing: Undo, Follow roads and Done. */
+.btn-row.tools {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.55fr) minmax(0, 1fr);
+  gap: 8px;
+}
+
+.btn-row.tools .btn {
+  gap: 6px;
+  padding: 0 6px;
+  font-size: 15px;
+  white-space: nowrap;
+}
+
 .search {
   display: flex;
   align-items: center;

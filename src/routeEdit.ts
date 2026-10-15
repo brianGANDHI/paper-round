@@ -42,13 +42,18 @@ export function normalizeRoute(r: Partial<Route> | null | undefined): Route {
   }
 }
 
+/** Whether a tap lands on the route's last point, which adding it would ignore. */
+export function isDuplicateTap(route: Pick<Route, 'points'>, p: Pt): boolean {
+  const last = route.points[route.points.length - 1]
+  return !!last && haversine(last, p) < DUPLICATE_TAP_M
+}
+
 /**
  * Add a point to the end of the route. With `side`, the stretch it creates is thrown on that
  * side: when that differs from the stretch before it, a new section starts there.
  */
 export function appendPoint(route: Route, p: Pt, side?: Side): Route {
-  const last = route.points[route.points.length - 1]
-  if (last && haversine(last, p) < DUPLICATE_TAP_M) return route
+  if (isDuplicateTap(route, p)) return route
   const points = [...route.points, p]
   const segs = points.length - 1
   let changes = normalizeSideChanges(route.sideChanges, segmentCount(route))
@@ -58,6 +63,14 @@ export function appendPoint(route: Route, p: Pt, side?: Side): Route {
     else if (sideAt({ sideChanges: changes }, created - 1) !== side) changes = [...changes, { idx: created, side }]
   }
   return { ...route, points, sideChanges: normalizeSideChanges(changes, segs) }
+}
+
+/**
+ * Add several points to the end of the route, in order, exactly as if each had been tapped with
+ * `side`: a new section starts at the first of them if the side differs from the route's last stretch.
+ */
+export function appendPoints(route: Route, pts: Pt[], side?: Side): Route {
+  return pts.reduce((r, p) => appendPoint(r, p, side), route)
 }
 
 /** The closest point on the route, anywhere along it, or only within the segments of `range`. */

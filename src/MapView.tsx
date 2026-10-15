@@ -255,7 +255,7 @@ export function MapView({
       {/* Tiles are a bonus: offline they simply fail and the vector overlay still shows. */}
       <TileLayer
         url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
-        attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+        attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &middot; <a href="https://www.openstreetmap.org/fixthemap">Fix the map</a>'
         maxZoom={19}
       />
       <AttributionControl position="topleft" prefix={false} />

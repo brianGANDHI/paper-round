@@ -4,6 +4,7 @@ import type { Library, RoundState, Route } from './types'
 
 /** Where everything is kept on the phone. */
 const LIBRARY_KEY = 'paperround.library.v2'
+const FOLLOW_ROADS_KEY = 'paperround.followRoads'
 
 /** The single route and its progress, as saved by earlier versions of the app. */
 const LEGACY_ROUTE_KEY = 'paperround.route.v1'
@@ -49,6 +50,19 @@ export function canSave(): boolean {
     return true
   } catch {
     return false
+  }
+}
+
+/** Whether Follow roads was left switched on, so the choice survives leaving Setup. Off until someone turns it on. */
+export function loadFollowRoads(): boolean {
+  return read(FOLLOW_ROADS_KEY) === true
+}
+
+export function saveFollowRoads(on: boolean): void {
+  try {
+    localStorage.setItem(FOLLOW_ROADS_KEY, JSON.stringify(on))
+  } catch {
+    // The phone won't store it; the switch just starts off next time.
   }
 }
 
