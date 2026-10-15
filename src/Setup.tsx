@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { useConfirm } from './confirm'
+import { useDialogs } from './confirm'
 import { useGps } from './device'
 import { haversine, simplify } from './geo'
 import { searchPlaces } from './geocode'
@@ -18,7 +18,7 @@ import {
 } from './routeEdit'
 import { SidesTab } from './SidesTab'
 import { StopsTab } from './StopsTab'
-import { Banner, Segmented, Sheet } from './ui'
+import { Banner, RouteChip, Segmented, Sheet } from './ui'
 import type { Pt, Route, Side, Stop, StopType } from './types'
 
 type Tab = 'route' | 'sides' | 'stops'
@@ -37,10 +37,13 @@ const SIMPLIFY_M = 3
 
 interface Props {
   route: Route
+  /** Name of the route being edited. */
+  routeName: string
   onChange: (r: Route) => void
+  onGoRoutes: () => void
 }
 
-export function Setup({ route, onChange }: Props) {
+export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
   const [tab, setTab] = useState<Tab>('route')
   const [tool, setTool] = useState<Tool>('none')
   const [expanded, setExpanded] = useState(false)
@@ -53,7 +56,7 @@ export function Setup({ route, onChange }: Props) {
   const [stopQty, setStopQty] = useState('')
   const [stopLabel, setStopLabel] = useState('')
   const { fix, error } = useGps(true)
-  const { confirm, dialog } = useConfirm()
+  const { confirm, dialog } = useDialogs()
   const lastRef = useRef<Pt | null>(null)
   const viewKey = useRef(0)
   const moved = useRef(false)
@@ -209,7 +212,12 @@ export function Setup({ route, onChange }: Props) {
       <Sheet
         expanded={expanded}
         onExpandedChange={setExpanded}
-        header={<Segmented tabs label="Setup step" value={tab} options={TAB_OPTIONS} onChange={switchTab} />}
+        header={
+          <div className="head-stack">
+            <RouteChip name={routeName} onClick={onGoRoutes} />
+            <Segmented tabs label="Setup step" value={tab} options={TAB_OPTIONS} onChange={switchTab} />
+          </div>
+        }
       >
         {notice && <Banner>{notice}</Banner>}
         {tab === 'route' && (

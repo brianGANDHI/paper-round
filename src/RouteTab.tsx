@@ -111,6 +111,7 @@ export function RouteTab(p: Props) {
                 <div className="sub">
                   {length} · {points(n)}
                 </div>
+                <div className="sub">Saved automatically on this phone</div>
               </div>
             </div>
           </div>

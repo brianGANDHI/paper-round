@@ -84,6 +84,16 @@ export function Sheet({ expanded, onExpandedChange, header, children }: SheetPro
   )
 }
 
+/** The route in use. Tapping it opens the list of routes to change it. */
+export function RouteChip({ name, onClick }: { name: string; onClick: () => void }) {
+  return (
+    <button className="route-chip" onClick={onClick} aria-label={`Route: ${name}. Tap to change route`}>
+      <span>{name}</span>
+      <Icon name="chevron-right" size={16} strokeWidth={2.4} />
+    </button>
+  )
+}
+
 export function Banner({ kind = 'info', children }: { kind?: 'info' | 'warn'; children: ReactNode }) {
   return (
     <p className={`banner ${kind}`} role="status">

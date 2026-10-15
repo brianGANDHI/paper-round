@@ -30,3 +30,19 @@ export interface Route {
 export interface RoundState {
   handledStopIds: string[]
 }
+
+/** A route kept on the phone, with its own progress through the current run. */
+export interface SavedRoute {
+  id: string
+  name: string
+  route: Route
+  round: RoundState
+  /** When the route itself was last changed, in ms since 1970. 0 when unknown. */
+  updatedAt: number
+}
+
+/** Everything saved on the phone: every route, and which one is in use. */
+export interface Library {
+  routes: SavedRoute[]
+  activeId: string
+}

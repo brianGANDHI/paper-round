@@ -1,24 +1,27 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { AlertOverlay } from './AlertOverlay'
 import { SIDE_LABEL, SIDE_PILL } from './colors'
-import { useConfirm } from './confirm'
+import { useDialogs } from './confirm'
 import { alertBundle, alertNoThrow, unlockAudio, useGps, useWakeLock } from './device'
+import { plural } from './format'
 import { approachingStops, sideAt, snapToPath } from './geo'
 import { Icon } from './Icon'
 import { MapView } from './MapView'
 import { formatDistance, routeLength } from './routeEdit'
+import { RouteChip } from './ui'
 import type { RoundState, Route, Stop } from './types'
 
 interface Props {
   route: Route
   round: RoundState
+  /** Name of the route in use, shown so the wrong round isn't run by mistake. */
+  routeName: string
   onRound: (r: RoundState) => void
   onGoSetup: () => void
+  onGoRoutes: () => void
 }
 
-const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`
-
-export function Round({ route, round, onRound, onGoSetup }: Props) {
+export function Round({ route, round, routeName, onRound, onGoSetup, onGoRoutes }: Props) {
   const [started, setStarted] = useState(false)
   const [overview, setOverview] = useState(false)
   // Alerts wait their turn so a bundle prompt can never hide a no-throw warning.
@@ -27,7 +30,7 @@ export function Round({ route, round, onRound, onGoSetup }: Props) {
   const idxRef = useRef(0)
   const { fix, error } = useGps(started)
   const wake = useWakeLock(started)
-  const { confirm, dialog } = useConfirm()
+  const { confirm, dialog } = useDialogs()
   const handled = useMemo(() => new Set(round.handledStopIds), [round])
 
   const [snapIdx, setSnapIdx] = useState(0)
@@ -55,6 +58,15 @@ export function Round({ route, round, onRound, onGoSetup }: Props) {
     drop(id)
   }
 
+  /** Forget this run's progress, so every special stop counts as not done again. */
+  const resetRun = () => {
+    seen.current.clear()
+    idxRef.current = 0
+    setSnapIdx(0)
+    setQueue([])
+    onRound({ handledStopIds: [] })
+  }
+
   const reset = async () => {
     const ok = await confirm({
       title: 'Reset Round?',
@@ -62,12 +74,14 @@ export function Round({ route, round, onRound, onGoSetup }: Props) {
       confirmLabel: 'Reset',
       destructive: true,
     })
-    if (!ok) return
-    seen.current.clear()
-    idxRef.current = 0
-    setSnapIdx(0)
-    setQueue([])
-    onRound({ handledStopIds: [] })
+    if (ok) resetRun()
+  }
+
+  /** `fresh` starts a new run; otherwise an unfinished run carries on where it stopped. */
+  const begin = (fresh: boolean) => {
+    if (fresh) resetRun()
+    unlockAudio()
+    setStarted(true)
   }
 
   if (route.points.length < 2) {
@@ -78,7 +92,8 @@ export function Round({ route, round, onRound, onGoSetup }: Props) {
             <Icon name="map" size={42} strokeWidth={1.7} />
           </div>
           <h1>No Route Yet</h1>
-          <p>Draw your round on the map in Setup. You don't need to drive it first.</p>
+          <RouteChip name={routeName} onClick={onGoRoutes} />
+          <p>Draw this route on the map in Setup. You don't need to drive it first.</p>
           <button className="btn primary" onClick={onGoSetup}>
             Go to Setup
           </button>
@@ -89,9 +104,11 @@ export function Round({ route, round, onRound, onGoSetup }: Props) {
 
   const total = route.stops.length
   const remaining = route.stops.filter((s) => !handled.has(s.id)).length
+  const done = total - remaining
+  const finished = total > 0 && remaining === 0
+  const partial = done > 0 && remaining > 0
 
   if (!started) {
-    const done = total - remaining
     return (
       <div className="screen plain">
         <div className="hero">
@@ -99,25 +116,27 @@ export function Round({ route, round, onRound, onGoSetup }: Props) {
             <Icon name="navigation" size={42} strokeWidth={1.7} fill />
           </div>
           <h1>Ready to Deliver</h1>
+          <RouteChip name={routeName} onClick={onGoRoutes} />
           <p>
             {formatDistance(routeLength(route.points))} · {plural(total, 'special stop', 'special stops')}
-            {done > 0 && ` · ${done} done`}
+            {partial && ` · ${done} of ${total} done`}
           </p>
+          {finished && <p className="fine">Your last round is finished, so this will start a new one.</p>}
           <p className="fine">
             You'll only be alerted for bundle drops and no‑throw houses. Keep the phone unlocked and mounted, because GPS pauses when the screen is off.
           </p>
-          <button
-            className="btn primary block"
-            onClick={() => {
-              unlockAudio()
-              setStarted(true)
-            }}
-          >
-            Start Round
-          </button>
-          {done > 0 && (
-            <button className="btn plain danger" onClick={reset}>
-              Reset Round
+          {partial ? (
+            <>
+              <button className="btn primary block" onClick={() => begin(false)}>
+                Continue Round
+              </button>
+              <button className="btn plain" onClick={() => begin(true)}>
+                Start Over
+              </button>
+            </>
+          ) : (
+            <button className="btn primary block" onClick={() => begin(finished)}>
+              {finished ? 'Start New Round' : 'Start Round'}
             </button>
           )}
         </div>

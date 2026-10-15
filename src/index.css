@@ -1001,6 +1001,173 @@ button.row:active:not(:disabled) {
 }
 
 /* ------------------------------------------------------------------ *
+ * Routes list, route chip, dialogs with text, and the save warning
+ * ------------------------------------------------------------------ */
+.screen.scroll {
+  overflow: auto;
+  background: var(--grouped);
+  -webkit-overflow-scrolling: touch;
+}
+
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: 100%;
+  max-width: 560px;
+  margin: 0 auto;
+  padding: calc(var(--safe-top) + 16px) 16px 32px;
+}
+
+.page > * {
+  flex: none;
+}
+
+.large-title {
+  padding: 6px 4px 0;
+  font-size: 34px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+}
+
+.row .icon-danger {
+  display: flex;
+  color: var(--red);
+}
+
+.title.danger {
+  color: var(--red);
+}
+
+.route-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 100%;
+  padding: 6px 10px 6px 14px;
+  border-radius: 999px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--tint);
+  background: var(--fill);
+}
+
+.route-chip span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.route-chip:active {
+  opacity: 0.6;
+}
+
+.hero .route-chip {
+  margin: -2px 0 2px;
+}
+
+.head-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.head-stack .segmented {
+  align-self: stretch;
+}
+
+.alert-input {
+  display: block;
+  width: 100%;
+  margin-top: 12px;
+  padding: 8px 10px;
+  border: 0.5px solid var(--sep);
+  border-radius: 8px;
+  outline: 0;
+  font-size: 15px;
+  text-align: left;
+  color: var(--label);
+  background: var(--card);
+}
+
+.alert-input:focus {
+  border-color: var(--tint);
+}
+
+.dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: min(100%, 420px);
+  max-height: calc(100dvh - 48px);
+  overflow: auto;
+  padding: 20px 18px 16px;
+  border-radius: 18px;
+  background: var(--material);
+  box-shadow: var(--shadow);
+  -webkit-backdrop-filter: saturate(180%) blur(30px);
+  backdrop-filter: saturate(180%) blur(30px);
+  animation: pop 0.18s ease-out;
+}
+
+.dialog h2 {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  text-align: center;
+}
+
+.dialog p {
+  font-size: 14px;
+  line-height: 1.35;
+  text-align: center;
+  color: var(--label-2);
+}
+
+.dialog > * {
+  flex: none;
+}
+
+.dialog-text {
+  display: block;
+  width: 100%;
+  min-height: 150px;
+  max-height: 38dvh;
+  padding: 10px 12px;
+  border: 0.5px solid var(--sep);
+  border-radius: 12px;
+  outline: 0;
+  resize: none;
+  font: 12px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--label);
+  background: var(--card);
+  word-break: break-all;
+}
+
+.dialog-text:focus {
+  border-color: var(--tint);
+}
+
+.save-warning {
+  position: relative;
+  z-index: 1300;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  flex: none;
+  padding: calc(var(--safe-top) + 10px) 16px 10px;
+  font-size: 14px;
+  line-height: 1.3;
+  color: #fff;
+  background: var(--red);
+}
+
+.save-warning .icon {
+  margin-top: 1px;
+}
+
+/* ------------------------------------------------------------------ *
  * Wide screens (iPad, desktop): panels float at the side like Apple Maps.
  * ------------------------------------------------------------------ */
 @media (min-width: 700px) {
