@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { SIDE_LABEL, STOP_COLOR } from './colors'
-import { sideAt } from './geo'
+import { occurrences } from './geo'
 import { lookupAddress, type Match } from './geocode'
 import { Icon } from './Icon'
-import { formatDistance, stopAt } from './routeEdit'
+import { formatDistance, stopAt, stopSides } from './routeEdit'
 import { Empty, Segmented } from './ui'
 import type { Pt, Route, Stop, StopType } from './types'
 
@@ -76,6 +76,8 @@ export function StopsTab(p: Props) {
   const [busy, setBusy] = useState(false)
   const abort = useRef<AbortController | null>(null)
   const isBundle = p.type === 'bundle'
+  // A stop on a road driven twice is passed on more than one side, so the list shows each.
+  const occs = useMemo(() => occurrences(p.route), [p.route])
   const noun = isBundle ? 'Bundle Drop' : 'No-Throw House'
 
   // Leaving the tab mid-lookup must not keep calling the address service.
@@ -254,7 +256,7 @@ export function StopsTab(p: Props) {
                 <button className="grow rowbtn" onClick={() => p.onFocus(s)}>
                   <div className="title">{s.label ?? (s.type === 'bundle' ? 'Bundle drop' : 'No-throw house')}</div>
                   <div className="sub">
-                    {s.type === 'bundle' ? `Bundle${s.qty ? ` of ${s.qty}` : ''}` : 'No-throw'} · {SIDE_LABEL[sideAt(p.route, s.pathIdx)]}
+                    {s.type === 'bundle' ? `Bundle${s.qty ? ` of ${s.qty}` : ''}` : 'No-throw'} · {stopSides(p.route, occs, s.id).map((side) => SIDE_LABEL[side]).join(', ')}
                   </div>
                 </button>
                 <button className="icon-btn" aria-label={`Delete ${s.label ?? 'stop'}`} onClick={() => p.onRemove(s.id)}>

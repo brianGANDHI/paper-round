@@ -3,6 +3,8 @@ import type { Stop } from './types'
 
 interface Props {
   stop: Stop
+  /** Which time the route has gone past this stop: 1 for the first. */
+  pass?: number
   /** How many more alerts are waiting behind this one. */
   waiting: number
   onHandled: () => void
@@ -10,7 +12,7 @@ interface Props {
 }
 
 /** Full-screen prompt for a stop you are approaching. No-throw is red and flashes. */
-export function AlertOverlay({ stop, waiting, onHandled, onDismiss }: Props) {
+export function AlertOverlay({ stop, pass = 1, waiting, onHandled, onDismiss }: Props) {
   const noThrow = stop.type === 'nothrow'
   return (
     <div className={noThrow ? 'overlay red' : 'overlay blue'} role="alertdialog" aria-modal="true" aria-labelledby="alert-heading">
@@ -25,6 +27,7 @@ export function AlertOverlay({ stop, waiting, onHandled, onDismiss }: Props) {
         </>
       )}
       <p className="detail">{stop.label ?? (noThrow ? 'This house does not want a paper.' : 'Bundle stop ahead.')}</p>
+      {pass > 1 && <p className="more">Time {pass} past this stop on your route</p>}
       <button className="btn primary" onClick={onHandled} autoFocus>
         Handled
       </button>

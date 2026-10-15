@@ -4,12 +4,25 @@ import { SIDE_LABEL, SIDE_PILL } from './colors'
 import { useDialogs } from './confirm'
 import { alertBundle, alertNoThrow, unlockAudio, useGps, useWakeLock } from './device'
 import { plural } from './format'
-import { approachingStops, sideAt, snapToPath } from './geo'
+import {
+  alongPath,
+  approachingOccurrences,
+  bearing,
+  cumulativeDistances,
+  haversine,
+  occurrences,
+  sideAt,
+  snapToPath,
+  type Occurrence,
+} from './geo'
 import { Icon } from './Icon'
 import { MapView } from './MapView'
 import { formatDistance, routeLength } from './routeEdit'
 import { RouteChip } from './ui'
-import type { RoundState, Route, Stop } from './types'
+import type { Pt, RoundState, Route } from './types'
+
+/** The phone must move this far before its direction of travel is worked out again, so GPS jitter doesn't turn it. */
+const HEADING_MIN_M = 8
 
 interface Props {
   route: Route
@@ -25,43 +38,57 @@ export function Round({ route, round, routeName, onRound, onGoSetup, onGoRoutes 
   const [started, setStarted] = useState(false)
   const [overview, setOverview] = useState(false)
   // Alerts wait their turn so a bundle prompt can never hide a no-throw warning.
-  const [queue, setQueue] = useState<Stop[]>([])
+  const [queue, setQueue] = useState<Occurrence[]>([])
   const seen = useRef(new Set<string>())
   const idxRef = useRef(0)
+  const lastMoved = useRef<Pt | null>(null)
+  const heading = useRef<number | null>(null)
   const { fix, error } = useGps(started)
   const wake = useWakeLock(started)
   const { confirm, dialog } = useDialogs()
   const handled = useMemo(() => new Set(round.handledStopIds), [round])
+  // Each time the route passes a stop is a separate warning, so a street driven twice warns on both passes.
+  const occs = useMemo(() => occurrences(route), [route])
+  const cum = useMemo(() => cumulativeDistances(route.points), [route.points])
 
   const [snapIdx, setSnapIdx] = useState(0)
   const side = sideAt(route, snapIdx)
 
   useEffect(() => {
     if (!fix) return
-    const snap = snapToPath(fix, route.points, idxRef.current)
+    // Which way the phone is heading tells a return pass from the first, which lie on the same road.
+    if (!lastMoved.current) lastMoved.current = fix
+    else if (haversine(lastMoved.current, fix) >= HEADING_MIN_M) {
+      heading.current = bearing(lastMoved.current, fix)
+      lastMoved.current = fix
+    }
+    const snap = snapToPath(fix, route.points, idxRef.current, heading.current)
     if (!snap) return
     idxRef.current = snap.idx
     setSnapIdx(snap.idx)
-    const fresh = approachingStops(fix, snap.idx, route.stops, handled).filter((s) => !seen.current.has(s.id))
+    const driverAt = alongPath(cum, snap.idx, snap.t)
+    const fresh = approachingOccurrences(driverAt, fix, occs, handled).filter((o) => !seen.current.has(o.key))
     if (!fresh.length) return
-    fresh.forEach((s) => seen.current.add(s.id))
+    fresh.forEach((o) => seen.current.add(o.key))
     setQueue((q) => [...q, ...fresh])
-    if (fresh.some((s) => s.type === 'nothrow')) alertNoThrow()
+    if (fresh.some((o) => o.stop.type === 'nothrow')) alertNoThrow()
     else alertBundle()
-  }, [fix, route, handled])
+  }, [fix, route, handled, occs, cum])
 
-  const current = queue.find((s) => s.type === 'nothrow') ?? queue[0]
-  const drop = (id: string) => setQueue((q) => q.filter((s) => s.id !== id))
+  const current = queue.find((o) => o.stop.type === 'nothrow') ?? queue[0]
+  const drop = (key: string) => setQueue((q) => q.filter((o) => o.key !== key))
 
-  const markHandled = (id: string) => {
-    onRound({ handledStopIds: [...round.handledStopIds, id] })
-    drop(id)
+  const markHandled = (key: string) => {
+    onRound({ handledStopIds: [...round.handledStopIds, key] })
+    drop(key)
   }
 
   /** Forget this run's progress, so every special stop counts as not done again. */
   const resetRun = () => {
     seen.current.clear()
     idxRef.current = 0
+    heading.current = null
+    lastMoved.current = null
     setSnapIdx(0)
     setQueue([])
     onRound({ handledStopIds: [] })
@@ -102,8 +129,8 @@ export function Round({ route, round, routeName, onRound, onGoSetup, onGoRoutes 
     )
   }
 
-  const total = route.stops.length
-  const remaining = route.stops.filter((s) => !handled.has(s.id)).length
+  const total = occs.length
+  const remaining = occs.filter((o) => !handled.has(o.key)).length
   const done = total - remaining
   const finished = total > 0 && remaining === 0
   const partial = done > 0 && remaining > 0
@@ -202,7 +229,13 @@ export function Round({ route, round, routeName, onRound, onGoSetup, onGoRoutes 
       </div>
 
       {current && (
-        <AlertOverlay stop={current} waiting={queue.length - 1} onHandled={() => markHandled(current.id)} onDismiss={() => drop(current.id)} />
+        <AlertOverlay
+          stop={current.stop}
+          pass={Number(current.key.split('#')[1] ?? 1)}
+          waiting={queue.length - 1}
+          onHandled={() => markHandled(current.key)}
+          onDismiss={() => drop(current.key)}
+        />
       )}
       {dialog}
     </div>

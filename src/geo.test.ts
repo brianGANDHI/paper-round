@@ -1,17 +1,21 @@
 import { describe, expect, it } from 'vitest'
-import { approachingStops, haversine, sideAt, simplify, snapToPath } from './geo'
+import {
+  alongPath,
+  approachingOccurrences,
+  cumulativeDistances,
+  distanceToPath,
+  haversine,
+  occurrences,
+  offsetPath,
+  sideAt,
+  simplify,
+  snapToPath,
+  snapWithin,
+} from './geo'
 import type { Pt, Stop } from './types'
 
 // ~111 m per 0.001 deg latitude. A straight north-south road.
 const road: Pt[] = Array.from({ length: 11 }, (_, i) => ({ lat: 51 + i * 0.001, lng: 0 }))
-
-const stop = (id: string, pathIdx: number, type: Stop['type']): Stop => ({
-  id,
-  pathIdx,
-  type,
-  lat: road[pathIdx].lat,
-  lng: 0,
-})
 
 describe('simplify', () => {
   it('drops collinear points', () => {
@@ -54,20 +58,220 @@ describe('sideAt', () => {
   })
 })
 
-describe('approachingStops', () => {
-  const stops = [stop('a', 3, 'bundle'), stop('b', 6, 'nothrow')]
-  it('alerts within radius only', () => {
-    expect(approachingStops(road[2], 2, stops, new Set())).toHaveLength(1)
-    expect(approachingStops(road[0], 0, stops, new Set())).toHaveLength(0)
+/** A straight road north (11 points, about 111 m apart), then the same road south again. */
+const outAndBack: Pt[] = [...road, ...road.slice(0, -1).reverse()]
+const stopOnStreet = (id: string, lat: number, type: Stop['type'] = 'nothrow'): Stop => ({
+  id,
+  type,
+  lat,
+  lng: 0.0002, // about 14 m east of the road
+  pathIdx: 0,
+})
+
+describe('a position on a road driven twice', () => {
+  it('carries on along the pass it is on', () => {
+    expect(snapToPath({ lat: 51.0035, lng: 0 }, outAndBack, 3)!.idx).toBe(3)
   })
-  it('ignores handled stops', () => {
-    expect(approachingStops(road[3], 3, stops, new Set(['a']))).toHaveLength(0)
+
+  it('moves to the return pass after the turn, not back to the first', () => {
+    // At the far end the driver turns round; the road is the same, but the way on is the return pass.
+    const s = snapToPath({ lat: 51.0075, lng: 0 }, outAndBack, 9)!
+    expect(s.idx).toBe(12)
+    expect(s.point.lat).toBeCloseTo(51.0075, 4)
   })
-  it('ignores stops already passed', () => {
-    expect(approachingStops({ lat: 51.0035, lng: 0 }, 8, stops, new Set())).toHaveLength(0)
+
+  it('stays on the first pass while driving it, even though the return pass is just as close', () => {
+    const s = snapToPath({ lat: 51.0045, lng: 0 }, outAndBack, 4)!
+    expect(s.idx).toBe(4)
   })
-  it('haversine sanity', () => {
-    expect(haversine(road[0], road[1])).toBeGreaterThan(105)
-    expect(haversine(road[0], road[1])).toBeLessThan(117)
+
+  it('uses the direction of travel to pick the return pass straight after the turn', () => {
+    // Just past the far end, heading south: the road is the same as the first pass, but this is the way back.
+    const here = { lat: 51.0095, lng: 0 }
+    expect(snapToPath(here, outAndBack, 9, 180)!.idx).toBe(10)
+    expect(snapToPath(here, outAndBack, 9, 0)!.idx).toBe(9)
+  })
+
+  it('does the same when each pass is a single long segment', () => {
+    const sparse: Pt[] = [{ lat: 51, lng: 0 }, { lat: 51.01, lng: 0 }, { lat: 51, lng: 0 }]
+    const here = { lat: 51.007, lng: 0 }
+    expect(snapToPath(here, sparse, 0, 0)!.idx).toBe(0)
+    expect(snapToPath(here, sparse, 0, 180)!.idx).toBe(1)
+  })
+
+  it('ignores the direction when there is none yet, and never lets it pull a position off the road', () => {
+    expect(snapToPath({ lat: 51.0035, lng: 0 }, road, 0, null)!.idx).toBe(3)
+    // Heading the wrong way along a road driven once still snaps to that road.
+    expect(snapToPath({ lat: 51.0035, lng: 0 }, road, 3, 180)!.idx).toBe(3)
+  })
+
+  it('can be asked about one pass only', () => {
+    const tap = { lat: 51.0055, lng: 0.00001 }
+    expect(snapWithin(tap, outAndBack, 0, 10)!.idx).toBe(5)
+    expect(snapWithin(tap, outAndBack, 10, 20)!.idx).toBe(14)
+  })
+})
+
+describe('along the route', () => {
+  it('measures distance from the start, down to a point inside a segment', () => {
+    const cum = cumulativeDistances(road)
+    expect(alongPath(cum, 0, 0)).toBe(0)
+    expect(alongPath(cum, 2, 0.5)).toBeCloseTo((cum[2] + cum[3]) / 2)
+    expect(alongPath(cum, 10, 0)).toBeCloseTo(cum[10])
+  })
+})
+
+describe('stops met along the route', () => {
+  it('gives a stop on a route driven once a single occurrence, keyed by its id', () => {
+    const occs = occurrences({ points: road, stops: [stopOnStreet('a', 51.0055)] })
+    expect(occs).toHaveLength(1)
+    expect(occs[0].key).toBe('a')
+    expect(occs[0].idx).toBe(5)
+  })
+
+  it('gives a stop on a street driven twice an occurrence for each pass, in route order', () => {
+    const occs = occurrences({ points: outAndBack, stops: [stopOnStreet('a', 51.0055)] })
+    expect(occs.map((o) => [o.key, o.idx])).toEqual([
+      ['a', 5],
+      ['a#2', 14],
+    ])
+    expect(occs[1].at).toBeGreaterThan(occs[0].at)
+  })
+
+  it('counts a stop at the turning point once, because the two passes meet there', () => {
+    const occs = occurrences({ points: outAndBack, stops: [stopOnStreet('end', 51.0099)] })
+    expect(occs).toHaveLength(1)
+  })
+
+  it("doesn't count a street that merely runs close by as another pass", () => {
+    // A second street 80 m away is much farther than the stop's own street.
+    const l: Pt[] = [...road, { lat: 51.01, lng: 0.0011 }, { lat: 51.0, lng: 0.0011 }]
+    const occs = occurrences({ points: l, stops: [stopOnStreet('a', 51.0055)] })
+    expect(occs).toHaveLength(1)
+  })
+
+  it('has nothing to say without a route or stops', () => {
+    expect(occurrences({ points: [], stops: [stopOnStreet('a', 51)] })).toEqual([])
+    expect(occurrences({ points: road, stops: [] })).toEqual([])
+  })
+})
+
+describe('stops on a road driven twice when it was drawn with only a few points', () => {
+  // The road drawn as one long straight segment out and one back, so the passes meet at the far end.
+  const sparse: Pt[] = [{ lat: 51, lng: 0 }, { lat: 51.01, lng: 0 }, { lat: 51, lng: 0 }]
+
+  it('finds both passes even though each is a single segment', () => {
+    const occs = occurrences({ points: sparse, stops: [stopOnStreet('mid', 51.005)] })
+    expect(occs.map((o) => o.key)).toEqual(['mid', 'mid#2'])
+    expect(occs[1].at - occs[0].at).toBeGreaterThan(1000)
+  })
+
+  it('finds both passes when the stop sits exactly on a point of the road', () => {
+    const withMiddle: Pt[] = [{ lat: 51, lng: 0 }, { lat: 51.005, lng: 0 }, { lat: 51.01, lng: 0 }, { lat: 51.005, lng: 0 }, { lat: 51, lng: 0 }]
+    const occs = occurrences({ points: withMiddle, stops: [stopOnStreet('on', 51.005)] })
+    expect(occs.map((o) => o.key)).toEqual(['on', 'on#2'])
+  })
+
+  it('still counts a stop at the far end once', () => {
+    expect(occurrences({ points: sparse, stops: [stopOnStreet('end', 51.0099)] })).toHaveLength(1)
+  })
+
+  it('still counts a stop on a road driven once, however long its segments', () => {
+    const once: Pt[] = [{ lat: 51, lng: 0 }, { lat: 51.01, lng: 0 }]
+    expect(occurrences({ points: once, stops: [stopOnStreet('only', 51.005)] })).toHaveLength(1)
+  })
+})
+
+describe('approaching a stop on a street driven twice', () => {
+  const route = { points: outAndBack, stops: [stopOnStreet('a', 51.0055), stopOnStreet('b', 51.0021, 'bundle')] }
+  const occs = occurrences(route)
+  const cum = cumulativeDistances(outAndBack)
+  /** What the driver sees at `lat` on pass 1 (south = false) or pass 2 (south = true). */
+  const at = (lat: number, south: boolean) => {
+    const idx = south ? 10 + Math.floor((51.01 - lat) / 0.001) : Math.floor((lat - 51) / 0.001)
+    const frac = south ? ((51.01 - lat) % 0.001) / 0.001 : ((lat - 51) % 0.001) / 0.001
+    return alongPath(cum, idx, frac)
+  }
+  const keys = (list: { key: string }[]) => list.map((o) => o.key)
+  const pos = (lat: number) => ({ lat, lng: 0 })
+
+  it("doesn't warn until the stop is within the alert distance ahead", () => {
+    expect(keys(approachingOccurrences(at(51.0035, false), pos(51.0035), occs, new Set()))).toEqual([])
+    expect(keys(approachingOccurrences(at(51.0047, false), pos(51.0047), occs, new Set()))).toEqual(['a'])
+  })
+
+  it("doesn't warn about the return pass while still driving the first", () => {
+    // Just past the stop on the way out: it is right beside the driver, but this pass is done with it.
+    const found = approachingOccurrences(at(51.0062, false), pos(51.0062), occs, new Set(['a']))
+    expect(keys(found)).not.toContain('a#2')
+  })
+
+  it('warns again on the way back, even though the first pass was handled', () => {
+    const found = approachingOccurrences(at(51.0063, true), pos(51.0063), occs, new Set(['a']))
+    expect(keys(found)).toEqual(['a#2'])
+  })
+
+  it('leaves out stops that are handled', () => {
+    expect(keys(approachingOccurrences(at(51.0047, false), pos(51.0047), occs, new Set(['a'])))).toEqual([])
+  })
+
+  it('forgives a stop just behind the driver, but not one well behind', () => {
+    const one = occurrences({ points: road, stops: [stopOnStreet('x', 51.005)] })
+    const stopAt = one[0].at
+    expect(approachingOccurrences(stopAt + 10, pos(51.0051), one, new Set())).toHaveLength(1)
+    expect(approachingOccurrences(stopAt + 60, pos(51.0055), one, new Set())).toHaveLength(0)
+  })
+
+  it('warns for a bundle drop from farther away than for a no-throw house', () => {
+    // Both are 133 m ahead: inside a bundle drop's 150 m, outside a no-throw's 100 m.
+    const pair = occurrences({ points: outAndBack, stops: [stopOnStreet('bundle', 51.0021, 'bundle'), stopOnStreet('house', 51.0021)] })
+    const found = approachingOccurrences(at(51.0009, false), pos(51.0009), pair, new Set())
+    expect(keys(found)).toEqual(['bundle'])
+  })
+})
+
+describe('drawing a pass beside the road it repeats', () => {
+  const east = (m: number) => m / 70050 // degrees of longitude in m metres, at this latitude
+
+  it("shifts a path to the right of the way it's heading", () => {
+    const shifted = offsetPath(road, 10)
+    for (const [i, q] of shifted.entries()) {
+      expect(q.lat).toBeCloseTo(road[i].lat, 6)
+      expect(q.lng - road[i].lng).toBeCloseTo(east(10), 6)
+    }
+  })
+
+  it('puts the return pass on the other side of the same road', () => {
+    const back = [...road].reverse()
+    const shifted = offsetPath(back, 10)
+    expect(shifted[0].lng - back[0].lng).toBeCloseTo(-east(10), 6)
+  })
+
+  it('shifts left for a negative amount, and leaves a path alone for none', () => {
+    expect(offsetPath(road, -10)[3].lng).toBeLessThan(road[3].lng)
+    expect(offsetPath(road, 0)).toBe(road)
+  })
+
+  it('keeps a corner joined without spiking outwards', () => {
+    const corner: Pt[] = [
+      { lat: 51, lng: 0 },
+      { lat: 51.001, lng: 0 },
+      { lat: 51.001, lng: 0.001 },
+    ]
+    const shifted = offsetPath(corner, 10)
+    const fromCorner = haversine(shifted[1], corner[1])
+    expect(fromCorner).toBeGreaterThanOrEqual(10)
+    expect(fromCorner).toBeLessThanOrEqual(20)
+  })
+
+  it('copes with repeated points and with too few points', () => {
+    const dupes: Pt[] = [road[0], road[0], road[1]]
+    expect(() => offsetPath(dupes, 5)).not.toThrow()
+    expect(offsetPath([road[0]], 5)).toHaveLength(1)
+  })
+
+  it('measures how far a position is from a path', () => {
+    expect(distanceToPath({ lat: 51.0055, lng: 0.0002 }, road)).toBeCloseTo(14, 0)
+    expect(distanceToPath({ lat: 51, lng: 0 }, [])).toBe(Infinity)
   })
 })

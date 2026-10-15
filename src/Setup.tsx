@@ -1,20 +1,23 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useDialogs } from './confirm'
 import { useGps } from './device'
 import { haversine, simplify } from './geo'
 import { searchPlaces } from './geocode'
 import { Icon } from './Icon'
 import { MapView, type ViewCmd } from './MapView'
+import { passViews } from './passes'
 import { RouteTab } from './RouteTab'
 import {
   appendPoint,
   MAX_STOP_OFFSET_M,
   removeLastPoint,
   removeSplit,
+  repeatSection,
   sections,
   setSectionSide,
   splitAt,
   stopAt,
+  type RepeatMode,
 } from './routeEdit'
 import { SidesTab } from './SidesTab'
 import { StopsTab } from './StopsTab'
@@ -56,7 +59,7 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
   const [stopQty, setStopQty] = useState('')
   const [stopLabel, setStopLabel] = useState('')
   const { fix, error } = useGps(true)
-  const { confirm, dialog } = useDialogs()
+  const { confirm, choose, dialog } = useDialogs()
   const lastRef = useRef<Pt | null>(null)
   const viewKey = useRef(0)
   const moved = useRef(false)
@@ -86,9 +89,10 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
   }
 
   const secs = sections(route)
+  const views = useMemo(() => passViews(route), [route])
   const hasRoute = route.points.length > 1
   const showing: Route = recording ? { ...route, points: trace, sideChanges: [], stops: [] } : route
-  const highlight = focus !== null && secs[focus] ? route.points.slice(secs[focus].idx, secs[focus].endIdx + 1) : undefined
+  const highlight = focus !== null ? views[focus]?.points : undefined
 
   // Route tab
   const startDraw = () => {
@@ -158,8 +162,30 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
 
   const focusSection = (index: number) => {
     setFocus(index)
-    const s = secs[index]
-    if (s) goTo({ bounds: route.points.slice(s.idx, s.endIdx + 1) })
+    const view = views[index]
+    if (view) goTo({ bounds: view.points })
+  }
+
+  /** Add another pass over a section: back along it, or along it again the same way. */
+  const repeat = async (index: number) => {
+    const mode = await choose<RepeatMode>({
+      title: `Repeat Section ${index + 1}`,
+      message: 'Adds this stretch to the end of your route as another pass, with a side of its own.',
+      choices: [
+        { value: 'back', label: 'Drive it back', detail: 'The same road, the other way' },
+        { value: 'again', label: 'Drive it again', detail: 'The same way, with a link back to its start' },
+      ],
+    })
+    if (!mode) return
+    const next = repeatSection(route, index, mode)
+    if (!next) return setNotice("That section can't be repeated.")
+    onChange(next)
+    const added = sections(next)
+    const last = added.length - 1
+    setFocus(last)
+    const pass = added[last]
+    goTo({ bounds: next.points.slice(pass.idx, pass.endIdx + 1) })
+    setNotice(`Added section ${last + 1}, ${mode === 'back' ? 'back along' : 'again along'} section ${index + 1}. Choose which side to throw on for this pass.`)
   }
 
   // Stops tab
@@ -179,7 +205,8 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
     if (tool === 'draw') {
       onChange(appendPoint(route, p))
     } else if (tool === 'split') {
-      const next = splitAt(route, p)
+      const chosen = focus !== null ? secs[focus] : undefined
+      const next = splitAt(route, p, chosen ? { from: chosen.idx, to: chosen.endIdx } : undefined)
       if (!next) return setNotice('Tap on the route, away from its very start and end.')
       setNotice(null)
       setFocus(null)
@@ -240,12 +267,14 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
         {tab === 'sides' && (
           <SidesTab
             route={route}
+            views={views}
             focus={focus}
             splitting={tool === 'split'}
             onSplitting={(on) => setTool(on ? 'split' : 'none')}
             onFocus={focusSection}
             onSide={changeSide}
             onMerge={merge}
+            onRepeat={repeat}
             onBack={() => switchTab('route')}
             onNext={() => switchTab('stops')}
           />

@@ -1,4 +1,4 @@
-import { cumulativeDistances, haversine, sideAt, snapToPath } from './geo'
+import { cumulativeDistances, haversine, sideAt, snapToPath, snapWithin, type Occurrence } from './geo'
 import type { Pt, Route, Side, SideChange, Stop, StopType } from './types'
 
 /** A tap within this distance of a split target counts as being on the route. */
@@ -92,12 +92,14 @@ export function removeSplit(route: Route, index: number): SideChange[] {
 }
 
 /**
- * Start a new stretch where `pos` touches the route. A point is added to the
+ * Start a new stretch where `pos` touches the route (or, with `range`, touches the
+ * segments in that range). A point is added to the
  * route when needed; both halves keep the side they had. Null when the tap is
  * off the route or at a spot that can't start a stretch.
  */
-export function splitAt(route: Route, pos: Pt): Route | null {
-  const snap = snapToPath(pos, route.points)
+export function splitAt(route: Route, pos: Pt, range?: { from: number; to: number }): Route | null {
+  // When a road is driven twice both passes lie under the tap, so `range` picks the pass to split.
+  const snap = range ? snapWithin(pos, route.points, range.from, range.to) : snapToPath(pos, route.points)
   if (!snap || snap.dist > SPLIT_TOLERANCE_M) return null
   const segs = segmentCount(route)
   const changes = normalizeSideChanges(route.sideChanges, segs)
@@ -124,6 +126,55 @@ export function splitAt(route: Route, pos: Pt): Route | null {
     return t >= snap.t ? { ...s, pathIdx: i + 1 } : s
   })
   return { points, sideChanges: normalizeSideChanges(shifted, segs + 1), stops }
+}
+
+export type RepeatMode = 'back' | 'again'
+
+/**
+ * The side a repeated pass starts with. Coming back along a road with the same label
+ * covers the other side of the street; going the same way again needs the opposite label.
+ */
+export function defaultRepeatSide(side: Side, mode: RepeatMode): Side {
+  if (side === 'both' || mode === 'back') return side
+  return side === 'left' ? 'right' : 'left'
+}
+
+/** A gap this small between the end of the route and the start of a repeated pass is the same spot. */
+const JOIN_M = 15
+
+/**
+ * Add another pass over a section to the end of the route: back along it, or along it
+ * again the same way. The new pass gets a side of its own. When it doesn't start where
+ * the route ends, the link between the two becomes a short section of its own on both sides.
+ */
+export function repeatSection(route: Route, index: number, mode: RepeatMode): Route | null {
+  const section = sections(route)[index]
+  if (!section) return null
+  const source = route.points.slice(section.idx, section.endIdx + 1)
+  if (source.length < 2) return null
+  const pass = mode === 'back' ? [...source].reverse() : source
+  const last = route.points[route.points.length - 1]
+  const joined = haversine(last, pass[0]) <= JOIN_M
+  const points = [...route.points, ...(joined ? pass.slice(1) : pass).map((q) => ({ ...q }))]
+  const first = segmentCount(route)
+  const side = defaultRepeatSide(section.side, mode)
+  const added: SideChange[] = joined ? [{ idx: first, side }] : [{ idx: first, side: 'both' }, { idx: first + 1, side }]
+  return {
+    ...route,
+    points,
+    sideChanges: normalizeSideChanges([...normalizeSideChanges(route.sideChanges, first), ...added], segmentCount({ points })),
+  }
+}
+
+/** The sides thrown to each time the route passes a stop, without repeats, in route order. */
+export function stopSides(route: Route, occs: Occurrence[], stopId: string): Side[] {
+  const sides: Side[] = []
+  for (const o of occs) {
+    if (o.stop.id !== stopId) continue
+    const side = sideAt(route, o.idx)
+    if (!sides.includes(side)) sides.push(side)
+  }
+  return sides
 }
 
 let nextId = 0

@@ -1,14 +1,17 @@
 import { describe, expect, it } from 'vitest'
-import { haversine, sideAt } from './geo'
+import { haversine, occurrences, sideAt } from './geo'
 import {
   appendPoint,
+  defaultRepeatSide,
   normalizeRoute,
   removeLastPoint,
   removeSplit,
+  repeatSection,
   sections,
   setSectionSide,
   splitAt,
   stopAt,
+  stopSides,
 } from './routeEdit'
 import type { Pt, Route } from './types'
 
@@ -155,5 +158,125 @@ describe('normalizeRoute', () => {
 
   it('copes with nothing at all', () => {
     expect(normalizeRoute(null)).toEqual({ points: [], sideChanges: [], stops: [] })
+  })
+})
+
+describe('which side a repeated pass starts on', () => {
+  it('keeps the label coming back, which covers the other side of the street', () => {
+    expect(defaultRepeatSide('left', 'back')).toBe('left')
+    expect(defaultRepeatSide('right', 'back')).toBe('right')
+  })
+
+  it('flips the label going the same way again', () => {
+    expect(defaultRepeatSide('left', 'again')).toBe('right')
+    expect(defaultRepeatSide('right', 'again')).toBe('left')
+  })
+
+  it('stays on both sides for both', () => {
+    expect(defaultRepeatSide('both', 'back')).toBe('both')
+    expect(defaultRepeatSide('both', 'again')).toBe('both')
+  })
+})
+
+describe('driving a section again', () => {
+  const oneWay = (): Route => ({ ...road(5), sideChanges: [{ idx: 0, side: 'left' }] })
+
+  it('adds the way back as a new section that carries on from where the route ends', () => {
+    const r = repeatSection(oneWay(), 0, 'back')!
+    expect(r.points).toHaveLength(9)
+    expect(r.points[8].lat).toBeCloseTo(pt(0).lat, 6)
+    expect(r.points[4]).toEqual(pt(4))
+    expect(r.points[5].lat).toBeCloseTo(pt(3).lat, 6)
+    expect(sections(r).map((x) => [x.idx, x.side])).toEqual([
+      [0, 'left'],
+      [4, 'left'],
+    ])
+  })
+
+  it('goes back along the road the opposite way round', () => {
+    const r = repeatSection(oneWay(), 0, 'back')!
+    const [first, second] = sections(r)
+    expect(first.endM).toBeCloseTo(second.startM)
+    expect(second.endM - second.startM).toBeCloseTo(first.endM - first.startM, 0)
+    expect(r.points.slice(4).map((q) => q.lat)).toEqual([...r.points.slice(0, 5).map((q) => q.lat)].reverse())
+  })
+
+  it('adds the same way again, with the other label, after a link from the end back to the start', () => {
+    const r = repeatSection(oneWay(), 0, 'again')!
+    expect(r.points).toHaveLength(10)
+    expect(sections(r).map((x) => [x.idx, x.side])).toEqual([
+      [0, 'left'],
+      [4, 'both'],
+      [5, 'right'],
+    ])
+    // The link is the first segment added: from where the route ended back to the start of the section.
+    expect(r.points[4]).toEqual(pt(4))
+    expect(r.points[5]).toEqual(pt(0))
+    expect(r.points[9]).toEqual(pt(4))
+  })
+
+  it('can repeat any section, not only the last, linking back to it', () => {
+    const base: Route = { ...road(7), sideChanges: [{ idx: 0, side: 'both' }, { idx: 3, side: 'right' }] }
+    const r = repeatSection(base, 0, 'back')!
+    expect(sections(r).map((x) => x.side)).toEqual(['both', 'right', 'both', 'both'])
+    expect(r.points.length).toBeGreaterThan(base.points.length)
+  })
+
+  it('leaves the original points, stops and sides as they were', () => {
+    const base = oneWay()
+    base.stops = [{ id: 'a', type: 'nothrow', pathIdx: 2, ...pt(2.5) }]
+    const r = repeatSection(base, 0, 'back')!
+    expect(r.points.slice(0, 5)).toEqual(base.points)
+    expect(r.stops).toEqual(base.stops)
+    expect(r.sideChanges[0]).toEqual({ idx: 0, side: 'left' })
+  })
+
+  it('copies points instead of sharing them with the original', () => {
+    const r = repeatSection(oneWay(), 0, 'again')!
+    expect(r.points[5]).not.toBe(r.points[0])
+  })
+
+  it('refuses a section that does not exist, or a route with nothing to repeat', () => {
+    expect(repeatSection(oneWay(), 3, 'back')).toBeNull()
+    expect(repeatSection(road(1), 0, 'back')).toBeNull()
+  })
+})
+
+describe('splitting the pass you mean', () => {
+  const twice = () => repeatSection({ ...road(11), sideChanges: [{ idx: 0, side: 'left' }] }, 0, 'back')!
+  const tap = { lat: 51.0055, lng: 0.00001 }
+
+  it('splits the first pass when the tap is not limited, since both lie under it', () => {
+    const s = splitAt(twice(), tap)!
+    expect(sections(s).map((x) => x.idx)).toEqual([0, 6, 11])
+  })
+
+  it('splits the return pass when told to look only there', () => {
+    const r = twice()
+    const second = sections(r)[1]
+    const s = splitAt(r, tap, { from: second.idx, to: second.endIdx })!
+    const idx = sections(s).map((x) => x.idx)
+    expect(idx[0]).toBe(0)
+    expect(idx[1]).toBe(10)
+    expect(idx[2]).toBeGreaterThan(10)
+  })
+})
+
+describe('the sides a stop is passed on', () => {
+  it('lists each side the stop is thrown to, without repeats', () => {
+    const base: Route = { ...road(11), sideChanges: [{ idx: 0, side: 'left' }] }
+    base.stops = [{ id: 's', type: 'nothrow', pathIdx: 5, lat: 51.0055, lng: 0.0002 }]
+    const out = repeatSection(base, 0, 'back')! // out along the road, then back along it
+    const twice: Route = { ...out, sideChanges: setSectionSide(out, 1, 'right') }
+    expect(occurrences(twice)).toHaveLength(2)
+    expect(stopSides(twice, occurrences(twice), 's')).toEqual(['left', 'right'])
+    expect(stopSides(out, occurrences(out), 's')).toEqual(['left'])
+  })
+
+  it('gives one side for a stop passed once, and nothing for an unknown stop', () => {
+    const base: Route = { ...road(11), sideChanges: [{ idx: 0, side: 'right' }] }
+    base.stops = [{ id: 's', type: 'bundle', pathIdx: 5, lat: 51.0055, lng: 0.0002 }]
+    expect(stopSides(base, occurrences(base), 's')).toEqual(['right'])
+    expect(stopSides(base, occurrences(base), 'nope')).toEqual([])
   })
 })
