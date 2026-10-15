@@ -12,6 +12,7 @@ Offline PWA for a fixed newspaper round. React + Vite, data in localStorage, no 
 **Round**: tap *Start Round* (unlocks sound, keeps the screen awake). You only get alerts for bundle drops and no-throw houses. Tap *Handled* to tick one off (several alerts queue up, no-throw first). The buttons at the top right follow your location or show the whole route, and *Reset* in the bottom card starts the round again.
 
 ## Notes
+- The map opens on Australia until it finds you or your route, and place searches lean toward Australia when you have no route yet.
 - Address lookup and place search use OpenStreetMap's free Nominatim service and need internet. House numbers are not always in OpenStreetMap: when only the street is found, the position is approximate and the app says so. Everything else works offline.
 - Your route and stops are saved on the device you use, so draw the route on the phone you will drive with.
 - Safari has no vibration API, so the no-throw warning is a flashing red screen plus a tone (the phone's silent switch mutes it). Vibration is used where supported.

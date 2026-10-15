@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { lookupAddress, parsePlaces, rate, searchPlaces, viewboxFor } from './geocode'
+import { AUSTRALIA } from './region'
 import type { Route } from './types'
 
 const route: Route = {
@@ -97,6 +98,23 @@ describe('lookupAddress', () => {
 })
 
 describe('searchPlaces', () => {
+  it('leans toward Australia, without restricting to it, when there is no route yet', async () => {
+    const f = mockFetch([house(-33.87, 151.21, 'Victoria Street, Sydney')])
+    const places = await searchPlaces('Victoria Street')
+    const url = new URL(f.mock.calls[0][0])
+    expect(url.searchParams.get('viewbox')).toBe(AUSTRALIA.viewbox)
+    expect(url.searchParams.get('bounded')).toBeNull()
+    expect(places).toHaveLength(1)
+  })
+
+  it('prefers the area around the route over Australia once there is one', async () => {
+    const f = mockFetch([])
+    await searchPlaces('Oak Road', { near: route.points })
+    const url = new URL(f.mock.calls[0][0])
+    expect(url.searchParams.get('viewbox')).toBe(viewboxFor(route.points))
+    expect(url.searchParams.get('viewbox')).not.toBe(AUSTRALIA.viewbox)
+  })
+
   it('leaves a gap between requests but stops waiting the moment it is cancelled', async () => {
     mockFetch([house(51, 0)])
     await searchPlaces('first')

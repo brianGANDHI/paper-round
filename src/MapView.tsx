@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { divIcon, type DivIcon } from 'leaflet'
 import {
   AttributionControl,
@@ -14,6 +14,7 @@ import {
 import 'leaflet/dist/leaflet.css'
 import { SIDE_COLOR, STOP_COLOR } from './colors'
 import { arrowsAlong, sideAt } from './geo'
+import { AUSTRALIA } from './region'
 import type { Pt, Route, Side } from './types'
 
 /** Ask the map to move. A new `key` makes it move again, even to the same place. */
@@ -52,6 +53,17 @@ function Fit({ points, bottomFrac }: { points: Pt[]; bottomFrac: number }) {
     // Fit once per route load, not on every point added.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [points.length > 1])
+  return null
+}
+
+/** Shows all of Australia, clear of any bottom panel. Runs once, when the map first opens. */
+function FitRegion({ bottomFrac }: { bottomFrac: number }) {
+  const map = useMap()
+  useEffect(() => {
+    fitTo(map, AUSTRALIA.bounds, bottomFrac)
+    // Later moves belong to the user, or to a view command such as finding their location.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
   return null
 }
 
@@ -138,15 +150,17 @@ export function MapView({
   view,
   onTap,
 }: Props) {
-  const start = position ?? route.points[0] ?? { lat: 51.5, lng: -0.12 }
+  const start = position ?? route.points[0]
+  // With nothing to show yet, open on Australia (decided once, when the map first appears).
+  const [opensOnDefault] = useState(() => !start)
   const arrows = useMemo(() => arrowsAlong(route.points, 150), [route.points])
   const runs = sideRuns(route)
   const first = route.points[0]
   const last = route.points[route.points.length - 1]
   return (
     <MapContainer
-      center={toLatLng(start)}
-      zoom={16}
+      center={toLatLng(start ?? AUSTRALIA.center)}
+      zoom={start ? 16 : AUSTRALIA.zoom}
       className="map"
       zoomControl={false}
       attributionControl={false}
@@ -213,6 +227,7 @@ export function MapView({
         </>
       )}
       <Clicks onTap={onTap} />
+      {opensOnDefault && <FitRegion bottomFrac={bottomFrac} />}
       <ViewController view={view} bottomFrac={bottomFrac} />
       {follow ? (
         <Follow pos={position} />

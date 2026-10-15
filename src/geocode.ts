@@ -1,4 +1,5 @@
 import { snapToPath } from './geo'
+import { AUSTRALIA } from './region'
 import type { Pt, Route } from './types'
 
 const ENDPOINT = 'https://nominatim.openstreetmap.org/search'
@@ -76,11 +77,11 @@ interface SearchOpts {
 
 export async function searchPlaces(query: string, opts: SearchOpts = {}): Promise<Place[]> {
   const params = new URLSearchParams({ format: 'jsonv2', q: query, limit: String(opts.limit ?? 3) })
-  const box = opts.near ? viewboxFor(opts.near) : null
-  if (box) {
-    params.set('viewbox', box)
-    if (opts.bounded) params.set('bounded', '1')
-  }
+  // Prefer results near the route; with no route yet, lean toward Australia. Only a hint:
+  // places elsewhere still come back if nothing matches nearby.
+  const box = (opts.near && viewboxFor(opts.near)) || AUSTRALIA.viewbox
+  params.set('viewbox', box)
+  if (opts.bounded && opts.near?.length) params.set('bounded', '1')
   await spaced(opts.signal)
   const res = await fetch(`${ENDPOINT}?${params}`, { signal: opts.signal, headers: { Accept: 'application/json' } })
   if (!res.ok) throw new Error(`Lookup failed (${res.status})`)
