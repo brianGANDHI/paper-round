@@ -355,3 +355,10 @@ describe('a small alert zone', () => {
     expect(approachingOccurrences(491, here, [o], new Set(), zone(10))).toHaveLength(1)
   })
 })
+
+describe('the throw side along a route with transit in it', () => {
+  it('is transit from where that stretch starts until the next change', () => {
+    const r = { sideChanges: [{ idx: 0, side: 'both' as const }, { idx: 3, side: 'transit' as const }, { idx: 6, side: 'left' as const }] }
+    expect([0, 2, 3, 5, 6, 9].map((i) => sideAt(r, i))).toEqual(['both', 'both', 'transit', 'transit', 'left', 'left'])
+  })
+})

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { sideNote, stopsWithoutSide } from './alerts'
+import { quietNoThrows, quietNote, sideNote, stopsWithoutSide } from './alerts'
 import { useDialogs } from './confirm'
 import { useGps } from './device'
 import { SIDE_COLOR, SIDE_LABEL } from './colors'
@@ -242,7 +242,12 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
   }
 
   // Throw side tab
-  const changeSide = (index: number, side: Side) => onChange({ ...route, sideChanges: setSectionSide(route, index, side) })
+  const changeSide = (index: number, side: Side) => {
+    const next = { ...route, sideChanges: setSectionSide(route, index, side) }
+    onChange(next)
+    // Nothing is thrown on transit, so no-throw houses there stay quiet: say so rather than let it be a surprise.
+    setNotice(side === 'transit' ? quietNote(quietNoThrows(next)) || null : null)
+  }
 
   const merge = (index: number) => {
     setFocus(null)
@@ -294,7 +299,8 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
     // Sections have been renumbered, so no section stays picked.
     setFocus(null)
     const length = routeLength(result.route.points.slice(result.from, result.to + 1))
-    setNotice(`Painted ${formatDistance(length)} for ${SIDE_LABEL[brush].toLowerCase()}.`)
+    const quiet = brush === 'transit' ? quietNote(quietNoThrows(result.route)) : ''
+    setNotice(`Painted ${formatDistance(length)} for ${SIDE_LABEL[brush].toLowerCase()}.${quiet ? ` ${quiet}` : ''}`)
   }
 
   const setPainting = (on: boolean) => {

@@ -86,8 +86,8 @@ export function RouteTab(p: Props) {
     return (
       <>
         <div className="brush">
-          <div className="brush-label">New points are thrown on</div>
-          <Segmented label="Side for the points you add" value={p.brush} options={BRUSH_OPTIONS} onChange={p.onBrush} />
+          <div className="brush-label">For new points</div>
+          <Segmented label="What the points you add are for" value={p.brush} options={BRUSH_OPTIONS} onChange={p.onBrush} />
         </div>
         <div className="btn-row tools">
           {/* While a road is being looked up, this cancels that tap instead of taking back the one before. */}

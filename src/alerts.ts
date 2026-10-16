@@ -74,9 +74,39 @@ export function alertSide(route: Pick<Route, 'points' | 'sideChanges'>, occs: Oc
   if (beside) return beside
   if (o.stop.type === 'nothrow') {
     const thrown = sideAt(route, o.idx)
-    if (thrown !== 'both') return thrown
+    if (thrown === 'left' || thrown === 'right') return thrown
   }
   return null
+}
+
+/** Whether the route is only being driven, with nothing thrown, where it passes this stop. */
+export const inTransit = (route: Pick<Route, 'sideChanges'>, o: Occurrence): boolean => sideAt(route, o.idx) === 'transit'
+
+/**
+ * The stops worth an alert. A no-throw house means nothing on a stretch where nothing is thrown at all,
+ * so it stays quiet there. A bundle drop still alerts, as it has nothing to do with throwing.
+ */
+export const alertable = (route: Pick<Route, 'sideChanges'>, occs: Occurrence[]): Occurrence[] =>
+  occs.filter((o) => !(o.stop.type === 'nothrow' && inTransit(route, o)))
+
+/** Whether every time the route passes this stop is on a stretch where nothing is thrown. */
+export function onlyInTransit(route: Pick<Route, 'sideChanges'>, occs: Occurrence[], stopId: string): boolean {
+  const passes = occs.filter((o) => o.stop.id === stopId)
+  return passes.length > 0 && passes.every((o) => inTransit(route, o))
+}
+
+/** How many no-throw houses sit on transit stretches, where they won't alert. */
+export function quietNoThrows(route: Pick<Route, 'points' | 'sideChanges' | 'stops'>): number {
+  const occs = occurrences(route)
+  return route.stops.filter((s) => s.type === 'nothrow' && onlyInTransit(route, occs, s.id)).length
+}
+
+/** What to tell the driver about no-throw houses that will stay quiet. Empty when there are none. */
+export function quietNote(count: number): string {
+  if (count === 0) return ''
+  return count === 1
+    ? "1 no-throw house is on a transit stretch, so it won't alert."
+    : `${count} no-throw houses are on transit stretches, so they won't alert.`
 }
 
 /** The side a stop is on for each time the route passes it, in route order. */
@@ -87,7 +117,9 @@ export function stopRoadSides(route: Pick<Route, 'points' | 'sideChanges'>, occs
 /** The no-throw houses among `added` whose side of the road can't be told, in a route that includes them. */
 export function stopsWithoutSide(route: Pick<Route, 'points' | 'sideChanges' | 'stops'>, added: Stop[]): Stop[] {
   const occs = occurrences(route)
-  return added.filter((s) => s.type === 'nothrow' && stopRoadSides(route, occs, s.id).every((side) => side === null))
+  return added.filter(
+    (s) => s.type === 'nothrow' && !onlyInTransit(route, occs, s.id) && stopRoadSides(route, occs, s.id).every((side) => side === null),
+  )
 }
 
 /** What to tell the driver when that many houses were added without a side. Empty when there are none. */

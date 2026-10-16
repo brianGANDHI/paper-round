@@ -1,6 +1,6 @@
 import { cleanName } from './library'
 import { newStopId, normalizeRoute } from './routeEdit'
-import type { Pt, Route, SideChange, Stop } from './types'
+import { isSide, type Pt, type Route, type SideChange, type Stop } from './types'
 
 export const BACKUP_APP = 'paper-round'
 export const BACKUP_VERSION = 1
@@ -100,7 +100,7 @@ function parseSideChanges(raw: unknown): SideChange[] {
     typeof c.idx === 'number' &&
     Number.isFinite(c.idx) &&
     c.idx >= 0 &&
-    (c.side === 'both' || c.side === 'left' || c.side === 'right')
+    isSide(c.side)
       ? [{ idx: Math.trunc(c.idx), side: c.side }]
       : [],
   )

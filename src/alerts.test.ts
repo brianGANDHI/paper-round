@@ -1,12 +1,17 @@
 import { describe, expect, it } from 'vitest'
 import {
   aheadText,
+  alertable,
   alertRadius,
   alertSide,
   ALERT_DISTANCES,
   BACK_OFF_SLACK_M,
   DEFAULT_ALERT_DISTANCE,
+  inTransit,
   isAlertDistance,
+  onlyInTransit,
+  quietNoThrows,
+  quietNote,
   sameWay,
   sideNote,
   stopRoadSides,
@@ -233,5 +238,78 @@ describe('telling the driver about houses with no side', () => {
     expect(sideNote(0)).toBe('')
     expect(sideNote(1)).toMatch(/Set side on it/)
     expect(sideNote(3)).toMatch(/3 of them/)
+  })
+})
+
+describe('where nothing is thrown at all', () => {
+  // A road heading north, thrown on the left for the first half and only driven for the second.
+  const north: Pt[] = Array.from({ length: 11 }, (_, i) => ({ lat: 51 + i * 0.001, lng: 0 }))
+  const mixed = (stops: Stop[]): Route => ({
+    points: north,
+    sideChanges: [{ idx: 0, side: 'left' }, { idx: 5, side: 'transit' }],
+    stops,
+  })
+  const house = (id: string, lat: number, extra: Partial<Stop> = {}): Stop => ({ id, type: 'nothrow', pathIdx: 0, lat, lng: 0.0002, ...extra })
+  const early = house('early', 51.002)
+  const late = house('late', 51.007)
+  const drop = house('drop', 51.007, { type: 'bundle' })
+
+  it('knows when the route passes a stop on a transit stretch', () => {
+    const r = mixed([early, late])
+    const [a, b] = occurrences(r)
+    expect([inTransit(r, a), inTransit(r, b)]).toEqual([false, true])
+  })
+
+  it('keeps a no-throw house there quiet, but not one elsewhere', () => {
+    const r = mixed([early, late])
+    expect(alertable(r, occurrences(r)).map((o) => o.stop.id)).toEqual(['early'])
+  })
+
+  it('still alerts for a bundle drop on a transit stretch, which has nothing to do with throwing', () => {
+    const r = mixed([early, drop])
+    expect(alertable(r, occurrences(r)).map((o) => o.stop.id)).toEqual(['early', 'drop'])
+  })
+
+  it('counts the no-throw houses that are quiet', () => {
+    expect(quietNoThrows(mixed([early, late]))).toBe(1)
+    expect(quietNoThrows(mixed([early]))).toBe(0)
+    expect(quietNoThrows(mixed([late, drop, house('late2', 51.0085)]))).toBe(2)
+  })
+
+  it('is only quiet when every pass of the house is in transit', () => {
+    // Out along a street thrown on the left, and back along it as transit.
+    const out = Array.from({ length: 6 }, (_, i) => ({ lat: 51 + i * 0.001, lng: 0 }))
+    const twice: Route = {
+      points: [...out, ...[...out].reverse().slice(1)],
+      sideChanges: [{ idx: 0, side: 'left' }, { idx: 5, side: 'transit' }],
+      stops: [house('s', 51.0025)],
+    }
+    const occs = occurrences(twice)
+    expect(occs).toHaveLength(2)
+    expect(onlyInTransit(twice, occs, 's')).toBe(false)
+    expect(alertable(twice, occs)).toHaveLength(1)
+    expect(onlyInTransit(twice, occs, 'nobody')).toBe(false)
+  })
+
+  it('never gives transit as the side a house is on', () => {
+    // On the line, so the throw side is all there is to go by, and a transit stretch throws nowhere.
+    const r: Route = { points: north, sideChanges: [{ idx: 0, side: 'transit' }], stops: [{ ...drop, type: 'nothrow', lng: 0 }] }
+    const [o] = occurrences(r)
+    expect(alertSide(r, [o], o)).toBeNull()
+  })
+
+  it('does not ask for a side for a house that stays quiet', () => {
+    const online = house('online', 51.007, { lng: 0 })
+    const r = mixed([online])
+    expect(stopsWithoutSide(r, [online])).toEqual([])
+    // The same house on a stretch where both sides are thrown to would have to be asked about.
+    const both: Route = { ...r, sideChanges: [{ idx: 0, side: 'both' }] }
+    expect(stopsWithoutSide(both, [online]).map((s) => s.id)).toEqual(['online'])
+  })
+
+  it('has something to say for one house or several, and nothing for none', () => {
+    expect(quietNote(0)).toBe('')
+    expect(quietNote(1)).toMatch(/^1 no-throw house is on a transit stretch/)
+    expect(quietNote(2)).toMatch(/^2 no-throw houses are on transit stretches/)
   })
 })

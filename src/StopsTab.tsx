@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { stopRoadSides, type RoadSide } from './alerts'
+import { onlyInTransit, stopRoadSides, type RoadSide } from './alerts'
 import { STOP_COLOR } from './colors'
 import { occurrences } from './geo'
 import { lookupAddress, type Match } from './geocode'
@@ -263,22 +263,25 @@ export function StopsTab(p: Props) {
           <ul className="group">
             {p.route.stops.map((s) => {
               const sides = stopRoadSides(p.route, occs, s.id)
+              // Nothing is thrown where it is only transit, so a no-throw house there never alerts and needs no side.
+              const quiet = s.type === 'nothrow' && onlyInTransit(p.route, occs, s.id)
+              const unknown = sides.every((x) => x === null)
               return (
                 <li className="row" key={s.id}>
                   <span className="dot" style={{ background: STOP_COLOR[s.type] }} />
                   <button className="grow rowbtn" onClick={() => p.onFocus(s)}>
                     <div className="title">{s.label ?? (s.type === 'bundle' ? 'Bundle drop' : 'No-throw house')}</div>
                     <div className="sub">
-                      {s.type === 'bundle' ? `Bundle${s.qty ? ` of ${s.qty}` : ''}` : 'No-throw'} · {sidesText(sides)}
+                      {s.type === 'bundle' ? `Bundle${s.qty ? ` of ${s.qty}` : ''}` : 'No-throw'} · {quiet ? 'in transit, so no alert' : sidesText(sides)}
                     </div>
                   </button>
                   <button
                     className="chip-btn"
-                    data-warn={sides.every((x) => x === null) || undefined}
+                    data-warn={(unknown && !quiet) || undefined}
                     aria-label={`Side of the road: ${sidesText(sides)}. Tap to change.`}
                     onClick={() => p.onPickSide(s.id)}
                   >
-                    {sides.every((x) => x === null) ? 'Set side' : SIDE_WORD[sides.find((x) => x) as RoadSide]}
+                    {unknown ? 'Set side' : SIDE_WORD[sides.find((x) => x) as RoadSide]}
                   </button>
                   <button className="icon-btn" aria-label={`Delete ${s.label ?? 'stop'}`} onClick={() => p.onRemove(s.id)}>
                     <Icon name="trash" size={20} />

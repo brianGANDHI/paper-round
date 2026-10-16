@@ -1,5 +1,5 @@
 import { alongPath, bearing, cumulativeDistances, haversine, sideAt, snapWithin, type Occurrence, type Snap } from './geo'
-import type { Pt, Route, Side, SideChange, Stop, StopType } from './types'
+import { isSide, type Pt, type Route, type Side, type SideChange, type Stop, type StopType } from './types'
 
 /** A tap within this distance of the route counts as being on it, when editing sections. */
 export const ON_ROUTE_M = 40
@@ -25,7 +25,7 @@ export function routeLength(points: Pt[]): number {
 export function normalizeSideChanges(changes: SideChange[], segs: number): SideChange[] {
   if (segs < 1) return []
   const byIdx = new Map<number, Side>()
-  for (const c of changes) if (c.idx >= 0 && c.idx < segs) byIdx.set(c.idx, c.side)
+  for (const c of changes) if (c.idx >= 0 && c.idx < segs) byIdx.set(c.idx, isSide(c.side) ? c.side : 'both')
   if (!byIdx.has(0)) byIdx.set(0, 'both')
   return [...byIdx.entries()].sort((a, b) => a[0] - b[0]).map(([idx, side]) => ({ idx, side }))
 }
@@ -287,7 +287,7 @@ export type RepeatMode = 'back' | 'again'
  * covers the other side of the street; going the same way again needs the opposite label.
  */
 export function defaultRepeatSide(side: Side, mode: RepeatMode): Side {
-  if (side === 'both' || mode === 'back') return side
+  if (side === 'both' || side === 'transit' || mode === 'back') return side
   return side === 'left' ? 'right' : 'left'
 }
 

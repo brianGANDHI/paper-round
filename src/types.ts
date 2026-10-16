@@ -3,7 +3,13 @@ export interface Pt {
   lng: number
 }
 
-export type Side = 'both' | 'left' | 'right'
+/**
+ * What is thrown along a stretch of the route: both sides, the left, the right, or nothing at all.
+ * Transit is only driving, such as between the places papers are delivered.
+ */
+export const SIDES = ['both', 'left', 'right', 'transit'] as const
+export type Side = (typeof SIDES)[number]
+export const isSide = (v: unknown): v is Side => SIDES.some((s) => s === v)
 export type StopType = 'bundle' | 'nothrow'
 
 /** Side applies from `idx` along the path until the next change. */

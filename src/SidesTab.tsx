@@ -11,6 +11,7 @@ const SIDE_OPTIONS: { value: Side; label: string; ariaLabel: string }[] = [
   { value: 'both', label: 'Both', ariaLabel: 'Both sides' },
   { value: 'left', label: 'Left', ariaLabel: 'Left side' },
   { value: 'right', label: 'Right', ariaLabel: 'Right side' },
+  { value: 'transit', label: 'Transit', ariaLabel: 'Transit, no throwing' },
 ]
 
 interface Props {
@@ -76,7 +77,8 @@ export function SidesTab({
       {!painting && (
         <p className="footnote">
           Left and right are as you face the way you drive, and the arrows on the map show that direction. Tap a line on the map to pick its
-          section, or paint a stretch of road with a side.
+          section, or paint a stretch of road with a side. Choose Transit, shown dotted, for a stretch where you only drive, between places you
+          deliver: nothing is thrown there, and no-throw houses on it stay quiet.
         </p>
       )}
 

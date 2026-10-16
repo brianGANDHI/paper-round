@@ -21,7 +21,7 @@ import {
   stopAt,
   stopSides,
 } from './routeEdit'
-import type { Pt, Route, Stop } from './types'
+import { isSide, SIDES, type Pt, type Route, type Stop } from './types'
 
 // A straight road running north, ~111 m between points.
 const pt = (i: number): Pt => ({ lat: 51 + i * 0.001, lng: 0 })
@@ -737,5 +737,63 @@ describe('finding the nearest part of the route', () => {
   it('can be limited to a range of segments', () => {
     const s = nearestOnRoute(loop, { lat: 51.00031, lng: 0.001 }, { from: 0, to: 59 })!
     expect(s.idx).toBeLessThan(59)
+  })
+})
+
+describe('transit stretches, where nothing is thrown', () => {
+  it('are one of the kinds of stretch a route can have', () => {
+    expect(SIDES).toEqual(['both', 'left', 'right', 'transit'])
+    expect(isSide('transit')).toBe(true)
+    for (const junk of ['Transit', 'none', 'up', '', null, undefined, 3]) expect(isSide(junk)).toBe(false)
+  })
+
+  it('start a new section as points are drawn with the transit brush', () => {
+    let r = road(1)
+    for (let i = 1; i <= 2; i++) r = appendPoint(r, pt(i), 'both')
+    for (let i = 3; i <= 4; i++) r = appendPoint(r, pt(i), 'transit')
+    r = appendPoint(r, pt(5), 'left')
+    expect(r.sideChanges).toEqual([
+      { idx: 0, side: 'both' },
+      { idx: 2, side: 'transit' },
+      { idx: 4, side: 'left' },
+    ])
+    expect(sideAt(r, 3)).toBe('transit')
+  })
+
+  it('can be painted over a stretch, and join the transit next to it', () => {
+    const r: Route = { ...road(8), sideChanges: [{ idx: 0, side: 'left' }, { idx: 3, side: 'transit' }, { idx: 6, side: 'right' }] }
+    expect(paintRange(r, 1, 3, 'transit').sideChanges).toEqual([
+      { idx: 0, side: 'left' },
+      { idx: 1, side: 'transit' },
+      { idx: 6, side: 'right' },
+    ])
+  })
+
+  it('can be chosen for a section from the list', () => {
+    const r: Route = { ...road(6), sideChanges: [{ idx: 0, side: 'left' }, { idx: 2, side: 'right' }] }
+    expect(setSectionSide(r, 1, 'transit')).toEqual([
+      { idx: 0, side: 'left' },
+      { idx: 2, side: 'transit' },
+    ])
+  })
+
+  it('stay transit when a section is repeated, rather than swapping like left and right', () => {
+    expect(defaultRepeatSide('transit', 'again')).toBe('transit')
+    expect(defaultRepeatSide('transit', 'back')).toBe('transit')
+    expect(defaultRepeatSide('left', 'again')).toBe('right')
+    const r: Route = { ...road(5), sideChanges: [{ idx: 0, side: 'transit' }] }
+    expect(repeatSection(r, 0, 'again')!.sideChanges.at(-1)!.side).toBe('transit')
+  })
+
+  it('survive tidying saved data, which only drops sides that are not real ones', () => {
+    const fixed = normalizeRoute({
+      points: road(6).points,
+      sideChanges: [{ idx: 0, side: 'transit' }, { idx: 2, side: 'sideways' as never }, { idx: 4, side: 'left' }],
+    })
+    expect(fixed.sideChanges).toEqual([
+      { idx: 0, side: 'transit' },
+      { idx: 2, side: 'both' },
+      { idx: 4, side: 'left' },
+    ])
   })
 })

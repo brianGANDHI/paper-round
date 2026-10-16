@@ -151,3 +151,26 @@ describe('the name a backup file is saved under', () => {
     expect(backupFileName('x'.repeat(200))).toBe(`Paper Round - ${'x'.repeat(60)}.txt`)
   })
 })
+
+describe('transit stretches in a backup', () => {
+  const withTransit: Route = {
+    ...route,
+    sideChanges: [
+      { idx: 0, side: 'left' },
+      { idx: 1, side: 'transit' },
+    ],
+  }
+
+  it('come back as they were saved', () => {
+    const back = ok(makeBackup([{ name: 'X', route: withTransit }]))
+    expect(back[0].route.sideChanges).toEqual([
+      { idx: 0, side: 'left' },
+      { idx: 1, side: 'transit' },
+    ])
+  })
+
+  it('leave out a side that is not one of the real ones, as an older app would for transit', () => {
+    const text = makeBackup([{ name: 'X', route: withTransit }]).replace('"side":"transit"', '"side":"hovering"')
+    expect(ok(text)[0].route.sideChanges).toEqual([{ idx: 0, side: 'left' }])
+  })
+})

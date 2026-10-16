@@ -16,7 +16,7 @@ import { SIDE_COLOR, STOP_COLOR } from './colors'
 import { arrowsAlong, haversine, occurrences } from './geo'
 import { passViews } from './passes'
 import { AUSTRALIA } from './region'
-import type { Pt, Route } from './types'
+import type { Pt, Route, Side } from './types'
 
 /** Ask the map to move. A new `key` makes it move again, even to the same place. */
 export interface ViewCmd {
@@ -29,6 +29,13 @@ export interface ViewCmd {
 const toLatLng = (p: Pt): [number, number] => [p.lat, p.lng]
 
 const LINE = { lineCap: 'round', lineJoin: 'round' } as const
+
+/** A stretch is a solid line in its colour, or a thinner dotted grey one where nothing is thrown. */
+function lineStyle(side: Side) {
+  return side === 'transit'
+    ? { casing: { weight: 8, opacity: 0.55 }, line: { weight: 4, dashArray: '0.5 9' } }
+    : { casing: { weight: 10, opacity: 0.95 }, line: { weight: 6 } }
+}
 
 function Follow({ pos }: { pos: Pt | null }) {
   const map = useMap()
@@ -264,10 +271,10 @@ export function MapView({
       )}
       {/* White casing first so the coloured line stays readable on any map background. */}
       {views.map((v) => (
-        <Polyline key={`c${v.index}`} positions={v.points.map(toLatLng)} pathOptions={{ ...LINE, color: '#fff', weight: 10, opacity: 0.95, interactive: false }} />
+        <Polyline key={`c${v.index}`} positions={v.points.map(toLatLng)} pathOptions={{ ...LINE, color: '#fff', ...lineStyle(v.side).casing, interactive: false }} />
       ))}
       {views.map((v) => (
-        <Polyline key={v.index} positions={v.points.map(toLatLng)} pathOptions={{ ...LINE, color: SIDE_COLOR[v.side], weight: 6, opacity: 1, interactive: false }} />
+        <Polyline key={v.index} positions={v.points.map(toLatLng)} pathOptions={{ ...LINE, color: SIDE_COLOR[v.side], opacity: 1, ...lineStyle(v.side).line, interactive: false }} />
       ))}
       {selectable &&
         views.map((v) => (

@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { AlertBanner } from './AlertBanner'
-import { alertRadius, alertSide, ALERT_DISTANCES, isAlertDistance, zoneExit, type AlertDistance } from './alerts'
+import { alertable, alertRadius, alertSide, ALERT_DISTANCES, isAlertDistance, zoneExit, type AlertDistance } from './alerts'
 import { SIDE_LABEL, SIDE_PILL } from './colors'
 import { useDialogs } from './confirm'
 import { alertBundle, alertNoThrow, unlockAudio, useGps, useWakeLock } from './device'
@@ -50,7 +50,9 @@ export function Round({ route, round, routeName, onRound, onGoSetup, onGoRoutes 
   const { confirm, choose, dialog } = useDialogs()
   const handled = useMemo(() => new Set(round.handledStopIds), [round])
   // Each time the route passes a stop is a separate warning, so a street driven twice warns on both passes.
-  const occs = useMemo(() => occurrences(route), [route])
+  const allOccs = useMemo(() => occurrences(route), [route])
+  // A no-throw house on a stretch where nothing is thrown at all has nothing to warn about.
+  const occs = useMemo(() => alertable(route, allOccs), [route, allOccs])
   const cum = useMemo(() => cumulativeDistances(route.points), [route.points])
 
   const [snapIdx, setSnapIdx] = useState(0)
@@ -106,7 +108,7 @@ export function Round({ route, round, routeName, onRound, onGoSetup, onGoRoutes 
   }, [fix, route, handled, occs, cum, radius])
 
   const current = queue.find((o) => o.stop.type === 'nothrow') ?? queue[0]
-  const currentSide = current ? alertSide(route, occs, current) : null
+  const currentSide = current ? alertSide(route, allOccs, current) : null
 
   const changeAlertDistance = (distance: AlertDistance) => {
     setAlertDistance(distance)
@@ -245,9 +247,10 @@ export function Round({ route, round, routeName, onRound, onGoSetup, onGoRoutes 
           />
         )}
         <div className="side-pill" style={{ background: SIDE_PILL[side] }}>
-          {side !== 'right' && <Icon name="arrow-left" size={22} strokeWidth={2.5} />}
+          {side === 'transit' && <Icon name="slash" size={22} strokeWidth={2.5} />}
+          {(side === 'left' || side === 'both') && <Icon name="arrow-left" size={22} strokeWidth={2.5} />}
           {SIDE_LABEL[side]}
-          {side !== 'left' && <Icon name="arrow-right" size={22} strokeWidth={2.5} />}
+          {(side === 'right' || side === 'both') && <Icon name="arrow-right" size={22} strokeWidth={2.5} />}
         </div>
       </div>
 
