@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { AlertOverlay } from './AlertOverlay'
+import { AlertBanner } from './AlertBanner'
+import { stillAhead } from './alerts'
 import { SIDE_LABEL, SIDE_PILL } from './colors'
 import { useDialogs } from './confirm'
 import { alertBundle, alertNoThrow, unlockAudio, useGps, useWakeLock } from './device'
@@ -52,6 +53,8 @@ export function Round({ route, round, routeName, onRound, onGoSetup, onGoRoutes 
   const cum = useMemo(() => cumulativeDistances(route.points), [route.points])
 
   const [snapIdx, setSnapIdx] = useState(0)
+  /** How far along the route the driver is, in metres. */
+  const [along, setAlong] = useState(0)
   const side = sideAt(route, snapIdx)
 
   useEffect(() => {
@@ -67,6 +70,12 @@ export function Round({ route, round, routeName, onRound, onGoSetup, onGoRoutes 
     idxRef.current = snap.idx
     setSnapIdx(snap.idx)
     const driverAt = alongPath(cum, snap.idx, snap.t)
+    setAlong(driverAt)
+    // An alert clears itself once its stop is well behind, so old ones never pile up over the map.
+    setQueue((q) => {
+      const keep = q.filter((o) => stillAhead(o, driverAt))
+      return keep.length === q.length ? q : keep
+    })
     const fresh = approachingOccurrences(driverAt, fix, occs, handled).filter((o) => !seen.current.has(o.key))
     if (!fresh.length) return
     fresh.forEach((o) => seen.current.add(o.key))
@@ -90,6 +99,7 @@ export function Round({ route, round, routeName, onRound, onGoSetup, onGoRoutes 
     heading.current = null
     lastMoved.current = null
     setSnapIdx(0)
+    setAlong(0)
     setQueue([])
     onRound({ handledStopIds: [] })
   }
@@ -179,6 +189,18 @@ export function Round({ route, round, routeName, onRound, onGoSetup, onGoRoutes 
       <MapView route={route} position={fix} handled={handled} follow={!overview} fitPosition bottomFrac={0.16} />
 
       <div className="map-top">
+        {/* Across the top, with the side pill below it, so the map and the side stay in view. */}
+        {current && (
+          <AlertBanner
+            key={current.key}
+            stop={current.stop}
+            pass={Number(current.key.split('#')[1] ?? 1)}
+            ahead={current.at - along}
+            waiting={queue.length - 1}
+            onHandled={() => markHandled(current.key)}
+            onDismiss={() => drop(current.key)}
+          />
+        )}
         <div className="side-pill" style={{ background: SIDE_PILL[side] }}>
           {side !== 'right' && <Icon name="arrow-left" size={22} strokeWidth={2.5} />}
           {SIDE_LABEL[side]}
@@ -228,15 +250,6 @@ export function Round({ route, round, routeName, onRound, onGoSetup, onGoRoutes 
         )}
       </div>
 
-      {current && (
-        <AlertOverlay
-          stop={current.stop}
-          pass={Number(current.key.split('#')[1] ?? 1)}
-          waiting={queue.length - 1}
-          onHandled={() => markHandled(current.key)}
-          onDismiss={() => drop(current.key)}
-        />
-      )}
       {dialog}
     </div>
   )

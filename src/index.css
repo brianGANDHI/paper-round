@@ -27,6 +27,7 @@
 
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --stop-alert-h: 72px;
   --font: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'SF Pro Display', system-ui, 'Helvetica Neue', Arial, sans-serif;
 }
 
@@ -282,7 +283,10 @@ p {
   left: 0;
   right: 0;
   display: flex;
-  justify-content: center;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
   pointer-events: none;
 }
 
@@ -305,6 +309,7 @@ p {
   z-index: 1000;
   top: calc(var(--safe-top) + 10px);
   right: 12px;
+  transition: top 0.25s ease;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -313,6 +318,11 @@ p {
   box-shadow: var(--shadow);
   -webkit-backdrop-filter: saturate(180%) blur(20px);
   backdrop-filter: saturate(180%) blur(20px);
+}
+
+/* While a stop alert is showing, the map buttons sit below it, level with the side pill. */
+.screen:has(.stop-alert) .fab-group {
+  top: calc(var(--safe-top) + 10px + var(--stop-alert-h) + 8px);
 }
 
 .fab {
@@ -813,88 +823,154 @@ button.row:active:not(:disabled) {
 }
 
 /* ------------------------------------------------------------------ *
- * Full-screen alerts and dialogs
+ * Stop alerts: a banner across the top of the map, so the map stays usable
  * ------------------------------------------------------------------ */
-.overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 3000;
+.stop-alert {
+  position: relative;
+  align-self: stretch;
+  box-sizing: border-box;
   display: flex;
-  flex-direction: column;
   align-items: center;
-  justify-content: center;
-  gap: 12px;
-  padding: calc(var(--safe-top) + 24px) 28px calc(var(--safe-bottom) + 24px);
+  gap: 10px;
+  height: var(--stop-alert-h);
+  padding: 0 8px 0 12px;
+  border-radius: 18px;
   color: #fff;
-  text-align: center;
-  animation: rise 0.22s ease-out;
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.3);
+  pointer-events: auto;
+  animation: drop 0.25s ease-out;
 }
 
-.overlay.blue {
+.stop-alert.blue {
   background: #0a63d6;
 }
 
-.overlay.red {
+.stop-alert.red {
   background: #e0241b;
-  animation: rise 0.22s ease-out, flash 0.8s steps(1) 0.22s infinite;
+  animation: drop 0.25s ease-out, flash 0.8s steps(1) 0.25s infinite;
 }
 
-.overlay .glyph {
+.stop-alert-glyph {
+  flex: none;
   display: grid;
   place-items: center;
-  width: 96px;
-  height: 96px;
-  margin-bottom: 8px;
+  width: 44px;
+  height: 44px;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.2);
-}
-
-.overlay h1 {
-  font-size: 44px;
+  background: rgba(255, 255, 255, 0.22);
+  font-size: 22px;
   font-weight: 800;
-  line-height: 1.05;
-  letter-spacing: -0.025em;
-}
-
-.overlay .qty {
-  font-size: 120px;
-  font-weight: 800;
-  line-height: 1;
-  letter-spacing: -0.04em;
+  letter-spacing: -0.02em;
   font-variant-numeric: tabular-nums;
 }
 
-.overlay .qty-label {
-  margin-top: -6px;
-  font-size: 20px;
-  font-weight: 500;
+.stop-alert-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.stop-alert-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 19px;
+  font-weight: 800;
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+}
+
+/* The address can run to two lines, since it is what says which house. */
+.stop-alert-sub {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  margin-top: 2px;
+  font-size: 14px;
+  line-height: 1.2;
+  opacity: 0.95;
+}
+
+.stop-alert-sub b {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.stop-alert-done {
+  flex: none;
+  height: 44px;
+  padding: 0 13px;
+  border-radius: 22px;
+  background: #fff;
+  color: #111;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.stop-alert-close {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 44px;
+  color: #fff;
   opacity: 0.85;
 }
 
-.overlay .detail {
-  max-width: 320px;
-  font-size: 22px;
-  font-weight: 500;
-  line-height: 1.25;
+/* On the narrowest phones, trim the banner so "No Throw" and "Bundle Drop" still fit in full. */
+@media (max-width: 350px) {
+  .stop-alert {
+    gap: 8px;
+    padding: 0 4px 0 10px;
+  }
+
+  .stop-alert-glyph {
+    width: 36px;
+    height: 36px;
+    font-size: 18px;
+  }
+
+  .stop-alert-title {
+    font-size: 17px;
+  }
+
+  .stop-alert-sub {
+    font-size: 13px;
+  }
+
+  .stop-alert-done {
+    padding: 0 10px;
+    font-size: 14px;
+  }
+
+  .stop-alert-close {
+    width: 30px;
+  }
 }
 
-.overlay .btn.primary {
-  width: min(100%, 320px);
-  margin-top: 20px;
-  color: #111;
+/* How many more are waiting, pinned to the banner's corner like a notification badge. */
+.stop-alert-more {
+  position: absolute;
+  top: -7px;
+  left: -5px;
+  display: grid;
+  place-items: center;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: 11px;
   background: #fff;
+  color: #111;
+  font-size: 12px;
+  font-weight: 700;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
 }
 
-.overlay .btn.plain {
-  color: #fff;
-  opacity: 0.9;
-}
-
-.overlay .more {
-  font-size: 15px;
-  opacity: 0.8;
-}
-
+/* ------------------------------------------------------------------ *
+ * Dialogs
+ * ------------------------------------------------------------------ */
 .scrim {
   position: fixed;
   inset: 0;
@@ -1376,6 +1452,13 @@ button.row:active:not(:disabled) {
   }
 }
 
+@keyframes drop {
+  from {
+    opacity: 0;
+    transform: translateY(-24px);
+  }
+}
+
 @keyframes rise {
   from {
     opacity: 0;
@@ -1405,7 +1488,7 @@ button.row:active:not(:disabled) {
     transition-duration: 0.01ms !important;
   }
 
-  .overlay.red {
+  .stop-alert.red {
     animation: none;
   }
 }
