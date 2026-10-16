@@ -96,3 +96,11 @@ export function alertNoThrow() {
   beep(440, 0.7, 0.25)
   navigator.vibrate?.([300, 150, 300, 150, 300])
 }
+
+/**
+ * Whether this is Safari in an ordinary tab on an iPhone or iPad, as opposed to the app added to the Home
+ * Screen. The two keep separate routes, so what is restored in one is not there in the other.
+ */
+export function inSafariTab(nav: { standalone?: boolean } = navigator as Navigator & { standalone?: boolean }): boolean {
+  return nav.standalone === false
+}

@@ -8,6 +8,9 @@ export const BACKUP_VERSION = 1
 /** Sanity limits, so a mistaken paste can't fill the phone. */
 const LIMITS = { chars: 5_000_000, routes: 100, points: 20_000, stops: 5_000 }
 
+/** The most a backup file may hold, which the text length limit already allows for. */
+export const MAX_BACKUP_CHARS = LIMITS.chars
+
 const HEADER = 'Paper Round backup'
 const NOT_A_BACKUP = "That doesn't look like a Paper Round backup. Paste the whole text you copied."
 
@@ -37,6 +40,17 @@ export function makeBackup(routes: BackupRoute[], now = new Date()): string {
     })),
   }
   return `${HEADER}\n${JSON.stringify(payload)}`
+}
+
+/** A name for the file a backup is saved as, fine on any computer or phone. */
+export function backupFileName(label: string): string {
+  const clean = label
+    .replace(/[\\/:*?"<>|\u201c\u201d]|\p{Cc}/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 60)
+    .trim()
+  return `Paper Round - ${clean || 'Routes'}.txt`
 }
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)

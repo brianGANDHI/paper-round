@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { makeBackup, parseBackup, type BackupRoute } from './backup'
+import { backupFileName, makeBackup, parseBackup, type BackupRoute } from './backup'
 import type { Route } from './types'
 
 const route: Route = {
@@ -130,5 +130,24 @@ describe('refusing what is not a usable backup', () => {
 
   it('rejects absurdly large input', () => {
     expect(error('x'.repeat(5_000_001))).toMatch(/too long/)
+  })
+})
+
+describe('the name a backup file is saved under', () => {
+  it('is the route name, as a text file', () => {
+    expect(backupFileName('Monday Round')).toBe('Paper Round - Monday Round.txt')
+  })
+
+  it('has nothing in it a computer or phone would object to', () => {
+    expect(backupFileName('Mon/Tue: "early" <1>')).toBe('Paper Round - Mon Tue early 1.txt')
+    expect(backupFileName('A\\B*C?D|E')).toBe('Paper Round - A B C D E.txt')
+    expect(backupFileName('Line\none\ttwo')).toBe('Paper Round - Line one two.txt')
+    expect(backupFileName('“Quoted”')).toBe('Paper Round - Quoted.txt')
+  })
+
+  it('falls back to a plain name, and is kept short', () => {
+    expect(backupFileName('')).toBe('Paper Round - Routes.txt')
+    expect(backupFileName('  /  ')).toBe('Paper Round - Routes.txt')
+    expect(backupFileName('x'.repeat(200))).toBe(`Paper Round - ${'x'.repeat(60)}.txt`)
   })
 })

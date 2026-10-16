@@ -8,8 +8,10 @@ import {
   deleteRoute,
   duplicateRoute,
   editActiveRoute,
+  importClashes,
   normalizeLibrary,
   renameRoute,
+  sameName,
   selectRoute,
   setActiveRound,
   uniqueName,
@@ -201,5 +203,76 @@ describe('normalizeLibrary', () => {
     expect(normalizeLibrary({ routes: [] })).toBeNull()
     expect(normalizeLibrary({ routes: ['junk'] })).toBeNull()
     expect(normalizeLibrary('text')).toBeNull()
+  })
+})
+
+describe('restoring a route that has the name of one already here', () => {
+  const withMondayAndTuesday = () => {
+    let lib = addRoute(createLibrary(), 'Monday', drawn(3))
+    lib = addRoute(lib, 'Tuesday', drawn(4))
+    return lib
+  }
+  const idOf = (lib: Library, name: string) => lib.routes.find((r) => r.name === name)!.id
+
+  it('treats names as the same whatever the case or spacing', () => {
+    expect(sameName('Monday', ' monday ')).toBe(true)
+    expect(sameName('Monday  Round', 'monday round')).toBe(true)
+    expect(sameName('Monday', 'Monday 2')).toBe(false)
+  })
+
+  it('names the routes here that the backup would collide with', () => {
+    const lib = withMondayAndTuesday()
+    expect(importClashes(lib, [{ name: 'monday' }, { name: 'Friday' }])).toEqual(['Monday'])
+    expect(importClashes(lib, [{ name: 'Friday' }])).toEqual([])
+    expect(importClashes(lib, [{ name: 'Monday' }, { name: 'TUESDAY' }])).toEqual(['Monday', 'Tuesday'])
+  })
+
+  it('collides with nothing on a fresh install, whose blank route is replaced anyway', () => {
+    expect(importClashes(createLibrary(), [{ name: 'My Round' }])).toEqual([])
+  })
+
+  it('keeps both by default, with the new one under a new name', () => {
+    const lib = addImported(withMondayAndTuesday(), [{ name: 'Monday', route: drawn(9) }], 1)
+    expect(names(lib)).toEqual(['My Round', 'Monday', 'Tuesday', 'Monday 2'])
+    expect(addImported(withMondayAndTuesday(), [{ name: 'Monday', route: drawn(9) }], 1, 'keep').routes).toHaveLength(4)
+  })
+
+  it('can replace the route of that name instead, keeping its place, name and standing', () => {
+    let lib = withMondayAndTuesday()
+    const monday = idOf(lib, 'Monday')
+    lib = setActiveRound({ ...lib, activeId: monday }, { handledStopIds: ['a'] })
+    lib = { ...lib, activeId: idOf(lib, 'Tuesday') }
+    const next = addImported(lib, [{ name: 'monday', route: drawn(7) }], 1234, 'replace')
+    expect(names(next)).toEqual(['My Round', 'Monday', 'Tuesday'])
+    const replaced = next.routes[1]
+    expect(replaced.id).toBe(monday)
+    expect(replaced.route.points).toHaveLength(7)
+    // The progress belonged to the old route, so it starts over.
+    expect(replaced.round.handledStopIds).toEqual([])
+    expect(replaced.updatedAt).toBe(1234)
+    expect(next.activeId).toBe(lib.activeId)
+  })
+
+  it('leaves the route in use in use when it is the one replaced', () => {
+    const lib = withMondayAndTuesday()
+    const active = lib.activeId
+    const next = addImported(lib, [{ name: 'Tuesday', route: drawn(6) }], 1, 'replace')
+    expect(next.activeId).toBe(active)
+    expect(activeRoute(next).route.points).toHaveLength(6)
+  })
+
+  it('still adds the routes with no match, and leaves the others alone, when replacing', () => {
+    const lib = withMondayAndTuesday()
+    const next = addImported(lib, [{ name: 'Monday', route: drawn(7) }, { name: 'Friday', route: drawn(5) }], 1, 'replace')
+    expect(names(next)).toEqual(['My Round', 'Monday', 'Tuesday', 'Friday'])
+    expect(next.routes.find((r) => r.name === 'Tuesday')).toEqual(lib.routes.find((r) => r.name === 'Tuesday'))
+  })
+
+  it('replaces the blank starter route the same way in either mode', () => {
+    for (const mode of ['keep', 'replace'] as const) {
+      const lib = addImported(createLibrary(), [{ name: 'My Round', route: drawn(5) }], 1, mode)
+      expect(names(lib)).toEqual(['My Round'])
+      expect(activeRoute(lib).route.points).toHaveLength(5)
+    }
   })
 })

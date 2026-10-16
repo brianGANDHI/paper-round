@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { makeBackup } from './backup'
+import { backupFileName, makeBackup, type BackupRoute } from './backup'
 import { BackupDialog, RestoreDialog } from './BackupDialogs'
 import { useDialogs } from './confirm'
 import { formatDate, plural } from './format'
@@ -10,9 +10,11 @@ import {
   addRoute,
   deleteRoute,
   duplicateRoute,
+  importClashes,
   renameRoute,
   selectRoute,
   uniqueName,
+  type ImportMode,
 } from './library'
 import { formatDistance, routeLength } from './routeEdit'
 import { Banner } from './ui'
@@ -26,7 +28,7 @@ interface Props {
 }
 
 type Notice = { text: string; warn?: boolean }
-type Sheet = { kind: 'backup'; title: string; text: string } | { kind: 'restore' } | null
+type Sheet = { kind: 'backup'; title: string; text: string; fileName: string } | { kind: 'restore' } | null
 
 function describe(r: SavedRoute): string {
   const { points, stops } = r.route
@@ -37,7 +39,7 @@ function describe(r: SavedRoute): string {
 }
 
 export function Routes({ library, update, onGoSetup }: Props) {
-  const { confirm, prompt, dialog } = useDialogs()
+  const { confirm, prompt, choose: ask, dialog } = useDialogs()
   const [notice, setNotice] = useState<Notice | null>(null)
   const [sheet, setSheet] = useState<Sheet>(null)
   const active = activeRoute(library)
@@ -96,7 +98,37 @@ export function Routes({ library, update, onGoSetup }: Props) {
       kind: 'backup',
       title: scope === 'one' ? `Back Up “${active.name}”` : `Back Up All Routes (${routes.length})`,
       text: makeBackup(routes),
+      fileName: backupFileName(scope === 'one' ? active.name : 'All Routes'),
     })
+  }
+
+  /** Add the routes from a backup. Asks first when one has the name of a route already here. */
+  const restore = async (routes: BackupRoute[]) => {
+    const clashes = importClashes(library, routes)
+    let mode: ImportMode = 'keep'
+    if (clashes.length) {
+      const one = clashes.length === 1
+      const picked = await ask<ImportMode>({
+        title: one ? `“${clashes[0]}” Is Already Here` : `${clashes.length} Routes Are Already Here`,
+        message: one
+          ? 'The backup has a route with the same name. Replace the one here, or keep both?'
+          : 'The backup has routes with the same names as some here. Replace those, or keep both?',
+        choices: [
+          { value: 'replace', label: 'Replace', detail: 'The route here is overwritten and its progress starts over' },
+          { value: 'keep', label: 'Keep Both', detail: 'The one from the backup is added under a new name' },
+        ],
+      })
+      if (!picked) return
+      mode = picked
+    }
+    update((lib) => addImported(lib, routes, Date.now(), mode))
+    setSheet(null)
+    const replaced = mode === 'replace' ? clashes.length : 0
+    const added = routes.length - replaced
+    const parts = []
+    if (added) parts.push(`Added ${plural(added, 'route', 'routes')}`)
+    if (replaced) parts.push(`${added ? 'replaced' : 'Replaced'} ${plural(replaced, 'route', 'routes')}`)
+    setNotice({ text: `${parts.join(', ')} from the backup.` })
   }
 
   return (
@@ -172,21 +204,12 @@ export function Routes({ library, update, onGoSetup }: Props) {
         </div>
 
         <p className="footnote">
-          Your routes are saved automatically on this phone and stay here for future runs. A backup is a piece of text you can keep in Notes, or paste into the app on another phone to move your routes across.
+          Your routes are saved automatically on this device and stay here for future runs. To plan a round on a computer, draw it there, tap Back Up and copy the text or save the file, then on your phone choose Restore from Backup and paste it in or open the file.
         </p>
       </div>
 
-      {sheet?.kind === 'backup' && <BackupDialog title={sheet.title} text={sheet.text} onClose={() => setSheet(null)} />}
-      {sheet?.kind === 'restore' && (
-        <RestoreDialog
-          onClose={() => setSheet(null)}
-          onRestore={(routes) => {
-            update((lib) => addImported(lib, routes))
-            setSheet(null)
-            setNotice({ text: `Added ${plural(routes.length, 'route', 'routes')} from the backup.` })
-          }}
-        />
-      )}
+      {sheet?.kind === 'backup' && <BackupDialog title={sheet.title} text={sheet.text} fileName={sheet.fileName} onClose={() => setSheet(null)} />}
+      {sheet?.kind === 'restore' && <RestoreDialog onClose={() => setSheet(null)} onRestore={restore} />}
       {dialog}
     </div>
   )

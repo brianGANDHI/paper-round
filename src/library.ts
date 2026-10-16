@@ -91,18 +91,45 @@ export function deleteRoute(lib: Library, id: string): Library {
   return { routes: remaining, activeId: remaining[Math.min(position, remaining.length - 1)].id }
 }
 
+/** Whether two route names are the same name, ignoring case and stray spaces. */
+export const sameName = (a: string, b: string) => cleanName(a).toLowerCase() === cleanName(b).toLowerCase()
+
+/** What to do when a backup has a route with the name of one already here. */
+export type ImportMode = 'keep' | 'replace'
+
 /**
- * Add routes from a backup. Nothing is overwritten. A blank starter route is
- * replaced rather than left beside the imported ones, and the first imported
- * route becomes the active one in that case.
+ * The routes already here that a backup would collide with by name. Nothing collides with the blank
+ * route a fresh install starts with, as that is replaced anyway.
  */
-export function addImported(lib: Library, imported: { name: string; route: Route }[], now = Date.now()): Library {
+export function importClashes(lib: Library, imported: { name: string }[]): string[] {
+  if (lib.routes.length === 1 && isPristine(lib.routes[0])) return []
+  return lib.routes.filter((r) => imported.some((i) => sameName(i.name, r.name))).map((r) => r.name)
+}
+
+/**
+ * Add routes from a backup. By default nothing is overwritten: a route with the name of one already here
+ * is added under a new name. With `replace`, it takes the place of the route with that name instead, which
+ * keeps its place in the list and starts its round over. A blank starter route is replaced rather than left
+ * beside the imported ones, and the first imported route becomes the active one in that case.
+ */
+export function addImported(
+  lib: Library,
+  imported: { name: string; route: Route }[],
+  now = Date.now(),
+  mode: ImportMode = 'keep',
+): Library {
   if (!imported.length) return lib
   const [only] = lib.routes
   const replaceStarter = lib.routes.length === 1 && isPristine(only)
   let next: Library = replaceStarter ? { routes: [], activeId: '' } : lib
   for (const item of imported) {
-    next = { ...next, routes: [...next.routes, makeRoute(uniqueName(next, item.name || 'Imported route'), item.route, now)] }
+    const existing = mode === 'replace' ? next.routes.find((r) => sameName(r.name, item.name)) : undefined
+    next = existing
+      ? {
+          ...next,
+          routes: next.routes.map((r) => (r.id === existing.id ? { ...r, route: item.route, round: freshRound(), updatedAt: now } : r)),
+        }
+      : { ...next, routes: [...next.routes, makeRoute(uniqueName(next, item.name || 'Imported route'), item.route, now)] }
   }
   return replaceStarter ? { ...next, activeId: next.routes[0].id } : next
 }
