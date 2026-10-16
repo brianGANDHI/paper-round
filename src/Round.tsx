@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { AlertBanner } from './AlertBanner'
-import { stillAhead } from './alerts'
+import { ALERT_DISTANCES, ALERT_RADIUS, zoneExit, type AlertDistance } from './alerts'
 import { SIDE_LABEL, SIDE_PILL } from './colors'
 import { useDialogs } from './confirm'
 import { alertBundle, alertNoThrow, unlockAudio, useGps, useWakeLock } from './device'
@@ -14,12 +14,14 @@ import {
   occurrences,
   sideAt,
   snapToPath,
+  stopSide,
   type Occurrence,
 } from './geo'
 import { Icon } from './Icon'
 import { MapView } from './MapView'
 import { formatDistance, routeLength } from './routeEdit'
-import { RouteChip } from './ui'
+import { loadAlertDistance, saveAlertDistance } from './storage'
+import { RouteChip, Segmented } from './ui'
 import type { Pt, RoundState, Route } from './types'
 
 /** The phone must move this far before its direction of travel is worked out again, so GPS jitter doesn't turn it. */
@@ -56,6 +58,16 @@ export function Round({ route, round, routeName, onRound, onGoSetup, onGoRoutes 
   /** How far along the route the driver is, in metres. */
   const [along, setAlong] = useState(0)
   const side = sideAt(route, snapIdx)
+  /** How close to a stop its alert shows, as the driver chose it. */
+  const [alertDistance, setAlertDistance] = useState(loadAlertDistance)
+  const radius = ALERT_RADIUS[alertDistance]
+  // The effect below reads what is showing, and the latest way to save progress, without re-running for them.
+  const queueRef = useRef(queue)
+  const onRoundRef = useRef(onRound)
+  useLayoutEffect(() => {
+    queueRef.current = queue
+    onRoundRef.current = onRound
+  })
 
   useEffect(() => {
     if (!fix) return
@@ -71,25 +83,35 @@ export function Round({ route, round, routeName, onRound, onGoSetup, onGoRoutes 
     setSnapIdx(snap.idx)
     const driverAt = alongPath(cum, snap.idx, snap.t)
     setAlong(driverAt)
-    // An alert clears itself once its stop is well behind, so old ones never pile up over the map.
-    setQueue((q) => {
-      const keep = q.filter((o) => stillAhead(o, driverAt))
-      return keep.length === q.length ? q : keep
+
+    // An alert has nothing to tap: it goes when you are away from its stop. Driving on past a stop counts
+    // it as done, and backing away from it first lets it alert again when you come back.
+    const left = queueRef.current.flatMap((o) => {
+      const exit = zoneExit(o, driverAt, radius)
+      return exit ? [{ o, exit }] : []
     })
-    const fresh = approachingOccurrences(driverAt, fix, occs, handled).filter((o) => !seen.current.has(o.key))
+    if (left.length) {
+      const gone = new Set(left.map((l) => l.o.key))
+      setQueue((q) => q.filter((o) => !gone.has(o.key)))
+      for (const l of left) if (l.exit === 'back') seen.current.delete(l.o.key)
+      const passed = left.filter((l) => l.exit === 'passed' && !handled.has(l.o.key)).map((l) => l.o.key)
+      if (passed.length) onRoundRef.current({ handledStopIds: [...handled, ...passed] })
+    }
+
+    const fresh = approachingOccurrences(driverAt, fix, occs, handled, radius).filter((o) => !seen.current.has(o.key))
     if (!fresh.length) return
     fresh.forEach((o) => seen.current.add(o.key))
     setQueue((q) => [...q, ...fresh])
     if (fresh.some((o) => o.stop.type === 'nothrow')) alertNoThrow()
     else alertBundle()
-  }, [fix, route, handled, occs, cum])
+  }, [fix, route, handled, occs, cum, radius])
 
   const current = queue.find((o) => o.stop.type === 'nothrow') ?? queue[0]
-  const drop = (key: string) => setQueue((q) => q.filter((o) => o.key !== key))
+  const currentSide = current ? stopSide(route.points, current.idx, current.stop) : null
 
-  const markHandled = (key: string) => {
-    onRound({ handledStopIds: [...round.handledStopIds, key] })
-    drop(key)
+  const changeAlertDistance = (distance: AlertDistance) => {
+    setAlertDistance(distance)
+    saveAlertDistance(distance)
   }
 
   /** Forget this run's progress, so every special stop counts as not done again. */
@@ -162,6 +184,13 @@ export function Round({ route, round, routeName, onRound, onGoSetup, onGoRoutes 
           <p className="fine">
             You'll only be alerted for bundle drops and no‑throw houses. Keep the phone unlocked and mounted, because GPS pauses when the screen is off.
           </p>
+          <div className="alert-setting">
+            <div className="brush-label">Alert distance</div>
+            <Segmented label="How close to a stop its alert shows" value={alertDistance} options={ALERT_DISTANCES} onChange={changeAlertDistance} />
+            <p className="fine">
+              No-throw houses at {radius.nothrow} m, bundle drops at {radius.bundle} m. Alerts clear by themselves once you are away from the stop.
+            </p>
+          </div>
           {partial ? (
             <>
               <button className="btn primary block" onClick={() => begin(false)}>
@@ -196,9 +225,8 @@ export function Round({ route, round, routeName, onRound, onGoSetup, onGoRoutes 
             stop={current.stop}
             pass={Number(current.key.split('#')[1] ?? 1)}
             ahead={current.at - along}
+            side={currentSide}
             waiting={queue.length - 1}
-            onHandled={() => markHandled(current.key)}
-            onDismiss={() => drop(current.key)}
           />
         )}
         <div className="side-pill" style={{ background: SIDE_PILL[side] }}>
@@ -226,7 +254,7 @@ export function Round({ route, round, routeName, onRound, onGoSetup, onGoRoutes 
               </div>
               <div className="grow">
                 <div className="status-title">All done</div>
-                <div className="sub">Every special stop is handled.</div>
+                <div className="sub">Every special stop is behind you.</div>
               </div>
             </>
           ) : (

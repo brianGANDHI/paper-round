@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { aheadText, CLEARS_AFTER_M, stillAhead } from './alerts'
-import type { Occurrence } from './geo'
+import { aheadText, ALERT_DISTANCES, ALERT_RADIUS, BACK_OFF_SLACK_M, DEFAULT_ALERT_DISTANCE, zoneExit } from './alerts'
+import { APPROACH_RADIUS, type Occurrence } from './geo'
 import type { StopType } from './types'
 
 const occ = (type: StopType, at: number): Occurrence => ({
@@ -10,30 +10,58 @@ const occ = (type: StopType, at: number): Occurrence => ({
   at,
 })
 
-describe('when an alert clears itself', () => {
-  it('stays while the stop is ahead', () => {
-    expect(stillAhead(occ('nothrow', 500), 400)).toBe(true)
-    expect(stillAhead(occ('bundle', 500), 400)).toBe(true)
+const normal = ALERT_RADIUS.normal
+
+describe('the distances alerts come at', () => {
+  it('are closer, on the usual setting, than the old fixed distances', () => {
+    expect(normal.nothrow).toBeLessThan(APPROACH_RADIUS.nothrow)
+    expect(normal.bundle).toBeLessThan(APPROACH_RADIUS.bundle)
   })
 
-  it('stays for a moment after the stop is passed, as when it is first noticed a little late', () => {
-    // The approach check still allows a stop up to 20 m behind, so it must still be showing then.
-    expect(stillAhead(occ('nothrow', 500), 520)).toBe(true)
-    expect(stillAhead(occ('bundle', 500), 520)).toBe(true)
+  it('grow from close to far, and give a bundle drop more room than a no-throw house', () => {
+    for (const type of ['nothrow', 'bundle'] as const) {
+      expect(ALERT_RADIUS.close[type]).toBeLessThan(ALERT_RADIUS.normal[type])
+      expect(ALERT_RADIUS.normal[type]).toBeLessThan(ALERT_RADIUS.far[type])
+    }
+    for (const { value } of ALERT_DISTANCES) expect(ALERT_RADIUS[value].bundle).toBeGreaterThan(ALERT_RADIUS[value].nothrow)
   })
 
-  it('clears a no-throw warning soon after the house is passed', () => {
-    expect(stillAhead(occ('nothrow', 500), 500 + CLEARS_AFTER_M.nothrow)).toBe(true)
-    expect(stillAhead(occ('nothrow', 500), 500 + CLEARS_AFTER_M.nothrow + 1)).toBe(false)
+  it('have a setting for each choice offered, and the usual one is among them', () => {
+    expect(ALERT_DISTANCES.map((d) => d.value).sort()).toEqual(Object.keys(ALERT_RADIUS).sort())
+    expect(ALERT_DISTANCES.map((d) => d.value)).toContain(DEFAULT_ALERT_DISTANCE)
+  })
+})
+
+describe('when the driver leaves the zone around a stop', () => {
+  it('has not left while the stop is ahead or only just behind', () => {
+    expect(zoneExit(occ('nothrow', 500), 470, normal)).toBeNull()
+    expect(zoneExit(occ('nothrow', 500), 500, normal)).toBeNull()
+    expect(zoneExit(occ('nothrow', 500), 530, normal)).toBeNull()
   })
 
-  it('gives a bundle drop longer, so there is time to tap Handled', () => {
-    expect(CLEARS_AFTER_M.bundle).toBeGreaterThan(CLEARS_AFTER_M.nothrow)
-    expect(stillAhead(occ('bundle', 500), 500 + CLEARS_AFTER_M.bundle)).toBe(true)
-    expect(stillAhead(occ('bundle', 500), 500 + CLEARS_AFTER_M.bundle + 1)).toBe(false)
-    // 45 m past: a bundle drop is still showing, a no-throw house is not.
-    expect(stillAhead(occ('bundle', 500), 545)).toBe(true)
-    expect(stillAhead(occ('nothrow', 500), 545)).toBe(false)
+  it('has passed the stop once it is further behind than the zone reaches', () => {
+    const edge = 500 + normal.nothrow
+    expect(zoneExit(occ('nothrow', 500), edge, normal)).toBeNull()
+    expect(zoneExit(occ('nothrow', 500), edge + 1, normal)).toBe('passed')
+  })
+
+  it('has gone back when the stop is further ahead than the zone, with room for GPS jitter', () => {
+    const edge = normal.nothrow + BACK_OFF_SLACK_M
+    expect(zoneExit(occ('nothrow', 500), 500 - edge, normal)).toBeNull()
+    expect(zoneExit(occ('nothrow', 500), 500 - edge - 1, normal)).toBe('back')
+    // Just outside the zone, before the slack runs out, is not yet a move away.
+    expect(zoneExit(occ('nothrow', 500), 500 - normal.nothrow - 1, normal)).toBeNull()
+  })
+
+  it('uses the zone of the kind of stop it is', () => {
+    // 50 m past: outside the zone of a no-throw house, still inside that of a bundle drop.
+    expect(zoneExit(occ('nothrow', 500), 550, normal)).toBe('passed')
+    expect(zoneExit(occ('bundle', 500), 550, normal)).toBeNull()
+  })
+
+  it('follows the chosen distance', () => {
+    expect(zoneExit(occ('nothrow', 500), 535, ALERT_RADIUS.close)).toBe('passed')
+    expect(zoneExit(occ('nothrow', 500), 535, ALERT_RADIUS.far)).toBeNull()
   })
 })
 

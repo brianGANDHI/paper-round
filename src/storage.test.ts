@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { activeRoute, addRoute, createLibrary } from './library'
-import { canSave, loadFollowRoads, loadLibrary, saveFollowRoads, saveLibrary } from './storage'
+import { canSave, loadAlertDistance, loadFollowRoads, loadLibrary, saveAlertDistance, saveFollowRoads, saveLibrary } from './storage'
 import type { Route } from './types'
 
 /** A stand-in for the phone's local storage. */
@@ -150,5 +150,50 @@ describe('the Follow roads switch', () => {
       store.data.set('paperround.followRoads', junk)
       expect(loadFollowRoads()).toBe(false)
     }
+  })
+})
+
+describe('the alert distance', () => {
+  let store: ReturnType<typeof fakeStorage>
+
+  beforeEach(() => {
+    store = fakeStorage()
+    vi.stubGlobal('localStorage', store)
+  })
+
+  it('starts on the usual setting', () => {
+    expect(loadAlertDistance()).toBe('normal')
+  })
+
+  it('stays as it was left', () => {
+    for (const distance of ['close', 'far', 'normal'] as const) {
+      saveAlertDistance(distance)
+      expect(loadAlertDistance()).toBe(distance)
+    }
+  })
+
+  it('is kept apart from the routes', () => {
+    saveAlertDistance('far')
+    expect(store.data.has('paperround.library.v2')).toBe(false)
+  })
+
+  it('reads anything unexpected as the usual setting', () => {
+    for (const junk of ['{not json', '"soon"', '40', 'null', '[]', '"CLOSE"']) {
+      store.data.set('paperround.alertDistance', junk)
+      expect(loadAlertDistance()).toBe('normal')
+    }
+  })
+
+  it('still lets the setting be changed on a phone that stores nothing', () => {
+    vi.stubGlobal('localStorage', {
+      getItem: () => {
+        throw new Error('no storage')
+      },
+      setItem: () => {
+        throw new Error('no storage')
+      },
+    })
+    expect(() => saveAlertDistance('close')).not.toThrow()
+    expect(loadAlertDistance()).toBe('normal')
   })
 })

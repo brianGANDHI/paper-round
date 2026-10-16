@@ -266,6 +266,21 @@ p {
   margin-top: 8px;
 }
 
+/* The alert distance choice on the start screen. */
+.alert-setting {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  max-width: 320px;
+  margin-top: 4px;
+  text-align: left;
+}
+
+.alert-setting .fine {
+  text-align: center;
+}
+
 /* ------------------------------------------------------------------ *
  * Map and floating map controls
  * ------------------------------------------------------------------ */
@@ -823,7 +838,8 @@ button.row:active:not(:disabled) {
 }
 
 /* ------------------------------------------------------------------ *
- * Stop alerts: a banner across the top of the map, so the map stays usable
+ * Stop alerts: a banner across the top of the map, so the map stays usable.
+ * It has nothing to tap, so touches go straight through it to the map.
  * ------------------------------------------------------------------ */
 .stop-alert {
   position: relative;
@@ -833,11 +849,11 @@ button.row:active:not(:disabled) {
   align-items: center;
   gap: 10px;
   height: var(--stop-alert-h);
-  padding: 0 8px 0 12px;
+  padding: 0 12px;
   border-radius: 18px;
   color: #fff;
   box-shadow: 0 6px 22px rgba(0, 0, 0, 0.3);
-  pointer-events: auto;
+  pointer-events: none;
   animation: drop 0.25s ease-out;
 }
 
@@ -850,23 +866,46 @@ button.row:active:not(:disabled) {
   animation: drop 0.25s ease-out, flash 0.8s steps(1) 0.25s infinite;
 }
 
+/* Which side of the road the stop is on: an arrow and the word, at that edge of the banner. */
+.stop-alert-side {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 48px;
+  padding: 0 14px 0 10px;
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.24);
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+.stop-alert.right .stop-alert-side {
+  padding: 0 10px 0 14px;
+}
+
+/* When the stop is on the line of the road itself, there is no side to show: just what kind of stop it is. */
 .stop-alert-glyph {
   flex: none;
   display: grid;
   place-items: center;
-  width: 44px;
-  height: 44px;
+  width: 48px;
+  height: 48px;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.22);
-  font-size: 22px;
-  font-weight: 800;
-  letter-spacing: -0.02em;
-  font-variant-numeric: tabular-nums;
+  background: rgba(255, 255, 255, 0.24);
 }
 
 .stop-alert-text {
   flex: 1;
   min-width: 0;
+}
+
+.stop-alert-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
 }
 
 .stop-alert-title {
@@ -877,6 +916,14 @@ button.row:active:not(:disabled) {
   font-weight: 800;
   line-height: 1.15;
   letter-spacing: -0.02em;
+}
+
+.stop-alert-dist {
+  flex: none;
+  font-size: 17px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 /* The address can run to two lines, since it is what says which house. */
@@ -895,58 +942,40 @@ button.row:active:not(:disabled) {
 
 .stop-alert-sub b {
   font-weight: 700;
-  font-variant-numeric: tabular-nums;
-}
-
-.stop-alert-done {
-  flex: none;
-  height: 44px;
-  padding: 0 13px;
-  border-radius: 22px;
-  background: #fff;
-  color: #111;
-  font-size: 15px;
-  font-weight: 700;
-}
-
-.stop-alert-close {
-  flex: none;
-  display: grid;
-  place-items: center;
-  width: 34px;
-  height: 44px;
-  color: #fff;
-  opacity: 0.85;
 }
 
 /* On the narrowest phones, trim the banner so "No Throw" and "Bundle Drop" still fit in full. */
 @media (max-width: 350px) {
   .stop-alert {
     gap: 8px;
-    padding: 0 4px 0 10px;
+    padding: 0 10px;
+  }
+
+  .stop-alert-side {
+    height: 44px;
+    padding: 0 12px 0 8px;
+    font-size: 17px;
+  }
+
+  .stop-alert.right .stop-alert-side {
+    padding: 0 8px 0 12px;
   }
 
   .stop-alert-glyph {
-    width: 36px;
-    height: 36px;
-    font-size: 18px;
+    width: 44px;
+    height: 44px;
   }
 
   .stop-alert-title {
     font-size: 17px;
   }
 
+  .stop-alert-dist {
+    font-size: 15px;
+  }
+
   .stop-alert-sub {
     font-size: 13px;
-  }
-
-  .stop-alert-done {
-    padding: 0 10px;
-    font-size: 14px;
-  }
-
-  .stop-alert-close {
-    width: 30px;
   }
 }
 

@@ -1,3 +1,4 @@
+import { ALERT_DISTANCES, DEFAULT_ALERT_DISTANCE, type AlertDistance } from './alerts'
 import { createLibrary, DEFAULT_NAME, makeRoute, normalizeLibrary } from './library'
 import { normalizeRoute } from './routeEdit'
 import type { Library, RoundState, Route } from './types'
@@ -5,6 +6,7 @@ import type { Library, RoundState, Route } from './types'
 /** Where everything is kept on the phone. */
 const LIBRARY_KEY = 'paperround.library.v2'
 const FOLLOW_ROADS_KEY = 'paperround.followRoads'
+const ALERT_DISTANCE_KEY = 'paperround.alertDistance'
 
 /** The single route and its progress, as saved by earlier versions of the app. */
 const LEGACY_ROUTE_KEY = 'paperround.route.v1'
@@ -63,6 +65,20 @@ export function saveFollowRoads(on: boolean): void {
     localStorage.setItem(FOLLOW_ROADS_KEY, JSON.stringify(on))
   } catch {
     // The phone won't store it; the switch just starts off next time.
+  }
+}
+
+/** How close to a stop its alert comes, as the driver last chose it. Anything unexpected reads as the usual setting. */
+export function loadAlertDistance(): AlertDistance {
+  const saved = read(ALERT_DISTANCE_KEY)
+  return ALERT_DISTANCES.find((d) => d.value === saved)?.value ?? DEFAULT_ALERT_DISTANCE
+}
+
+export function saveAlertDistance(distance: AlertDistance): void {
+  try {
+    localStorage.setItem(ALERT_DISTANCE_KEY, JSON.stringify(distance))
+  } catch {
+    // The phone won't store it; the usual setting comes back next time.
   }
 }
 

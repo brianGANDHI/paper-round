@@ -11,6 +11,7 @@ import {
   simplify,
   snapToPath,
   snapWithin,
+  stopSide,
 } from './geo'
 import type { Pt, Stop } from './types'
 
@@ -273,5 +274,60 @@ describe('drawing a pass beside the road it repeats', () => {
   it('measures how far a position is from a path', () => {
     expect(distanceToPath({ lat: 51.0055, lng: 0.0002 }, road)).toBeCloseTo(14, 0)
     expect(distanceToPath({ lat: 51, lng: 0 }, [])).toBe(Infinity)
+  })
+})
+
+describe('which side of the road a stop is on', () => {
+  // The road runs north, so a stop at a positive longitude is to its east. 0.0001 degrees of
+  // longitude is about 7 m here.
+  const beside = (lat: number, lng: number): Pt => ({ lat, lng })
+  const south = [...road].reverse()
+
+  it('is the right for a stop to the east of a road heading north, and the left for one to the west', () => {
+    expect(stopSide(road, 4, beside(51.0045, 0.0002))).toBe('right')
+    expect(stopSide(road, 4, beside(51.0045, -0.0002))).toBe('left')
+  })
+
+  it('swaps when the same road is driven the other way', () => {
+    // Reversed, segment 5 runs from 51.005 down to 51.004.
+    expect(stopSide(south, 5, beside(51.0045, 0.0002))).toBe('left')
+    expect(stopSide(south, 5, beside(51.0045, -0.0002))).toBe('right')
+  })
+
+  it('goes by the heading of the road, so for one heading east the north side is the left', () => {
+    const east = Array.from({ length: 5 }, (_, i) => ({ lat: 51, lng: i * 0.001 }))
+    expect(stopSide(east, 2, beside(51.0001, 0.0025))).toBe('left')
+    expect(stopSide(east, 2, beside(50.9999, 0.0025))).toBe('right')
+  })
+
+  it('says nothing for a stop on the line of the road itself', () => {
+    expect(stopSide(road, 4, beside(51.0045, 0))).toBeNull()
+    // 1.4 m off is still on the line, 4.9 m off is beside it.
+    expect(stopSide(road, 4, beside(51.0045, 0.00002))).toBeNull()
+    expect(stopSide(road, 4, beside(51.0045, 0.00007))).toBe('right')
+  })
+
+  it('uses the segment it is given at a corner', () => {
+    // North for 100 m, then east. The stop is inside the turn: east of the first leg, south of the second.
+    const corner: Pt[] = [
+      { lat: 51, lng: 0 },
+      { lat: 51.0009, lng: 0 },
+      { lat: 51.0009, lng: 0.0014 },
+    ]
+    const inside = beside(51.0007, 0.0001)
+    expect(stopSide(corner, 0, inside)).toBe('right')
+    expect(stopSide(corner, 1, inside)).toBe('right')
+    // Outside the turn it is on the left of both.
+    const outside = beside(51.0011, -0.0001)
+    expect(stopSide(corner, 0, outside)).toBe('left')
+    expect(stopSide(corner, 1, outside)).toBe('left')
+  })
+
+  it('has no answer without a segment to go by', () => {
+    const stop = beside(51.0045, 0.0002)
+    expect(stopSide(road, 10, stop)).toBeNull()
+    expect(stopSide(road, -1, stop)).toBeNull()
+    expect(stopSide([], 0, stop)).toBeNull()
+    expect(stopSide([road[0], road[0]], 0, stop)).toBeNull()
   })
 })

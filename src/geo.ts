@@ -247,6 +247,7 @@ export function sideAt(route: Pick<Route, 'sideChanges'>, idx: number): Side {
   return side
 }
 
+/** How far ahead a stop alerts when no other distances are given. The app passes the driver's own choice. */
 export const APPROACH_RADIUS: Record<Stop['type'], number> = {
   bundle: 150,
   nothrow: 100,
@@ -347,4 +348,29 @@ export function approachingOccurrences(
       return ahead <= r && ahead >= -PASSED_M && haversine(pos, o.stop) <= r + LATERAL_SLACK_M
     })
     .sort((a, b) => haversine(pos, a.stop) - haversine(pos, b.stop))
+}
+
+/** A stop nearer than this to the line of the road has no side worth showing. */
+const SIDE_MIN_M = 3
+
+/**
+ * Which side of the road a stop is on, as the route goes past it: the left or right of the way you
+ * are heading. Null when it sits on the line itself, so there is no telling. `idx` is the segment
+ * that passes it, as an occurrence gives it, so a street driven twice has a side for each pass.
+ */
+export function stopSide(points: Pt[], idx: number, stop: Pt): 'left' | 'right' | null {
+  const a = points[idx]
+  const b = points[idx + 1]
+  if (!a || !b) return null
+  const [ax, ay] = project(a, a.lat)
+  const [bx, by] = project(b, a.lat)
+  const [px, py] = project(stop, a.lat)
+  const dx = bx - ax
+  const dy = by - ay
+  const len = Math.hypot(dx, dy)
+  if (len === 0) return null
+  // The cross product of the way you are heading with the way to the stop is positive on your left.
+  const offset = (dx * (py - ay) - dy * (px - ax)) / len
+  if (Math.abs(offset) < SIDE_MIN_M) return null
+  return offset > 0 ? 'left' : 'right'
 }
