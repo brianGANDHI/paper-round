@@ -161,30 +161,37 @@ describe('the alert distance', () => {
     vi.stubGlobal('localStorage', store)
   })
 
-  it('starts on the usual setting', () => {
-    expect(loadAlertDistance()).toBe('normal')
+  it('starts on the usual 40 m', () => {
+    expect(loadAlertDistance()).toBe(40)
   })
 
   it('stays as it was left', () => {
-    for (const distance of ['close', 'far', 'normal'] as const) {
+    for (const distance of [10, 60, 30, 40] as const) {
       saveAlertDistance(distance)
       expect(loadAlertDistance()).toBe(distance)
     }
   })
 
   it('is kept apart from the routes', () => {
-    saveAlertDistance('far')
+    saveAlertDistance(60)
     expect(store.data.has('paperround.library.v2')).toBe(false)
   })
 
-  it('reads anything unexpected as the usual setting', () => {
-    for (const junk of ['{not json', '"soon"', '40', 'null', '[]', '"CLOSE"']) {
-      store.data.set('paperround.alertDistance', junk)
-      expect(loadAlertDistance()).toBe('normal')
+  it('carries over what earlier versions called Close, Normal and Far', () => {
+    for (const [old, metres] of [['close', 20], ['normal', 40], ['far', 60]] as const) {
+      store.data.set('paperround.alertDistance', JSON.stringify(old))
+      expect(loadAlertDistance()).toBe(metres)
     }
   })
 
-  it('still lets the setting be changed on a phone that stores nothing', () => {
+  it('reads anything unexpected as the usual distance', () => {
+    for (const junk of ['{not json', '"soon"', '35', '0', '100', 'null', '[]', '"CLOSE"', '"40"']) {
+      store.data.set('paperround.alertDistance', junk)
+      expect(loadAlertDistance()).toBe(40)
+    }
+  })
+
+  it('still lets the distance be changed on a phone that stores nothing', () => {
     vi.stubGlobal('localStorage', {
       getItem: () => {
         throw new Error('no storage')
@@ -193,7 +200,7 @@ describe('the alert distance', () => {
         throw new Error('no storage')
       },
     })
-    expect(() => saveAlertDistance('close')).not.toThrow()
-    expect(loadAlertDistance()).toBe('normal')
+    expect(() => saveAlertDistance(20)).not.toThrow()
+    expect(loadAlertDistance()).toBe(40)
   })
 })

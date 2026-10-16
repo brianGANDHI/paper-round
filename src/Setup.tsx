@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { sideNote, stopsWithoutSide } from './alerts'
 import { useDialogs } from './confirm'
 import { useGps } from './device'
 import { SIDE_COLOR, SIDE_LABEL } from './colors'
@@ -304,16 +305,45 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
   }
 
   // Stops tab
-  const addStops = (stops: Stop[]) => onChange({ ...route, stops: [...route.stops, ...stops] })
+  const addStops = (stops: Stop[]) => {
+    const next = { ...route, stops: [...route.stops, ...stops] }
+    onChange(next)
+    return sideNote(stopsWithoutSide(next, stops).length)
+  }
+
+  /** Which side of the road a stop is on, picked by hand: for when the map can't say, or has it wrong. */
+  const pickSide = async (id: string) => {
+    const stop = route.stops.find((s) => s.id === id)
+    if (!stop) return
+    const picked = await choose({
+      title: 'Which Side of the Road?',
+      message: 'As you drive past it the first time. Going the other way it swaps.',
+      choices: [
+        { value: 'left', label: 'Left' },
+        { value: 'right', label: 'Right' },
+        ...(stop.side ? [{ value: 'map', label: 'Work It Out From the Map', detail: 'Use where it sits beside the road' }] : []),
+      ],
+    })
+    if (picked !== 'left' && picked !== 'right' && picked !== 'map') return
+    const stops = route.stops.map((s) => {
+      if (s.id !== id) return s
+      const next = { ...s }
+      if (picked === 'map') delete next.side
+      else next.side = picked
+      return next
+    })
+    onChange({ ...route, stops })
+    setNotice(null)
+  }
 
   const placeStop = (p: Pt) => {
     const qty = stopType === 'bundle' ? Number.parseInt(stopQty, 10) || undefined : undefined
     const hit = stopAt(route, p, stopType, { label: stopLabel.trim() || undefined, qty })
     if (!hit) return setNotice('Draw your route first.')
     if (hit.offM > MAX_STOP_OFFSET_M) return setNotice(`That spot is ${Math.round(hit.offM)} m from your route. Tap closer to it.`)
-    addStops([hit.stop])
+    const note = addStops([hit.stop])
     setStopLabel('')
-    setNotice(null)
+    setNotice(note || null)
   }
 
   const onTap = (p: Pt) => {
@@ -434,6 +464,7 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
             canMark={!!fix}
             onMarkHere={() => fix && placeStop(fix)}
             onAdd={addStops}
+            onPickSide={pickSide}
             onRemove={(id) => onChange({ ...route, stops: route.stops.filter((s) => s.id !== id) })}
             onFocus={(p) => goTo({ center: p, zoom: 18 })}
             onNotice={setNotice}

@@ -73,6 +73,7 @@ function parseStops(raw: unknown, label: string): Stop[] | string {
     }
     if (typeof s.qty === 'number' && Number.isFinite(s.qty) && s.qty > 0) stop.qty = Math.trunc(s.qty)
     if (typeof s.label === 'string' && s.label.trim()) stop.label = s.label.trim().slice(0, 120)
+    if (s.side === 'left' || s.side === 'right') stop.side = s.side
     stops.push(stop)
   }
   return stops

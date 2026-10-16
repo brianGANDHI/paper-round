@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { AlertBanner } from './AlertBanner'
-import { ALERT_DISTANCES, ALERT_RADIUS, zoneExit, type AlertDistance } from './alerts'
+import { alertRadius, alertSide, ALERT_DISTANCES, isAlertDistance, zoneExit, type AlertDistance } from './alerts'
 import { SIDE_LABEL, SIDE_PILL } from './colors'
 import { useDialogs } from './confirm'
 import { alertBundle, alertNoThrow, unlockAudio, useGps, useWakeLock } from './device'
@@ -14,7 +14,6 @@ import {
   occurrences,
   sideAt,
   snapToPath,
-  stopSide,
   type Occurrence,
 } from './geo'
 import { Icon } from './Icon'
@@ -48,7 +47,7 @@ export function Round({ route, round, routeName, onRound, onGoSetup, onGoRoutes 
   const heading = useRef<number | null>(null)
   const { fix, error } = useGps(started)
   const wake = useWakeLock(started)
-  const { confirm, dialog } = useDialogs()
+  const { confirm, choose, dialog } = useDialogs()
   const handled = useMemo(() => new Set(round.handledStopIds), [round])
   // Each time the route passes a stop is a separate warning, so a street driven twice warns on both passes.
   const occs = useMemo(() => occurrences(route), [route])
@@ -60,7 +59,7 @@ export function Round({ route, round, routeName, onRound, onGoSetup, onGoRoutes 
   const side = sideAt(route, snapIdx)
   /** How close to a stop its alert shows, as the driver chose it. */
   const [alertDistance, setAlertDistance] = useState(loadAlertDistance)
-  const radius = ALERT_RADIUS[alertDistance]
+  const radius = useMemo(() => alertRadius(alertDistance), [alertDistance])
   // The effect below reads what is showing, and the latest way to save progress, without re-running for them.
   const queueRef = useRef(queue)
   const onRoundRef = useRef(onRound)
@@ -107,11 +106,22 @@ export function Round({ route, round, routeName, onRound, onGoSetup, onGoRoutes 
   }, [fix, route, handled, occs, cum, radius])
 
   const current = queue.find((o) => o.stop.type === 'nothrow') ?? queue[0]
-  const currentSide = current ? stopSide(route.points, current.idx, current.stop) : null
+  const currentSide = current ? alertSide(route, occs, current) : null
 
   const changeAlertDistance = (distance: AlertDistance) => {
     setAlertDistance(distance)
     saveAlertDistance(distance)
+  }
+
+  /** On the road: pick another distance without going back to the start screen. */
+  const pickDistance = async () => {
+    const picked = await choose({
+      title: 'Alert Distance',
+      message: 'How close to a stop its alert comes up. It goes again once you are further away than this.',
+      choices: ALERT_DISTANCES.map((d) => ({ value: String(d), label: `${d} m`, detail: d === alertDistance ? 'Current setting' : undefined })),
+    })
+    const metres = Number(picked)
+    if (picked && isAlertDistance(metres)) changeAlertDistance(metres)
   }
 
   /** Forget this run's progress, so every special stop counts as not done again. */
@@ -186,9 +196,14 @@ export function Round({ route, round, routeName, onRound, onGoSetup, onGoRoutes 
           </p>
           <div className="alert-setting">
             <div className="brush-label">Alert distance</div>
-            <Segmented label="How close to a stop its alert shows" value={alertDistance} options={ALERT_DISTANCES} onChange={changeAlertDistance} />
+            <Segmented
+              label="How close to a stop its alert comes up, in metres"
+              value={String(alertDistance)}
+              options={ALERT_DISTANCES.map((d) => ({ value: String(d), label: String(d) }))}
+              onChange={(v) => changeAlertDistance(Number(v) as AlertDistance)}
+            />
             <p className="fine">
-              No-throw houses at {radius.nothrow} m, bundle drops at {radius.bundle} m. Alerts clear by themselves once you are away from the stop.
+              In metres. An alert comes up when you are within {alertDistance} m of a stop, and goes by itself once you are further away than that.
             </p>
           </div>
           {partial ? (
@@ -262,7 +277,16 @@ export function Round({ route, round, routeName, onRound, onGoSetup, onGoRoutes 
               <div className="big-number">{remaining}</div>
               <div className="grow">
                 <div className="status-title">{remaining === 1 ? 'special stop left' : 'special stops left'}</div>
-                <div className="sub">{fix ? 'Alerts appear as you approach.' : 'Finding your location...'}</div>
+                <div className="sub">
+                  {fix ? (
+                    <button className="status-link" aria-label={`Alerts come up at ${alertDistance} metres. Tap to change.`} onClick={pickDistance}>
+                      Alerts at {alertDistance} m
+                      <Icon name="chevron-right" size={14} strokeWidth={2.6} />
+                    </button>
+                  ) : (
+                    'Finding your location...'
+                  )}
+                </div>
               </div>
             </>
           )}

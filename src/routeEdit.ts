@@ -38,7 +38,11 @@ export function normalizeRoute(r: Partial<Route> | null | undefined): Route {
   return {
     points,
     sideChanges: normalizeSideChanges(Array.isArray(r?.sideChanges) ? r.sideChanges : [], segs),
-    stops: stops.map((s) => ({ ...s, pathIdx: Math.min(Math.max(0, s.pathIdx), Math.max(0, segs - 1)) })),
+    stops: stops.map(({ side, ...s }) => ({
+      ...s,
+      pathIdx: Math.min(Math.max(0, s.pathIdx), Math.max(0, segs - 1)),
+      ...(side === 'left' || side === 'right' ? { side } : {}),
+    })),
   }
 }
 

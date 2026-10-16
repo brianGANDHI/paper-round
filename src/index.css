@@ -399,6 +399,33 @@ p {
   letter-spacing: -0.01em;
 }
 
+/* The side of the road a stop is on, as a small button in the stop list. */
+.chip-btn {
+  flex: none;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: var(--fill);
+  color: var(--tint);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.chip-btn[data-warn] {
+  background: rgba(255, 149, 0, 0.18);
+  color: var(--warn-text);
+}
+
+/* The alert distance, as a link under the count, so it can be changed on the road. */
+.status-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px 0;
+  color: var(--tint);
+  font-size: 15px;
+  font-weight: 500;
+}
+
 .status-warn {
   display: flex;
   align-items: center;

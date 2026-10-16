@@ -1,26 +1,20 @@
-import type { Occurrence } from './geo'
-import type { Stop } from './types'
+import { bearing, occurrences, sideAt, stopSide, type Occurrence } from './geo'
+import type { Route, Stop } from './types'
 
-/** How close you have to be to a stop before its banner shows, which the driver can change before a round. */
-export type AlertDistance = 'close' | 'normal' | 'far'
+/** How near a stop you have to be, in metres, for its alert to come up. The driver picks one of these. */
+export const ALERT_DISTANCES = [10, 20, 30, 40, 50, 60] as const
 
-export const ALERT_DISTANCES: { value: AlertDistance; label: string }[] = [
-  { value: 'close', label: 'Close' },
-  { value: 'normal', label: 'Normal' },
-  { value: 'far', label: 'Far' },
-]
+export type AlertDistance = (typeof ALERT_DISTANCES)[number]
 
-export const DEFAULT_ALERT_DISTANCE: AlertDistance = 'normal'
+export const DEFAULT_ALERT_DISTANCE: AlertDistance = 40
+
+export const isAlertDistance = (v: unknown): v is AlertDistance => ALERT_DISTANCES.some((d) => d === v)
 
 /**
- * The zone around a stop, in metres, in which its banner shows: from this far before it until this
- * far past it. A bundle drop gets more room than a no-throw house, as the car has to stop for it.
+ * The zone around a stop in which its banner shows: from this far before it until this far past it,
+ * for either kind of stop.
  */
-export const ALERT_RADIUS: Record<AlertDistance, Record<Stop['type'], number>> = {
-  close: { nothrow: 25, bundle: 40 },
-  normal: { nothrow: 40, bundle: 60 },
-  far: { nothrow: 70, bundle: 100 },
-}
+export const alertRadius = (distance: AlertDistance): Record<Stop['type'], number> => ({ nothrow: distance, bundle: distance })
 
 /** Backing away only ends a banner this far outside the zone, so GPS jitter at its edge can't set it off again and again. */
 export const BACK_OFF_SLACK_M = 15
@@ -45,4 +39,61 @@ export function aheadText(ahead: number): string {
   if (ahead <= -10) return 'Passed'
   if (ahead < 15) return 'Now'
   return `${Math.round(ahead / 10) * 10} m`
+}
+
+/** Whether the route runs the same way along two of its segments, as opposed to back the other way. */
+export function sameWay(points: { lat: number; lng: number }[], i: number, j: number): boolean {
+  const a = points[i]
+  const b = points[i + 1]
+  const c = points[j]
+  const d = points[j + 1]
+  if (!a || !b || !c || !d) return true
+  const turn = Math.abs(((bearing(a, b) - bearing(c, d) + 540) % 360) - 180)
+  return turn <= 90
+}
+
+export type RoadSide = 'left' | 'right'
+
+const opposite = (side: RoadSide): RoadSide => (side === 'left' ? 'right' : 'left')
+
+/**
+ * Which side of the road a stop is on as the route passes it this time: the left or right of the way
+ * you are driving. A side picked by hand wins, and swaps on a pass the other way along the street.
+ * Otherwise it is worked out from where the stop sits beside the route. A no-throw house right on
+ * the line falls back to the side the route throws on there, since that is the side it matters on.
+ * Null when none of these can say.
+ */
+export function alertSide(route: Pick<Route, 'points' | 'sideChanges'>, occs: Occurrence[], o: Occurrence): RoadSide | null {
+  const picked = o.stop.side
+  if (picked) {
+    if (o.key === o.stop.id) return picked
+    const first = occs.find((x) => x.key === o.stop.id)
+    return !first || sameWay(route.points, first.idx, o.idx) ? picked : opposite(picked)
+  }
+  const beside = stopSide(route.points, o.idx, o.stop)
+  if (beside) return beside
+  if (o.stop.type === 'nothrow') {
+    const thrown = sideAt(route, o.idx)
+    if (thrown !== 'both') return thrown
+  }
+  return null
+}
+
+/** The side a stop is on for each time the route passes it, in route order. */
+export function stopRoadSides(route: Pick<Route, 'points' | 'sideChanges'>, occs: Occurrence[], stopId: string): (RoadSide | null)[] {
+  return occs.filter((o) => o.stop.id === stopId).map((o) => alertSide(route, occs, o))
+}
+
+/** The no-throw houses among `added` whose side of the road can't be told, in a route that includes them. */
+export function stopsWithoutSide(route: Pick<Route, 'points' | 'sideChanges' | 'stops'>, added: Stop[]): Stop[] {
+  const occs = occurrences(route)
+  return added.filter((s) => s.type === 'nothrow' && stopRoadSides(route, occs, s.id).every((side) => side === null))
+}
+
+/** What to tell the driver when that many houses were added without a side. Empty when there are none. */
+export function sideNote(count: number): string {
+  if (count === 0) return ''
+  return count === 1
+    ? "Which side of the road it is on couldn't be told, so tap Set side on it in the list."
+    : `Which side of the road ${count} of them are on couldn't be told, so tap Set side on each in the list.`
 }

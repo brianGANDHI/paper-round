@@ -21,7 +21,7 @@ import {
   stopAt,
   stopSides,
 } from './routeEdit'
-import type { Pt, Route } from './types'
+import type { Pt, Route, Stop } from './types'
 
 // A straight road running north, ~111 m between points.
 const pt = (i: number): Pt => ({ lat: 51 + i * 0.001, lng: 0 })
@@ -166,6 +166,18 @@ describe('normalizeRoute', () => {
 
   it('copes with nothing at all', () => {
     expect(normalizeRoute(null)).toEqual({ points: [], sideChanges: [], stops: [] })
+  })
+
+  it('keeps a side picked by hand for a stop, and drops anything else in its place', () => {
+    const stop = (id: string, side: unknown) => ({ id, pathIdx: 0, type: 'nothrow' as const, ...pt(1), side } as Stop)
+    const r = normalizeRoute({
+      points: road(3).points,
+      stops: [stop('a', 'left'), stop('b', 'right'), stop('c', 'both'), stop('d', 'LEFT'), stop('e', 3), stop('f', undefined)],
+    })
+    expect(r.stops.map((s) => s.side)).toEqual(['left', 'right', undefined, undefined, undefined, undefined])
+    // Not even an empty entry is left behind.
+    expect(Object.keys(r.stops[2])).not.toContain('side')
+    expect(Object.keys(r.stops[5])).not.toContain('side')
   })
 })
 

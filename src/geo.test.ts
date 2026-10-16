@@ -12,6 +12,7 @@ import {
   snapToPath,
   snapWithin,
   stopSide,
+  type Occurrence,
 } from './geo'
 import type { Pt, Stop } from './types'
 
@@ -329,5 +330,28 @@ describe('which side of the road a stop is on', () => {
     expect(stopSide(road, -1, stop)).toBeNull()
     expect(stopSide([], 0, stop)).toBeNull()
     expect(stopSide([road[0], road[0]], 0, stop)).toBeNull()
+  })
+})
+
+describe('a small alert zone', () => {
+  const stop: Stop = { id: 's', type: 'nothrow', pathIdx: 0, lat: 51.005, lng: 0 }
+  const o: Occurrence = { key: 's', stop, idx: 4, at: 500 }
+  const here: Pt = { lat: 51.005, lng: 0 }
+  const zone = (m: number) => ({ nothrow: m, bundle: m })
+
+  it('does not alert for a stop already further behind than the zone reaches', () => {
+    // 15 m past the stop: inside a zone of 20 m or more, outside one of 10 m.
+    expect(approachingOccurrences(515, here, [o], new Set(), zone(10))).toHaveLength(0)
+    expect(approachingOccurrences(515, here, [o], new Set(), zone(20))).toHaveLength(1)
+  })
+
+  it('still alerts for a stop just behind, within the zone', () => {
+    expect(approachingOccurrences(510, here, [o], new Set(), zone(10))).toHaveLength(1)
+    expect(approachingOccurrences(511, here, [o], new Set(), zone(10))).toHaveLength(0)
+  })
+
+  it('alerts only once the stop is within the zone ahead', () => {
+    expect(approachingOccurrences(489, here, [o], new Set(), zone(10))).toHaveLength(0)
+    expect(approachingOccurrences(491, here, [o], new Set(), zone(10))).toHaveLength(1)
   })
 })

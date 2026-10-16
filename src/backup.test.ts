@@ -71,6 +71,20 @@ describe('reading a backup back', () => {
     expect(ok(makeBackup(routes).split('\n')[1])).toHaveLength(2)
   })
 
+  it('keeps the side picked by hand for a stop, and ignores one that is not a side', () => {
+    const withSides: Route = {
+      ...route,
+      stops: [
+        { ...route.stops[0], side: 'right' },
+        { ...route.stops[1], side: 'left' },
+      ],
+    }
+    const text = makeBackup([{ name: 'X', route: withSides }])
+    expect(ok(text)[0].route.stops.map((s) => s.side)).toEqual(['right', 'left'])
+    const mangled = text.replace('"side":"right"', '"side":"upwards"')
+    expect(ok(mangled)[0].route.stops.map((s) => s.side)).toEqual([undefined, 'left'])
+  })
+
   it('gives stops with missing or repeated ids their own ids', () => {
     const text = makeBackup([{ name: 'X', route }])
     const mangled = text.replace(/"id":"s2"/, '"id":"s1"').replace(/"id":"s1"/, '"id":"s1"')

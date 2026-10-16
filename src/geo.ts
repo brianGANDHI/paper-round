@@ -345,7 +345,8 @@ export function approachingOccurrences(
       if (handled.has(o.key)) return false
       const ahead = o.at - driverAt
       const r = radius[o.stop.type]
-      return ahead <= r && ahead >= -PASSED_M && haversine(pos, o.stop) <= r + LATERAL_SLACK_M
+      // A small zone is also small behind the stop, so a stop already out of it doesn't alert and clear at once.
+      return ahead <= r && ahead >= -Math.min(PASSED_M, r) && haversine(pos, o.stop) <= r + LATERAL_SLACK_M
     })
     .sort((a, b) => haversine(pos, a.stop) - haversine(pos, b.stop))
 }

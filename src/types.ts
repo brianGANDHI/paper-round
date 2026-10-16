@@ -19,6 +19,11 @@ export interface Stop extends Pt {
   type: StopType
   qty?: number
   label?: string
+  /**
+   * Which side of the road the stop is on, as you first drive past it, when it was picked by hand
+   * because the map can't say or has it wrong. Going the other way it swaps.
+   */
+  side?: 'left' | 'right'
 }
 
 export interface Route {

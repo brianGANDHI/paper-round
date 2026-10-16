@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { SIDE_LABEL, STOP_COLOR } from './colors'
+import { stopRoadSides, type RoadSide } from './alerts'
+import { STOP_COLOR } from './colors'
 import { occurrences } from './geo'
 import { lookupAddress, type Match } from './geocode'
 import { Icon } from './Icon'
-import { formatDistance, stopAt, stopSides } from './routeEdit'
+import { formatDistance, stopAt } from './routeEdit'
 import { Empty, Segmented } from './ui'
 import type { Pt, Route, Stop, StopType } from './types'
 
@@ -34,11 +35,21 @@ interface Props {
   onPlacing: (on: boolean) => void
   canMark: boolean
   onMarkHere: () => void
-  onAdd: (stops: Stop[]) => void
+  /** Adds the stops, and says what to tell the driver about any whose side of the road couldn't be told. */
+  onAdd: (stops: Stop[]) => string
+  onPickSide: (id: string) => void
   onRemove: (id: string) => void
   onFocus: (p: Pt) => void
   onNotice: (message: string | null) => void
   onBack: () => void
+}
+
+const SIDE_WORD: Record<RoadSide, string> = { left: 'Left', right: 'Right' }
+
+/** The side of the road a stop is on for each pass: "Left", "Left, then Right" on a street driven both ways. */
+function sidesText(sides: (RoadSide | null)[]): string {
+  if (sides.every((x) => x === null)) return 'side not known'
+  return sides.map((x) => (x ? SIDE_WORD[x] : '?')).join(', then ')
 }
 
 /** "12, Oak Road, Town, County, England, AB1 2CD, UK" is more than needed to recognise a place. */
@@ -139,11 +150,11 @@ export function StopsTab(p: Props) {
       const hit = stopAt(p.route, r.match!.place, p.type, { label: r.line, qty })
       return hit ? [hit.stop] : []
     })
-    p.onAdd(stops)
+    const note = p.onAdd(stops)
     const added = new Set(chosen.map((r) => r.line))
     setRows((rs) => rs.filter((r) => !added.has(r.line)))
     setText((t) => t.split('\n').filter((l) => !added.has(l.trim())).join('\n'))
-    p.onNotice(`Added ${stops.length} ${noun.toLowerCase()}${stops.length === 1 ? '' : 's'}.`)
+    p.onNotice(`Added ${stops.length} ${noun.toLowerCase()}${stops.length === 1 ? '' : 's'}.${note ? ` ${note}` : ''}`)
   }
 
   return (
@@ -250,20 +261,31 @@ export function StopsTab(p: Props) {
         <>
           <div className="section-label">On your route</div>
           <ul className="group">
-            {p.route.stops.map((s) => (
-              <li className="row" key={s.id}>
-                <span className="dot" style={{ background: STOP_COLOR[s.type] }} />
-                <button className="grow rowbtn" onClick={() => p.onFocus(s)}>
-                  <div className="title">{s.label ?? (s.type === 'bundle' ? 'Bundle drop' : 'No-throw house')}</div>
-                  <div className="sub">
-                    {s.type === 'bundle' ? `Bundle${s.qty ? ` of ${s.qty}` : ''}` : 'No-throw'} · {stopSides(p.route, occs, s.id).map((side) => SIDE_LABEL[side]).join(', ')}
-                  </div>
-                </button>
-                <button className="icon-btn" aria-label={`Delete ${s.label ?? 'stop'}`} onClick={() => p.onRemove(s.id)}>
-                  <Icon name="trash" size={20} />
-                </button>
-              </li>
-            ))}
+            {p.route.stops.map((s) => {
+              const sides = stopRoadSides(p.route, occs, s.id)
+              return (
+                <li className="row" key={s.id}>
+                  <span className="dot" style={{ background: STOP_COLOR[s.type] }} />
+                  <button className="grow rowbtn" onClick={() => p.onFocus(s)}>
+                    <div className="title">{s.label ?? (s.type === 'bundle' ? 'Bundle drop' : 'No-throw house')}</div>
+                    <div className="sub">
+                      {s.type === 'bundle' ? `Bundle${s.qty ? ` of ${s.qty}` : ''}` : 'No-throw'} · {sidesText(sides)}
+                    </div>
+                  </button>
+                  <button
+                    className="chip-btn"
+                    data-warn={sides.every((x) => x === null) || undefined}
+                    aria-label={`Side of the road: ${sidesText(sides)}. Tap to change.`}
+                    onClick={() => p.onPickSide(s.id)}
+                  >
+                    {sides.every((x) => x === null) ? 'Set side' : SIDE_WORD[sides.find((x) => x) as RoadSide]}
+                  </button>
+                  <button className="icon-btn" aria-label={`Delete ${s.label ?? 'stop'}`} onClick={() => p.onRemove(s.id)}>
+                    <Icon name="trash" size={20} />
+                  </button>
+                </li>
+              )
+            })}
           </ul>
         </>
       )}
