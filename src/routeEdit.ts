@@ -429,11 +429,30 @@ export function stopSides(route: Route, occs: Occurrence[], stopId: string): Sid
 
 /** The longest name a stop is given, so an alert on a phone can show it. */
 export const MAX_LABEL = 60
+/** The longest address kept with a stop. */
+export const MAX_ADDRESS = 100
 /** The most papers a stop can be given: a bundle is a few dozen at most, and this keeps a slip of the finger sensible. */
 export const MAX_QTY = 9999
 
+const tidy = (text: string, max: number): string | undefined => text.replace(/\s+/g, ' ').trim().slice(0, max).trim() || undefined
+
 /** A name for a stop as it was typed: spaces tidied and kept to a length an alert can show. Nothing when it is blank. */
-export const cleanLabel = (text: string): string | undefined => text.replace(/\s+/g, ' ').trim().slice(0, MAX_LABEL).trim() || undefined
+export const cleanLabel = (text: string): string | undefined => tidy(text, MAX_LABEL)
+
+/** An address for a stop as it was typed, tidied the same way. Nothing when it is blank. */
+export const cleanAddress = (text: string): string | undefined => tidy(text, MAX_ADDRESS)
+
+/** Whether a piece of text reads as a street address: a house number, perhaps with a unit or a range, and then words. */
+export const looksLikeAddress = (text: string): boolean => /^(?:\d+[a-z]?\/)?\d+[a-z]?(?:-\d+[a-z]?)?\s+\p{L}/iu.test(text.trim())
+
+/**
+ * The name and the address to offer for a stop that is being edited. Stops made before a place had an address of
+ * its own kept a typed address in the name, so one that is all that, and reads as an address, is offered as the address.
+ */
+export function stopFields(s: Pick<Stop, 'label' | 'address'>): { name: string; address: string } {
+  if (s.address === undefined && s.label && looksLikeAddress(s.label)) return { name: '', address: s.label }
+  return { name: s.label ?? '', address: s.address ?? '' }
+}
 
 /** How many papers, from what was typed: a whole number from 1 up, or nothing. */
 export function parseQty(text: string): number | undefined {
@@ -447,25 +466,34 @@ export function parseQty(text: string): number | undefined {
 export const qtyProblem = (text: string): string | null =>
   !text.trim() || parseQty(text) !== undefined ? null : `Papers must be a whole number from 1 to ${MAX_QTY}.`
 
-/** What a stop is called in a list. */
-export const stopName = (s: Pick<Stop, 'type' | 'label'>): string => s.label ?? (s.type === 'bundle' ? 'Bundle drop' : 'No-throw house')
+/** What a stop is called in a list: its name, or its address when it has no name. */
+export const stopName = (s: Pick<Stop, 'type' | 'label' | 'address'>): string =>
+  s.label ?? s.address ?? (s.type === 'bundle' ? 'Bundle drop' : 'No-throw house')
+
+/** The address to show under a stop's name, which is only when it has both: with no name the address is the name. */
+export const stopWhere = (s: Pick<Stop, 'label' | 'address'>): string | null => (s.label && s.address ? s.address : null)
 
 /** How many papers a bundle drop gets, or that no amount is set. For a no-throw house, what it is. */
 export const stopDetail = (s: Pick<Stop, 'type' | 'qty'>): string =>
   s.type === 'bundle' ? (s.qty ? plural(s.qty, 'paper', 'papers') : 'no amount set') : 'No-throw'
 
 /**
- * The route with one stop's name and papers changed. Anything left out is taken off the stop, so blank means none.
- * Only a bundle drop has papers. The route is the same one when there is no such stop.
+ * The route with one stop's name, address and papers changed. Anything left out is taken off the stop, so blank
+ * means none. Only a bundle drop has papers. The route is the same one when there is no such stop.
  */
-export function updateStop(route: Route, id: string, change: { label?: string; qty?: number }): Route {
+export function updateStop(route: Route, id: string, change: { label?: string; address?: string; qty?: number }): Route {
   if (!route.stops.some((s) => s.id === id)) return route
   return {
     ...route,
     stops: route.stops.map((s) => {
       if (s.id !== id) return s
-      const { label: _label, qty: _qty, ...rest } = s
-      return { ...rest, ...(change.label ? { label: change.label } : {}), ...(s.type === 'bundle' && change.qty ? { qty: change.qty } : {}) }
+      const { label: _label, address: _address, qty: _qty, ...rest } = s
+      return {
+        ...rest,
+        ...(change.label ? { label: change.label } : {}),
+        ...(change.address ? { address: change.address } : {}),
+        ...(s.type === 'bundle' && change.qty ? { qty: change.qty } : {}),
+      }
     }),
   }
 }
@@ -478,12 +506,13 @@ export function stopAt(
   route: Route,
   p: Pt,
   type: StopType,
-  extra: { label?: string; qty?: number } = {},
+  extra: { label?: string; address?: string; qty?: number } = {},
 ): { stop: Stop; offM: number } | null {
   const snap = nearestOnRoute(route, p)
   if (!snap) return null
   const stop: Stop = { id: newStopId(), lat: p.lat, lng: p.lng, pathIdx: snap.idx, type }
   if (extra.qty) stop.qty = extra.qty
   if (extra.label) stop.label = extra.label
+  if (extra.address) stop.address = extra.address
   return { stop, offM: snap.dist }
 }

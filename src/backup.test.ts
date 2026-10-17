@@ -61,6 +61,28 @@ describe('reading a backup back', () => {
     expect(back[1].route.points).toEqual([])
   })
 
+  it('keeps the address of a stop apart from its name, and drops one that is not text', () => {
+    const named: Route = {
+      ...route,
+      stops: [
+        { ...route.stops[0], label: "Joe's Cafe", address: '  12 Oak Road, Lewes ' },
+        { ...route.stops[1], address: '9 Elm Street' },
+      ],
+    }
+    const back = ok(makeBackup([{ name: 'Monday Round', route: named }]))[0].route.stops
+    expect(back.map((s) => [s.label, s.address])).toEqual([
+      ["Joe's Cafe", '12 Oak Road, Lewes'],
+      [undefined, '9 Elm Street'],
+    ])
+    const mangled = makeBackup([{ name: 'Monday Round', route: named }]).replace('"9 Elm Street"', '9').replace('"  12 Oak Road, Lewes "', '"   "')
+    expect(ok(mangled)[0].route.stops.map((s) => s.address)).toEqual([undefined, undefined])
+  })
+
+  it('keeps a long address, up to a limit, so a backup cannot be made to hold a huge one', () => {
+    const long: Route = { ...route, stops: [{ ...route.stops[0], address: 'x'.repeat(500) }] }
+    expect(ok(makeBackup([{ name: 'Monday Round', route: long }]))[0].route.stops[0].address).toHaveLength(120)
+  })
+
   it('copes with text that came through Notes or Messages', () => {
     const text = makeBackup(routes)
     const curly = text.replace(/"/g, (_, i) => (i % 2 ? '”' : '“'))

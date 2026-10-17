@@ -43,14 +43,16 @@ export function aheadText(ahead: number): string {
 }
 
 /**
- * What the banner for a stop says: the kind of stop, its name (what it was called, or a line that says what to do
- * when it was given no name) and, for a bundle drop with an amount, how many papers. Papers is null for anything else.
+ * What the banner for a stop says: the kind of stop, its name (what it was called, or else its address, or else a
+ * line that says what to do), the address to show under a name when it has both, and for a bundle drop with an
+ * amount how many papers. Papers is null for anything else.
  */
-export function alertText(stop: Stop): { title: string; name: string; papers: string | null } {
+export function alertText(stop: Stop): { title: string; name: string; address: string | null; papers: string | null } {
   const noThrow = stop.type === 'nothrow'
   return {
     title: noThrow ? 'No Throw' : 'Bundle Drop',
-    name: stop.label ?? (noThrow ? 'This house does not want a paper.' : 'Bundle stop ahead.'),
+    name: stop.label ?? stop.address ?? (noThrow ? 'This house does not want a paper.' : 'Bundle stop ahead.'),
+    address: stop.label && stop.address ? stop.address : null,
     papers: !noThrow && stop.qty ? plural(stop.qty, 'paper', 'papers') : null,
   }
 }

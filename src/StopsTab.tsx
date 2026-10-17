@@ -4,7 +4,19 @@ import { STOP_COLOR } from './colors'
 import { occurrences } from './geo'
 import { lookupAddress, shortPlaceName, type Match } from './geocode'
 import { Icon } from './Icon'
-import { cleanLabel, formatDistance, MAX_LABEL, parseQty, qtyProblem, stopAt, stopDetail, stopName } from './routeEdit'
+import {
+  cleanAddress,
+  cleanLabel,
+  formatDistance,
+  MAX_ADDRESS,
+  MAX_LABEL,
+  parseQty,
+  qtyProblem,
+  stopAt,
+  stopDetail,
+  stopName,
+  stopWhere,
+} from './routeEdit'
 import { StopDialog } from './StopDialog'
 import { Empty, Segmented } from './ui'
 import type { Pt, Route, Stop, StopType } from './types'
@@ -22,7 +34,7 @@ interface Row {
   status: 'waiting' | 'looking' | 'found' | 'none' | 'error'
   match?: Match
   selected: boolean
-  /** For a bundle drop: what it is called and how many papers it gets, as typed. Blank uses the address, and no amount. */
+  /** What it is called and, for a bundle drop, how many papers it gets, as typed. The address is the line that was looked up. */
   name: string
   qty: string
 }
@@ -35,6 +47,8 @@ interface Props {
   onQty: (q: string) => void
   label: string
   onLabel: (l: string) => void
+  address: string
+  onAddress: (a: string) => void
   placing: boolean
   onPlacing: (on: boolean) => void
   canMark: boolean
@@ -42,8 +56,8 @@ interface Props {
   /** Adds the stops, and says what to tell the driver about any whose side of the road couldn't be told. */
   onAdd: (stops: Stop[]) => string
   onPickSide: (id: string) => void
-  /** A stop's name and papers changed. Anything left out is taken off the stop. */
-  onEdit: (id: string, change: { label?: string; qty?: number }) => void
+  /** A stop's name, address and papers changed. Anything left out is taken off the stop. */
+  onEdit: (id: string, change: { label?: string; address?: string; qty?: number }) => void
   onRemove: (id: string) => void
   onFocus: (p: Pt) => void
   onNotice: (message: string | null) => void
@@ -88,7 +102,7 @@ export function StopsTab(p: Props) {
   const [text, setText] = useState('')
   const [rows, setRows] = useState<Row[]>([])
   const [busy, setBusy] = useState(false)
-  /** The stop whose name and papers are being changed. */
+  /** The stop whose name, address and papers are being changed. */
   const [editing, setEditing] = useState<string | null>(null)
   const abort = useRef<AbortController | null>(null)
   const isBundle = p.type === 'bundle'
@@ -148,14 +162,15 @@ export function StopsTab(p: Props) {
 
   const chosen = rows.filter((r) => r.selected && r.match)
   const finished = rows.filter((r) => r.status !== 'waiting' && r.status !== 'looking').length
-  // A bundle drop is added with the name and papers typed beside it. A name left blank is the address as typed.
+  // A stop is added with the name (and papers) typed beside it, and the address that was looked up.
   const badQty = isBundle && chosen.some((r) => qtyProblem(r.qty))
   const editingStop = editing ? p.route.stops.find((s) => s.id === editing) : undefined
 
   const addChosen = () => {
     const stops = chosen.flatMap((r) => {
       const hit = stopAt(p.route, r.match!.place, p.type, {
-        label: (isBundle && cleanLabel(r.name)) || r.line,
+        label: cleanLabel(r.name),
+        address: cleanAddress(r.line),
         qty: isBundle ? parseQty(r.qty) : undefined,
       })
       return hit ? [hit.stop] : []
@@ -185,8 +200,10 @@ export function StopsTab(p: Props) {
         />
       </div>
       <p className="footnote">
-        One address per line. Include the town or postcode for the best match.
-        {isBundle && ' Once one is found, give it a business name and the number of papers it gets: the alert shows both.'}
+        One address per line. Include the town or postcode for the best match.{' '}
+        {isBundle
+          ? 'Once one is found, give it a business name and the number of papers it gets: the alert shows both, with the address under the name.'
+          : 'Once one is found you can give it a name too: the alert shows it, with the address under it.'}
       </p>
 
       {busy ? (
@@ -225,31 +242,33 @@ export function StopsTab(p: Props) {
                 <div className="grow">
                   <div className="title">{r.line}</div>
                   <div className={`sub ${tone(r)}`}>{describe(r)}</div>
-                  {isBundle && r.status === 'found' && (
+                  {r.status === 'found' && (
                     <div className="row-fields">
                       <input
                         className="mini-input name"
                         value={r.name}
                         maxLength={MAX_LABEL}
-                        placeholder="Business name"
-                        aria-label={`Business name for ${r.line}`}
-                        enterKeyHint="next"
+                        placeholder={isBundle ? 'Business name' : 'Name (optional)'}
+                        aria-label={`${isBundle ? 'Business name' : 'Name'} for ${r.line}`}
+                        enterKeyHint={isBundle ? 'next' : 'done'}
                         autoCapitalize="words"
                         autoCorrect="off"
                         spellCheck={false}
                         onChange={(e) => patch(i, { name: e.target.value })}
                       />
-                      <input
-                        className="mini-input qty"
-                        value={r.qty}
-                        inputMode="numeric"
-                        pattern="[0-9]*"
-                        placeholder="Papers"
-                        aria-label={`Papers for ${r.line}`}
-                        aria-invalid={!!qtyProblem(r.qty)}
-                        enterKeyHint="done"
-                        onChange={(e) => patch(i, { qty: e.target.value })}
-                      />
+                      {isBundle && (
+                        <input
+                          className="mini-input qty"
+                          value={r.qty}
+                          inputMode="numeric"
+                          pattern="[0-9]*"
+                          placeholder="Papers"
+                          aria-label={`Papers for ${r.line}`}
+                          aria-invalid={!!qtyProblem(r.qty)}
+                          enterKeyHint="done"
+                          onChange={(e) => patch(i, { qty: e.target.value })}
+                        />
+                      )}
                     </div>
                   )}
                 </div>
@@ -264,7 +283,7 @@ export function StopsTab(p: Props) {
         </>
       )}
 
-      <div className="section-label">Or place it without an address</div>
+      <div className="section-label">Or place it on the map</div>
       <div className="group">
         <label className="row field">
           <span className="title">{isBundle ? 'Business name' : 'Name'}</span>
@@ -272,7 +291,19 @@ export function StopsTab(p: Props) {
             value={p.label}
             maxLength={MAX_LABEL}
             onChange={(e) => p.onLabel(e.target.value)}
-            placeholder={isBundle ? "e.g. Joe's Cafe" : 'Optional, e.g. No. 14'}
+            placeholder={isBundle ? "e.g. Joe's Cafe" : 'Optional'}
+            autoCapitalize="words"
+            autoCorrect="off"
+            spellCheck={false}
+          />
+        </label>
+        <label className="row field">
+          <span className="title">Address</span>
+          <input
+            value={p.address}
+            maxLength={MAX_ADDRESS}
+            onChange={(e) => p.onAddress(e.target.value)}
+            placeholder="Optional, e.g. 12 Oak Road"
             autoCapitalize="words"
             autoCorrect="off"
             spellCheck={false}
@@ -324,6 +355,8 @@ export function StopsTab(p: Props) {
                   <span className="dot" style={{ background: STOP_COLOR[s.type] }} />
                   <button className="grow rowbtn" onClick={() => p.onFocus(s)}>
                     <div className="title">{stopName(s)}</div>
+                    {/* The address is under the name only when there is a name: with none, the address is the name. */}
+                    {stopWhere(s) && <div className="sub">{stopWhere(s)}</div>}
                     <div className="sub">
                       {/* A bundle drop with no amount says so, since its alert can't say how many to leave. */}
                       <span className={s.type === 'bundle' && !s.qty ? 'warn-text' : undefined}>{stopDetail(s)}</span> ·{' '}
@@ -341,7 +374,7 @@ export function StopsTab(p: Props) {
                   <button className="icon-btn edit" aria-label={`Edit ${stopName(s)}`} onClick={() => setEditing(s.id)}>
                     <Icon name="edit" size={20} />
                   </button>
-                  <button className="icon-btn" aria-label={`Delete ${s.label ?? 'stop'}`} onClick={() => p.onRemove(s.id)}>
+                  <button className="icon-btn" aria-label={`Delete ${stopName(s)}`} onClick={() => p.onRemove(s.id)}>
                     <Icon name="trash" size={20} />
                   </button>
                 </li>

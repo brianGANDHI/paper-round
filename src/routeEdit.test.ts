@@ -2,8 +2,9 @@ import { describe, expect, it } from 'vitest'
 import { haversine, occurrences, sideAt } from './geo'
 import {
   appendPoint,
-  cleanLabel,
   appendPoints,
+  cleanAddress,
+  cleanLabel,
   defaultRepeatSide,
   deletedNote,
   deletePoint,
@@ -11,6 +12,8 @@ import {
   deleteWarning,
   insertPoint,
   isDuplicateTap,
+  looksLikeAddress,
+  MAX_ADDRESS,
   MAX_LABEL,
   MAX_QTY,
   movePoint,
@@ -30,8 +33,10 @@ import {
   splitAt,
   stopAt,
   stopDetail,
+  stopFields,
   stopName,
   stopSides,
+  stopWhere,
   updateStop,
 } from './routeEdit'
 import { isSide, SIDES, type Pt, type Route, type Side, type Stop } from './types'
@@ -151,6 +156,14 @@ describe('splitAt', () => {
 })
 
 describe('stopAt', () => {
+  it('keeps the name and the address it is given, apart from each other', () => {
+    const hit = stopAt(road(6), { lat: 51.0025, lng: 0.0002 }, 'bundle', { label: "Joe's Cafe", address: '12 Oak Road', qty: 12 })!
+    expect(hit.stop).toMatchObject({ type: 'bundle', label: "Joe's Cafe", address: '12 Oak Road', qty: 12 })
+    const bare = stopAt(road(6), { lat: 51.0025, lng: 0.0002 }, 'nothrow')!
+    expect('label' in bare.stop).toBe(false)
+    expect('address' in bare.stop).toBe(false)
+  })
+
   it('ties a stop to the nearest segment and reports how far off it is', () => {
     const hit = stopAt(road(4), { lat: 51.0025, lng: 0.0002 }, 'nothrow', { label: '12 Oak Road' })!
     expect(hit.stop.pathIdx).toBe(2)
@@ -1133,6 +1146,50 @@ describe('naming a stop and saying how many papers it gets', () => {
     })
   })
 
+  describe('an address as it was typed', () => {
+    it('is tidied like a name, and nothing when blank', () => {
+      expect(cleanAddress('  12   Oak Road,\n Lewes ')).toBe('12 Oak Road, Lewes')
+      for (const blank of ['', '  ', '\n']) expect(cleanAddress(blank)).toBeUndefined()
+    })
+
+    it('is allowed to be longer than a name, but not without limit', () => {
+      expect(MAX_ADDRESS).toBeGreaterThan(MAX_LABEL)
+      expect(cleanAddress('x'.repeat(500))).toHaveLength(MAX_ADDRESS)
+      expect(cleanAddress('x'.repeat(MAX_LABEL + 10))).toHaveLength(MAX_LABEL + 10)
+    })
+  })
+
+  describe('telling an address from a name', () => {
+    it('reads a house number followed by words as an address', () => {
+      for (const address of ['12 Oak Road', '12 Oak Road, Lewes', '  12 Oak Road ', '12A Oak Road', '3/12 Oak Road', '12-14 Oak Road', '3b/12-14 Oak Rd']) {
+        expect(looksLikeAddress(address), address).toBe(true)
+      }
+    })
+
+    it('leaves names alone, including ones that start with a number', () => {
+      for (const name of ["Joe's Cafe", '7-Eleven', '1st Choice Pharmacy', 'No. 14', '14', '12', '', 'Corner Kiosk', 'Unit 3', "Joe's Cafe at 12 Oak Road"]) {
+        expect(looksLikeAddress(name), name).toBe(false)
+      }
+    })
+  })
+
+  describe('the name and address to offer when a stop is edited', () => {
+    it('offers what the stop has', () => {
+      expect(stopFields({ label: "Joe's Cafe", address: '12 Oak Road' })).toEqual({ name: "Joe's Cafe", address: '12 Oak Road' })
+      expect(stopFields({ label: "Joe's Cafe" })).toEqual({ name: "Joe's Cafe", address: '' })
+      expect(stopFields({ address: '12 Oak Road' })).toEqual({ name: '', address: '12 Oak Road' })
+      expect(stopFields({})).toEqual({ name: '', address: '' })
+    })
+
+    it('offers an old stop whose only name is a typed address as its address', () => {
+      expect(stopFields({ label: '12 Oak Road, Lewes' })).toEqual({ name: '', address: '12 Oak Road, Lewes' })
+    })
+
+    it('does not move a name once the stop has an address of its own, whatever the name looks like', () => {
+      expect(stopFields({ label: '12 Oak Road', address: '12 Oak Road, Lewes' })).toEqual({ name: '12 Oak Road', address: '12 Oak Road, Lewes' })
+    })
+  })
+
   describe('how many papers, as it was typed', () => {
     it('is a whole number from 1 up', () => {
       expect(parseQty('12')).toBe(12)
@@ -1158,10 +1215,19 @@ describe('naming a stop and saying how many papers it gets', () => {
   })
 
   describe('what a stop is called, and what it gets, in a list', () => {
-    it('uses the name, or says what kind of stop it is', () => {
+    it('uses the name, or the address when there is no name, or says what kind of stop it is', () => {
       expect(stopName(bundle({ label: "Joe's Cafe" }))).toBe("Joe's Cafe")
+      expect(stopName(bundle({ label: "Joe's Cafe", address: '12 Oak Road' }))).toBe("Joe's Cafe")
+      expect(stopName(bundle({ address: '12 Oak Road' }))).toBe('12 Oak Road')
       expect(stopName(bundle())).toBe('Bundle drop')
       expect(stopName(house())).toBe('No-throw house')
+    })
+
+    it('shows the address under the name only when there is both, since with no name the address is the name', () => {
+      expect(stopWhere(bundle({ label: "Joe's Cafe", address: '12 Oak Road' }))).toBe('12 Oak Road')
+      expect(stopWhere(bundle({ address: '12 Oak Road' }))).toBeNull()
+      expect(stopWhere(bundle({ label: "Joe's Cafe" }))).toBeNull()
+      expect(stopWhere(bundle())).toBeNull()
     })
 
     it('says how many papers a bundle drop gets, or that no amount is set', () => {
@@ -1188,9 +1254,30 @@ describe('naming a stop and saying how many papers it gets', () => {
     })
 
     it('gives a no-throw house a name but never an amount', () => {
-      const r = updateStop(withStops(house()), 'h', { label: '12 Oak Road', qty: 5 })
-      expect(r.stops[0]).toMatchObject({ id: 'h', label: '12 Oak Road' })
+      const r = updateStop(withStops(house()), 'h', { label: 'Mrs Smith', qty: 5 })
+      expect(r.stops[0]).toMatchObject({ id: 'h', label: 'Mrs Smith' })
       expect('qty' in r.stops[0]).toBe(false)
+    })
+
+    it('gives either kind of stop an address of its own, apart from its name', () => {
+      const r = updateStop(withStops(bundle(), house()), 'b', { label: "Joe's Cafe", address: '12 Oak Road, Lewes', qty: 12 })
+      expect(r.stops[0]).toMatchObject({ label: "Joe's Cafe", address: '12 Oak Road, Lewes', qty: 12 })
+      const h = updateStop(r, 'h', { address: '9 Elm Street' })
+      expect(h.stops[1]).toMatchObject({ address: '9 Elm Street' })
+      expect('label' in h.stops[1]).toBe(false)
+    })
+
+    it('changes the name without touching the address, and the other way round, when both are passed', () => {
+      const start = withStops(bundle({ label: 'Old', address: '1 Old Road', qty: 3 }))
+      const r = updateStop(start, 'b', { label: 'New', address: '1 Old Road', qty: 3 })
+      expect(r.stops[0]).toMatchObject({ label: 'New', address: '1 Old Road', qty: 3 })
+      const s = updateStop(start, 'b', { label: 'Old', address: '2 New Road', qty: 3 })
+      expect(s.stops[0]).toMatchObject({ label: 'Old', address: '2 New Road' })
+    })
+
+    it('takes the address off when it is left out', () => {
+      const r = updateStop(withStops(bundle({ label: 'Name', address: '1 Road', qty: 3 })), 'b', { label: 'Name', qty: 3 })
+      expect('address' in r.stops[0]).toBe(false)
     })
 
     it('changes nothing else about the stop, or any other stop', () => {

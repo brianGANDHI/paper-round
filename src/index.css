@@ -1032,35 +1032,23 @@ button.row:active:not(:disabled) {
   white-space: nowrap;
 }
 
-/* The address can run to two lines, since it is what says which house. */
+/* What the stop is and where: its name, the address under it when there is one, and a bundle drop's papers in a badge beside them. */
 .stop-alert-sub {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
-  overflow: hidden;
-  overflow-wrap: anywhere;
-  margin-top: 2px;
-  font-size: 14px;
-  line-height: 1.2;
-  opacity: 0.95;
-}
-
-.stop-alert-sub b {
-  font-weight: 700;
-}
-
-/* A bundle drop: its name, and how many papers beside it in a badge, so a long name can't push the amount off. */
-.stop-alert-sub.bundle {
   display: flex;
   align-items: center;
   gap: 8px;
-  opacity: 1;
+  margin-top: 2px;
 }
 
-.stop-alert-name {
+.stop-alert-lines {
   flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* The name can run to two lines, but only one when the address is under it, so the banner stays the same height. */
+.stop-alert-name {
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
@@ -1070,6 +1058,20 @@ button.row:active:not(:disabled) {
   font-size: 16px;
   font-weight: 700;
   line-height: 1.15;
+}
+
+.stop-alert-name.one {
+  -webkit-line-clamp: 1;
+  line-clamp: 1;
+}
+
+.stop-alert-address {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  line-height: 1.25;
+  opacity: 0.92;
 }
 
 .stop-alert-qty {
@@ -1113,12 +1115,12 @@ button.row:active:not(:disabled) {
     font-size: 15px;
   }
 
-  .stop-alert-sub {
-    font-size: 13px;
-  }
-
   .stop-alert-name {
     font-size: 14px;
+  }
+
+  .stop-alert-address {
+    font-size: 12px;
   }
 
   .stop-alert-qty {

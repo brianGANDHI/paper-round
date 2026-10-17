@@ -12,6 +12,7 @@ import type { Spot } from './placement'
 import { RouteTab } from './RouteTab'
 import {
   appendPoint,
+  cleanAddress,
   cleanLabel,
   deletedNote,
   deletePoint,
@@ -82,6 +83,7 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
   const [stopType, setStopType] = useState<StopType>('nothrow')
   const [stopQty, setStopQty] = useState('')
   const [stopLabel, setStopLabel] = useState('')
+  const [stopAddress, setStopAddress] = useState('')
   /** The side new points are drawn on, and the side painted onto a stretch. */
   const [brush, setBrush] = useState<Side>('both')
   /** Taps follow roads instead of joining with straight lines. Needs internet, so it is the drawer's choice. */
@@ -437,11 +439,12 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
     const problem = stopType === 'bundle' ? qtyProblem(stopQty) : null
     if (problem) return setNotice(problem)
     const qty = stopType === 'bundle' ? parseQty(stopQty) : undefined
-    const hit = stopAt(route, p, stopType, { label: cleanLabel(stopLabel), qty })
+    const hit = stopAt(route, p, stopType, { label: cleanLabel(stopLabel), address: cleanAddress(stopAddress), qty })
     if (!hit) return setNotice('Draw your route first.')
     if (hit.offM > MAX_STOP_OFFSET_M) return setNotice(`That spot is ${Math.round(hit.offM)} m from your route. Tap closer to it.`)
     const note = addStops([hit.stop])
     setStopLabel('')
+    setStopAddress('')
     setNotice(note || null)
   }
 
@@ -566,6 +569,8 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
             onQty={setStopQty}
             label={stopLabel}
             onLabel={setStopLabel}
+            address={stopAddress}
+            onAddress={setStopAddress}
             placing={tool === 'place'}
             onPlacing={(on) => changeTool(on ? 'place' : 'none')}
             canMark={!!fix}

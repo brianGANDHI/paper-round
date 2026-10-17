@@ -319,7 +319,12 @@ describe('what the banner for a stop says', () => {
   const stop = (type: StopType, extra: Partial<Stop> = {}): Stop => ({ id: 's', type, pathIdx: 0, lat: 0, lng: 0, ...extra })
 
   it('gives a bundle drop its name and how many papers', () => {
-    expect(alertText(stop('bundle', { label: "Joe's Cafe", qty: 12 }))).toEqual({ title: 'Bundle Drop', name: "Joe's Cafe", papers: '12 papers' })
+    expect(alertText(stop('bundle', { label: "Joe's Cafe", qty: 12 }))).toEqual({
+      title: 'Bundle Drop',
+      name: "Joe's Cafe",
+      address: null,
+      papers: '12 papers',
+    })
   })
 
   it('says one paper for one', () => {
@@ -329,11 +334,11 @@ describe('what the banner for a stop says', () => {
   it('has no papers to show when the bundle drop has no amount, and a line to say what it is when it has no name', () => {
     expect(alertText(stop('bundle', { label: "Joe's Cafe" })).papers).toBeNull()
     expect(alertText(stop('bundle', { qty: 5 })).name).toBe('Bundle stop ahead.')
-    expect(alertText(stop('bundle'))).toEqual({ title: 'Bundle Drop', name: 'Bundle stop ahead.', papers: null })
+    expect(alertText(stop('bundle'))).toEqual({ title: 'Bundle Drop', name: 'Bundle stop ahead.', address: null, papers: null })
   })
 
   it('shows a no-throw house by its name, or says what to do, and never counts papers', () => {
-    expect(alertText(stop('nothrow', { label: '12 Oak Road' }))).toEqual({ title: 'No Throw', name: '12 Oak Road', papers: null })
+    expect(alertText(stop('nothrow', { label: 'Mrs Smith' }))).toEqual({ title: 'No Throw', name: 'Mrs Smith', address: null, papers: null })
     expect(alertText(stop('nothrow')).name).toBe('This house does not want a paper.')
     // An amount left on a house that has become a no-throw is not something to leave at the door.
     expect(alertText(stop('nothrow', { qty: 3 })).papers).toBeNull()
@@ -341,5 +346,25 @@ describe('what the banner for a stop says', () => {
 
   it('shows a name as it was given', () => {
     expect(alertText(stop('bundle', { label: 'Hartley & Sons, 14 High St', qty: 40 })).name).toBe('Hartley & Sons, 14 High St')
+  })
+
+  it('puts the address under the name when there is both', () => {
+    expect(alertText(stop('bundle', { label: "Joe's Cafe", address: '12 Oak Road, Lewes', qty: 12 }))).toEqual({
+      title: 'Bundle Drop',
+      name: "Joe's Cafe",
+      address: '12 Oak Road, Lewes',
+      papers: '12 papers',
+    })
+    expect(alertText(stop('nothrow', { label: 'Mrs Smith', address: '9 Elm Street' }))).toEqual({
+      title: 'No Throw',
+      name: 'Mrs Smith',
+      address: '9 Elm Street',
+      papers: null,
+    })
+  })
+
+  it('uses the address as the name when there is no name, rather than showing it twice', () => {
+    expect(alertText(stop('nothrow', { address: '9 Elm Street' }))).toEqual({ title: 'No Throw', name: '9 Elm Street', address: null, papers: null })
+    expect(alertText(stop('bundle', { address: '12 Oak Road', qty: 5 }))).toEqual({ title: 'Bundle Drop', name: '12 Oak Road', address: null, papers: '5 papers' })
   })
 })

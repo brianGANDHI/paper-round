@@ -17,12 +17,13 @@ interface Props {
 /**
  * The warning for a stop you are close to: a banner across the top of the map, which stays usable
  * underneath. It has nothing to tap and goes by itself once you are away from the stop. No-throw is
- * red and flashes; a bundle drop is blue, with its name and how many papers beside it, in a badge that a
- * long name can't push off. The side of the road the stop is on sits at that edge of the banner, with an arrow.
+ * red and flashes; a bundle drop is blue. Either has the stop's name, with its address under it when it has
+ * both, and a bundle drop has how many papers beside them, in a badge that a long name can't push off. The
+ * side of the road the stop is on sits at that edge of the banner, with an arrow.
  */
 export function AlertBanner({ stop, pass = 1, ahead, side, waiting }: Props) {
   const noThrow = stop.type === 'nothrow'
-  const { title, name, papers } = alertText(stop)
+  const { title, name, address, papers } = alertText(stop)
   const where = `${name}${pass > 1 ? ` · pass ${pass}` : ''}`
   const marker = side ? (
     <div className="stop-alert-side">
@@ -43,14 +44,13 @@ export function AlertBanner({ stop, pass = 1, ahead, side, waiting }: Props) {
           <span className="stop-alert-title">{title}</span>
           <span className="stop-alert-dist">{aheadText(ahead)}</span>
         </div>
-        {noThrow ? (
-          <div className="stop-alert-sub">{where}</div>
-        ) : (
-          <div className="stop-alert-sub bundle">
-            <span className="stop-alert-name">{where}</span>
-            {papers && <span className="stop-alert-qty">{papers}</span>}
+        <div className="stop-alert-sub">
+          <div className="stop-alert-lines">
+            <span className={address ? 'stop-alert-name one' : 'stop-alert-name'}>{where}</span>
+            {address && <span className="stop-alert-address">{address}</span>}
           </div>
-        )}
+          {papers && <span className="stop-alert-qty">{papers}</span>}
+        </div>
       </div>
       {side === 'right' && marker}
       {waiting > 0 && (

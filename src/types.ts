@@ -24,7 +24,10 @@ export interface Stop extends Pt {
   pathIdx: number
   type: StopType
   qty?: number
+  /** What the place is called, such as the name of a business. */
   label?: string
+  /** Where it is, as an address to read. The stop's position on the map is its own latitude and longitude. */
+  address?: string
   /**
    * Which side of the road the stop is on, as you first drive past it, when it was picked by hand
    * because the map can't say or has it wrong. Going the other way it swaps.
