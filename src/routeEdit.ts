@@ -427,6 +427,49 @@ export function stopSides(route: Route, occs: Occurrence[], stopId: string): Sid
   return sides
 }
 
+/** The longest name a stop is given, so an alert on a phone can show it. */
+export const MAX_LABEL = 60
+/** The most papers a stop can be given: a bundle is a few dozen at most, and this keeps a slip of the finger sensible. */
+export const MAX_QTY = 9999
+
+/** A name for a stop as it was typed: spaces tidied and kept to a length an alert can show. Nothing when it is blank. */
+export const cleanLabel = (text: string): string | undefined => text.replace(/\s+/g, ' ').trim().slice(0, MAX_LABEL).trim() || undefined
+
+/** How many papers, from what was typed: a whole number from 1 up, or nothing. */
+export function parseQty(text: string): number | undefined {
+  const t = text.trim()
+  if (!/^\d+$/.test(t)) return undefined
+  const n = Number.parseInt(t, 10)
+  return n >= 1 && n <= MAX_QTY ? n : undefined
+}
+
+/** What is wrong with what was typed for the papers, or null when it is blank (no amount) or fine. */
+export const qtyProblem = (text: string): string | null =>
+  !text.trim() || parseQty(text) !== undefined ? null : `Papers must be a whole number from 1 to ${MAX_QTY}.`
+
+/** What a stop is called in a list. */
+export const stopName = (s: Pick<Stop, 'type' | 'label'>): string => s.label ?? (s.type === 'bundle' ? 'Bundle drop' : 'No-throw house')
+
+/** How many papers a bundle drop gets, or that no amount is set. For a no-throw house, what it is. */
+export const stopDetail = (s: Pick<Stop, 'type' | 'qty'>): string =>
+  s.type === 'bundle' ? (s.qty ? plural(s.qty, 'paper', 'papers') : 'no amount set') : 'No-throw'
+
+/**
+ * The route with one stop's name and papers changed. Anything left out is taken off the stop, so blank means none.
+ * Only a bundle drop has papers. The route is the same one when there is no such stop.
+ */
+export function updateStop(route: Route, id: string, change: { label?: string; qty?: number }): Route {
+  if (!route.stops.some((s) => s.id === id)) return route
+  return {
+    ...route,
+    stops: route.stops.map((s) => {
+      if (s.id !== id) return s
+      const { label: _label, qty: _qty, ...rest } = s
+      return { ...rest, ...(change.label ? { label: change.label } : {}), ...(s.type === 'bundle' && change.qty ? { qty: change.qty } : {}) }
+    }),
+  }
+}
+
 let nextId = 0
 export const newStopId = () => `${Date.now().toString(36)}${(nextId++).toString(36)}`
 

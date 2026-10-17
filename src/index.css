@@ -691,6 +691,57 @@ button.row:active:not(:disabled) {
 .sub.warn {
   color: var(--warn-text);
 }
+/* Part of a line that needs attention, such as a bundle drop with no amount. */
+.sub .warn-text {
+  color: var(--warn-text);
+  font-weight: 600;
+}
+
+.footnote.bad {
+  color: var(--red);
+}
+
+/* Name and papers for a stop that has just been found, under its address. */
+.row-fields {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.mini-input {
+  min-width: 0;
+  padding: 8px 10px;
+  border: 0.5px solid var(--sep);
+  border-radius: 10px;
+  outline: 0;
+  font-size: 16px;
+  color: var(--label);
+  background: var(--fill);
+}
+
+.mini-input.name {
+  flex: 1;
+}
+
+.mini-input.qty {
+  flex: none;
+  width: 84px;
+}
+
+.mini-input::placeholder {
+  color: var(--label-3);
+}
+
+.mini-input:focus {
+  border-color: var(--tint);
+}
+
+.mini-input[aria-invalid='true'],
+.row.field input[aria-invalid='true'],
+.field-input[aria-invalid='true'] {
+  color: var(--red);
+  border-color: var(--red);
+}
 
 .trail {
   color: var(--label-2);
@@ -714,6 +765,28 @@ button.row:active:not(:disabled) {
   height: 44px;
   margin: -10px -10px -10px 0;
   color: var(--red);
+}
+
+/* Edit sits beside Delete in a list row, in the colour of a link rather than a warning. */
+.icon-btn.edit {
+  width: 40px;
+  margin-right: 0;
+  color: var(--tint);
+}
+
+/* A narrow phone has no room for the name and four buttons in one line, so the buttons drop to a line of their own. */
+@media (max-width: 350px) {
+  .stop-row {
+    flex-wrap: wrap;
+  }
+
+  .stop-row .rowbtn {
+    flex: 1 1 calc(100% - 24px);
+  }
+
+  .stop-row .chip-btn {
+    margin-left: 24px;
+  }
 }
 
 .dot-check {
@@ -977,6 +1050,39 @@ button.row:active:not(:disabled) {
   font-weight: 700;
 }
 
+/* A bundle drop: its name, and how many papers beside it in a badge, so a long name can't push the amount off. */
+.stop-alert-sub.bundle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  opacity: 1;
+}
+
+.stop-alert-name {
+  flex: 1;
+  min-width: 0;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.15;
+}
+
+.stop-alert-qty {
+  flex: none;
+  padding: 3px 10px;
+  border-radius: 999px;
+  color: #0a63d6;
+  background: #fff;
+  font-size: 15px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
 /* On the narrowest phones, trim the banner so "No Throw" and "Bundle Drop" still fit in full. */
 @media (max-width: 350px) {
   .stop-alert {
@@ -1008,6 +1114,15 @@ button.row:active:not(:disabled) {
   }
 
   .stop-alert-sub {
+    font-size: 13px;
+  }
+
+  .stop-alert-name {
+    font-size: 14px;
+  }
+
+  .stop-alert-qty {
+    padding: 2px 8px;
     font-size: 13px;
   }
 }
@@ -1301,7 +1416,7 @@ button.row:active:not(:disabled) {
 }
 
 /* A labelled line of text in a dialog, like the From and To of a route by address. */
-.field {
+.dialog-field {
   display: flex;
   flex-direction: column;
   gap: 6px;

@@ -117,7 +117,7 @@ export function TransitDialog({ open, route, onAdded, onClose }: Props) {
         {fromEnd ? (
           <p>It starts where your route ends now.</p>
         ) : (
-          <label className="field">
+          <label className="dialog-field">
             <span className="field-label">From</span>
             <input
               className="field-input"
@@ -140,7 +140,7 @@ export function TransitDialog({ open, route, onAdded, onClose }: Props) {
             />
           </label>
         )}
-        <label className="field">
+        <label className="dialog-field">
           <span className="field-label">To</span>
           <input
             ref={toInput}

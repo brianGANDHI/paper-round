@@ -12,6 +12,7 @@ import type { Spot } from './placement'
 import { RouteTab } from './RouteTab'
 import {
   appendPoint,
+  cleanLabel,
   deletedNote,
   deletePoint,
   deleteSection,
@@ -24,6 +25,8 @@ import {
   ON_ROUTE_M,
   otherSide,
   paintStretch,
+  parseQty,
+  qtyProblem,
   removeLastPoint,
   removeSplit,
   repeatSection,
@@ -32,6 +35,7 @@ import {
   segmentCount,
   setSectionSide,
   stopAt,
+  updateStop,
   type RepeatMode,
 } from './routeEdit'
 import { SidePopover } from './SidePopover'
@@ -430,8 +434,10 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
   }
 
   const placeStop = (p: Pt) => {
-    const qty = stopType === 'bundle' ? Number.parseInt(stopQty, 10) || undefined : undefined
-    const hit = stopAt(route, p, stopType, { label: stopLabel.trim() || undefined, qty })
+    const problem = stopType === 'bundle' ? qtyProblem(stopQty) : null
+    if (problem) return setNotice(problem)
+    const qty = stopType === 'bundle' ? parseQty(stopQty) : undefined
+    const hit = stopAt(route, p, stopType, { label: cleanLabel(stopLabel), qty })
     if (!hit) return setNotice('Draw your route first.')
     if (hit.offM > MAX_STOP_OFFSET_M) return setNotice(`That spot is ${Math.round(hit.offM)} m from your route. Tap closer to it.`)
     const note = addStops([hit.stop])
@@ -566,6 +572,7 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
             onMarkHere={() => fix && placeStop(fix)}
             onAdd={addStops}
             onPickSide={pickSide}
+            onEdit={(id, change) => onChange(updateStop(route, id, change))}
             onRemove={(id) => onChange({ ...route, stops: route.stops.filter((s) => s.id !== id) })}
             onFocus={(p) => goTo({ center: p, zoom: 18 })}
             onNotice={setNotice}

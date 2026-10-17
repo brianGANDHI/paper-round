@@ -1,4 +1,4 @@
-import { aheadText } from './alerts'
+import { aheadText, alertText } from './alerts'
 import { Icon } from './Icon'
 import type { Stop } from './types'
 
@@ -17,13 +17,13 @@ interface Props {
 /**
  * The warning for a stop you are close to: a banner across the top of the map, which stays usable
  * underneath. It has nothing to tap and goes by itself once you are away from the stop. No-throw is
- * red and flashes; a bundle drop is blue and says how many papers. The side of the road the stop is
- * on sits at that edge of the banner, with an arrow.
+ * red and flashes; a bundle drop is blue, with its name and how many papers beside it, in a badge that a
+ * long name can't push off. The side of the road the stop is on sits at that edge of the banner, with an arrow.
  */
 export function AlertBanner({ stop, pass = 1, ahead, side, waiting }: Props) {
   const noThrow = stop.type === 'nothrow'
-  const label = stop.label ?? (noThrow ? 'This house does not want a paper.' : 'Bundle stop ahead.')
-  const qty = !noThrow && stop.qty ? stop.qty : null
+  const { title, name, papers } = alertText(stop)
+  const where = `${name}${pass > 1 ? ` · pass ${pass}` : ''}`
   const marker = side ? (
     <div className="stop-alert-side">
       {side === 'left' && <Icon name="arrow-left" size={26} strokeWidth={2.8} />}
@@ -40,19 +40,17 @@ export function AlertBanner({ stop, pass = 1, ahead, side, waiting }: Props) {
       {side !== 'right' && marker}
       <div className="stop-alert-text">
         <div className="stop-alert-head">
-          <span className="stop-alert-title">{noThrow ? 'No Throw' : 'Bundle Drop'}</span>
+          <span className="stop-alert-title">{title}</span>
           <span className="stop-alert-dist">{aheadText(ahead)}</span>
         </div>
-        <div className="stop-alert-sub">
-          {qty && (
-            <b>
-              {qty} {qty === 1 ? 'paper' : 'papers'}
-              {' · '}
-            </b>
-          )}
-          {label}
-          {pass > 1 && ` · pass ${pass}`}
-        </div>
+        {noThrow ? (
+          <div className="stop-alert-sub">{where}</div>
+        ) : (
+          <div className="stop-alert-sub bundle">
+            <span className="stop-alert-name">{where}</span>
+            {papers && <span className="stop-alert-qty">{papers}</span>}
+          </div>
+        )}
       </div>
       {side === 'right' && marker}
       {waiting > 0 && (

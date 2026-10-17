@@ -4,7 +4,8 @@ import { STOP_COLOR } from './colors'
 import { occurrences } from './geo'
 import { lookupAddress, shortPlaceName, type Match } from './geocode'
 import { Icon } from './Icon'
-import { formatDistance, stopAt } from './routeEdit'
+import { cleanLabel, formatDistance, MAX_LABEL, parseQty, qtyProblem, stopAt, stopDetail, stopName } from './routeEdit'
+import { StopDialog } from './StopDialog'
 import { Empty, Segmented } from './ui'
 import type { Pt, Route, Stop, StopType } from './types'
 
@@ -21,6 +22,9 @@ interface Row {
   status: 'waiting' | 'looking' | 'found' | 'none' | 'error'
   match?: Match
   selected: boolean
+  /** For a bundle drop: what it is called and how many papers it gets, as typed. Blank uses the address, and no amount. */
+  name: string
+  qty: string
 }
 
 interface Props {
@@ -38,6 +42,8 @@ interface Props {
   /** Adds the stops, and says what to tell the driver about any whose side of the road couldn't be told. */
   onAdd: (stops: Stop[]) => string
   onPickSide: (id: string) => void
+  /** A stop's name and papers changed. Anything left out is taken off the stop. */
+  onEdit: (id: string, change: { label?: string; qty?: number }) => void
   onRemove: (id: string) => void
   onFocus: (p: Pt) => void
   onNotice: (message: string | null) => void
@@ -82,6 +88,8 @@ export function StopsTab(p: Props) {
   const [text, setText] = useState('')
   const [rows, setRows] = useState<Row[]>([])
   const [busy, setBusy] = useState(false)
+  /** The stop whose name and papers are being changed. */
+  const [editing, setEditing] = useState<string | null>(null)
   const abort = useRef<AbortController | null>(null)
   const isBundle = p.type === 'bundle'
   // A stop on a road driven twice is passed on more than one side, so the list shows each.
@@ -117,7 +125,7 @@ export function StopsTab(p: Props) {
     const ctl = new AbortController()
     abort.current = ctl
     setBusy(true)
-    setRows(lines.map((line) => ({ line, status: 'waiting', selected: false })))
+    setRows(lines.map((line) => ({ line, status: 'waiting', selected: false, name: '', qty: '' })))
     for (let i = 0; i < lines.length; i++) {
       if (ctl.signal.aborted) break
       patch(i, { status: 'looking' })
@@ -140,11 +148,16 @@ export function StopsTab(p: Props) {
 
   const chosen = rows.filter((r) => r.selected && r.match)
   const finished = rows.filter((r) => r.status !== 'waiting' && r.status !== 'looking').length
+  // A bundle drop is added with the name and papers typed beside it. A name left blank is the address as typed.
+  const badQty = isBundle && chosen.some((r) => qtyProblem(r.qty))
+  const editingStop = editing ? p.route.stops.find((s) => s.id === editing) : undefined
 
   const addChosen = () => {
-    const qty = isBundle ? Number.parseInt(p.qty, 10) || undefined : undefined
     const stops = chosen.flatMap((r) => {
-      const hit = stopAt(p.route, r.match!.place, p.type, { label: r.line, qty })
+      const hit = stopAt(p.route, r.match!.place, p.type, {
+        label: (isBundle && cleanLabel(r.name)) || r.line,
+        qty: isBundle ? parseQty(r.qty) : undefined,
+      })
       return hit ? [hit.stop] : []
     })
     const note = p.onAdd(stops)
@@ -157,15 +170,6 @@ export function StopsTab(p: Props) {
   return (
     <>
       <Segmented label="Type of stop" value={p.type} options={TYPE_OPTIONS} onChange={p.onType} />
-
-      {isBundle && (
-        <div className="group">
-          <label className="row field">
-            <span className="title">Bundle size</span>
-            <input type="number" inputMode="numeric" min="1" value={p.qty} onChange={(e) => p.onQty(e.target.value)} placeholder="Optional" />
-          </label>
-        </div>
-      )}
 
       <div className="section-label">Add by address</div>
       <div className="group">
@@ -180,7 +184,10 @@ export function StopsTab(p: Props) {
           spellCheck={false}
         />
       </div>
-      <p className="footnote">One address per line. Include the town or postcode for the best match.</p>
+      <p className="footnote">
+        One address per line. Include the town or postcode for the best match.
+        {isBundle && ' Once one is found, give it a business name and the number of papers it gets: the alert shows both.'}
+      </p>
 
       {busy ? (
         <div className="group">
@@ -218,11 +225,39 @@ export function StopsTab(p: Props) {
                 <div className="grow">
                   <div className="title">{r.line}</div>
                   <div className={`sub ${tone(r)}`}>{describe(r)}</div>
+                  {isBundle && r.status === 'found' && (
+                    <div className="row-fields">
+                      <input
+                        className="mini-input name"
+                        value={r.name}
+                        maxLength={MAX_LABEL}
+                        placeholder="Business name"
+                        aria-label={`Business name for ${r.line}`}
+                        enterKeyHint="next"
+                        autoCapitalize="words"
+                        autoCorrect="off"
+                        spellCheck={false}
+                        onChange={(e) => patch(i, { name: e.target.value })}
+                      />
+                      <input
+                        className="mini-input qty"
+                        value={r.qty}
+                        inputMode="numeric"
+                        pattern="[0-9]*"
+                        placeholder="Papers"
+                        aria-label={`Papers for ${r.line}`}
+                        aria-invalid={!!qtyProblem(r.qty)}
+                        enterKeyHint="done"
+                        onChange={(e) => patch(i, { qty: e.target.value })}
+                      />
+                    </div>
+                  )}
                 </div>
               </li>
             ))}
           </ul>
-          <button className="btn primary block" disabled={!chosen.length} onClick={addChosen}>
+          {badQty && <p className="footnote bad">Papers must be a whole number from 1 to 9999.</p>}
+          <button className="btn primary block" disabled={!chosen.length || badQty} onClick={addChosen}>
             Add {chosen.length} {noun}
             {chosen.length === 1 ? '' : 's'}
           </button>
@@ -232,9 +267,30 @@ export function StopsTab(p: Props) {
       <div className="section-label">Or place it without an address</div>
       <div className="group">
         <label className="row field">
-          <span className="title">Name</span>
-          <input value={p.label} onChange={(e) => p.onLabel(e.target.value)} placeholder="Optional, e.g. No. 14" />
+          <span className="title">{isBundle ? 'Business name' : 'Name'}</span>
+          <input
+            value={p.label}
+            maxLength={MAX_LABEL}
+            onChange={(e) => p.onLabel(e.target.value)}
+            placeholder={isBundle ? "e.g. Joe's Cafe" : 'Optional, e.g. No. 14'}
+            autoCapitalize="words"
+            autoCorrect="off"
+            spellCheck={false}
+          />
         </label>
+        {isBundle && (
+          <label className="row field">
+            <span className="title">Papers</span>
+            <input
+              value={p.qty}
+              inputMode="numeric"
+              pattern="[0-9]*"
+              onChange={(e) => p.onQty(e.target.value)}
+              placeholder="How many"
+              aria-invalid={!!qtyProblem(p.qty)}
+            />
+          </label>
+        )}
         <button className="row" onClick={() => p.onPlacing(!p.placing)} aria-pressed={p.placing}>
           <span className="icon-tint">
             <Icon name="pin" size={22} />
@@ -264,12 +320,14 @@ export function StopsTab(p: Props) {
               const quiet = s.type === 'nothrow' && onlyInTransit(p.route, occs, s.id)
               const unknown = sides.every((x) => x === null)
               return (
-                <li className="row" key={s.id}>
+                <li className="row stop-row" key={s.id}>
                   <span className="dot" style={{ background: STOP_COLOR[s.type] }} />
                   <button className="grow rowbtn" onClick={() => p.onFocus(s)}>
-                    <div className="title">{s.label ?? (s.type === 'bundle' ? 'Bundle drop' : 'No-throw house')}</div>
+                    <div className="title">{stopName(s)}</div>
                     <div className="sub">
-                      {s.type === 'bundle' ? `Bundle${s.qty ? ` of ${s.qty}` : ''}` : 'No-throw'} · {quiet ? 'in transit, so no alert' : sidesText(sides)}
+                      {/* A bundle drop with no amount says so, since its alert can't say how many to leave. */}
+                      <span className={s.type === 'bundle' && !s.qty ? 'warn-text' : undefined}>{stopDetail(s)}</span> ·{' '}
+                      {quiet ? 'in transit, so no alert' : sidesText(sides)}
                     </div>
                   </button>
                   <button
@@ -280,6 +338,9 @@ export function StopsTab(p: Props) {
                   >
                     {unknown ? 'Set side' : SIDE_WORD[sides.find((x) => x) as RoadSide]}
                   </button>
+                  <button className="icon-btn edit" aria-label={`Edit ${stopName(s)}`} onClick={() => setEditing(s.id)}>
+                    <Icon name="edit" size={20} />
+                  </button>
                   <button className="icon-btn" aria-label={`Delete ${s.label ?? 'stop'}`} onClick={() => p.onRemove(s.id)}>
                     <Icon name="trash" size={20} />
                   </button>
@@ -288,6 +349,18 @@ export function StopsTab(p: Props) {
             })}
           </ul>
         </>
+      )}
+
+      {editingStop && (
+        <StopDialog
+          key={editingStop.id}
+          stop={editingStop}
+          onSave={(change) => {
+            p.onEdit(editingStop.id, change)
+            setEditing(null)
+          }}
+          onClose={() => setEditing(null)}
+        />
       )}
     </>
   )

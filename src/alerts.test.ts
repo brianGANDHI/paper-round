@@ -3,6 +3,7 @@ import {
   aheadText,
   alertable,
   alertRadius,
+  alertText,
   alertSide,
   ALERT_DISTANCES,
   BACK_OFF_SLACK_M,
@@ -311,5 +312,34 @@ describe('where nothing is thrown at all', () => {
     expect(quietNote(0)).toBe('')
     expect(quietNote(1)).toMatch(/^1 no-throw house is on a transit stretch/)
     expect(quietNote(2)).toMatch(/^2 no-throw houses are on transit stretches/)
+  })
+})
+
+describe('what the banner for a stop says', () => {
+  const stop = (type: StopType, extra: Partial<Stop> = {}): Stop => ({ id: 's', type, pathIdx: 0, lat: 0, lng: 0, ...extra })
+
+  it('gives a bundle drop its name and how many papers', () => {
+    expect(alertText(stop('bundle', { label: "Joe's Cafe", qty: 12 }))).toEqual({ title: 'Bundle Drop', name: "Joe's Cafe", papers: '12 papers' })
+  })
+
+  it('says one paper for one', () => {
+    expect(alertText(stop('bundle', { label: 'Kiosk', qty: 1 })).papers).toBe('1 paper')
+  })
+
+  it('has no papers to show when the bundle drop has no amount, and a line to say what it is when it has no name', () => {
+    expect(alertText(stop('bundle', { label: "Joe's Cafe" })).papers).toBeNull()
+    expect(alertText(stop('bundle', { qty: 5 })).name).toBe('Bundle stop ahead.')
+    expect(alertText(stop('bundle'))).toEqual({ title: 'Bundle Drop', name: 'Bundle stop ahead.', papers: null })
+  })
+
+  it('shows a no-throw house by its name, or says what to do, and never counts papers', () => {
+    expect(alertText(stop('nothrow', { label: '12 Oak Road' }))).toEqual({ title: 'No Throw', name: '12 Oak Road', papers: null })
+    expect(alertText(stop('nothrow')).name).toBe('This house does not want a paper.')
+    // An amount left on a house that has become a no-throw is not something to leave at the door.
+    expect(alertText(stop('nothrow', { qty: 3 })).papers).toBeNull()
+  })
+
+  it('shows a name as it was given', () => {
+    expect(alertText(stop('bundle', { label: 'Hartley & Sons, 14 High St', qty: 40 })).name).toBe('Hartley & Sons, 14 High St')
   })
 })

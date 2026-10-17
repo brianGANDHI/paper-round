@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { haversine, occurrences, sideAt } from './geo'
 import {
   appendPoint,
+  cleanLabel,
   appendPoints,
   defaultRepeatSide,
   deletedNote,
@@ -10,12 +11,16 @@ import {
   deleteWarning,
   insertPoint,
   isDuplicateTap,
+  MAX_LABEL,
+  MAX_QTY,
   movePoint,
   nearestOnRoute,
   normalizeRoute,
   otherSide,
   paintRange,
   paintStretch,
+  parseQty,
+  qtyProblem,
   removeLastPoint,
   removeSplit,
   repeatSection,
@@ -24,7 +29,10 @@ import {
   setSectionSide,
   splitAt,
   stopAt,
+  stopDetail,
+  stopName,
   stopSides,
+  updateStop,
 } from './routeEdit'
 import { isSide, SIDES, type Pt, type Route, type Side, type Stop } from './types'
 
@@ -1095,6 +1103,117 @@ describe('deleting a section', () => {
       expect(deletedNote(deleteSection({ ...base(), stops: stops(3) }, 1)!, 1)).toBe(
         'Deleted section 2: 222 m and 3 stops. Its ends are joined by a straight transit line.',
       )
+    })
+  })
+})
+
+describe('naming a stop and saying how many papers it gets', () => {
+  const bundle = (extra: Partial<Stop> = {}): Stop => ({ id: 'b', type: 'bundle', lat: 51.0015, lng: 0.0003, pathIdx: 1, ...extra })
+  const house = (extra: Partial<Stop> = {}): Stop => ({ id: 'h', type: 'nothrow', lat: 51.0035, lng: 0.0003, pathIdx: 3, ...extra })
+  const withStops = (...stops: Stop[]): Route => ({ ...road(6), stops })
+
+  describe('a name as it was typed', () => {
+    it('tidies the spaces and keeps what was written', () => {
+      expect(cleanLabel("  Joe's   Cafe ")).toBe("Joe's Cafe")
+      expect(cleanLabel('Hartley & Sons\t14 High St')).toBe('Hartley & Sons 14 High St')
+    })
+
+    it('is nothing when it is blank', () => {
+      for (const blank of ['', '   ', '\n\t']) expect(cleanLabel(blank)).toBeUndefined()
+    })
+
+    it('is kept to a length an alert can show', () => {
+      expect(cleanLabel('x'.repeat(200))).toHaveLength(MAX_LABEL)
+      expect(cleanLabel('x'.repeat(MAX_LABEL))).toHaveLength(MAX_LABEL)
+    })
+
+    it('counts the length of what is kept, not of the spaces in front of it, and does not end on a space', () => {
+      expect(cleanLabel('   ' + 'x'.repeat(100))).toHaveLength(MAX_LABEL)
+      expect(cleanLabel('x'.repeat(MAX_LABEL - 1) + ' ' + 'y'.repeat(10))).toBe('x'.repeat(MAX_LABEL - 1))
+    })
+  })
+
+  describe('how many papers, as it was typed', () => {
+    it('is a whole number from 1 up', () => {
+      expect(parseQty('12')).toBe(12)
+      expect(parseQty(' 7 ')).toBe(7)
+      expect(parseQty('007')).toBe(7)
+      expect(parseQty('1')).toBe(1)
+      expect(parseQty(String(MAX_QTY))).toBe(MAX_QTY)
+    })
+
+    it('is nothing for anything else', () => {
+      for (const bad of ['', '  ', '0', '-3', '12.5', '1e3', '12 papers', 'abc', '+5', String(MAX_QTY + 1), '99999999999999999999']) {
+        expect(parseQty(bad), JSON.stringify(bad)).toBeUndefined()
+      }
+    })
+
+    it('has a problem to report only for something that was typed and is not an amount', () => {
+      expect(qtyProblem('')).toBeNull()
+      expect(qtyProblem('   ')).toBeNull()
+      expect(qtyProblem('12')).toBeNull()
+      expect(qtyProblem(String(MAX_QTY))).toBeNull()
+      for (const bad of ['0', '-3', '12.5', 'abc', String(MAX_QTY + 1)]) expect(qtyProblem(bad), bad).toContain(`1 to ${MAX_QTY}`)
+    })
+  })
+
+  describe('what a stop is called, and what it gets, in a list', () => {
+    it('uses the name, or says what kind of stop it is', () => {
+      expect(stopName(bundle({ label: "Joe's Cafe" }))).toBe("Joe's Cafe")
+      expect(stopName(bundle())).toBe('Bundle drop')
+      expect(stopName(house())).toBe('No-throw house')
+    })
+
+    it('says how many papers a bundle drop gets, or that no amount is set', () => {
+      expect(stopDetail(bundle({ qty: 12 }))).toBe('12 papers')
+      expect(stopDetail(bundle({ qty: 1 }))).toBe('1 paper')
+      expect(stopDetail(bundle())).toBe('no amount set')
+      expect(stopDetail(house())).toBe('No-throw')
+    })
+  })
+
+  describe('changing them', () => {
+    it('gives a bundle drop a name and an amount', () => {
+      const r = updateStop(withStops(bundle()), 'b', { label: "Joe's Cafe", qty: 12 })
+      expect(r.stops[0]).toMatchObject({ id: 'b', label: "Joe's Cafe", qty: 12 })
+    })
+
+    it('takes off what is left out, so blank means none', () => {
+      const r = updateStop(withStops(bundle({ label: "Joe's Cafe", qty: 12 })), 'b', { label: "Joe's Cafe" })
+      expect(r.stops[0].qty).toBeUndefined()
+      expect('qty' in r.stops[0]).toBe(false)
+      const none = updateStop(withStops(bundle({ label: "Joe's Cafe", qty: 12 })), 'b', {})
+      expect('label' in none.stops[0]).toBe(false)
+      expect('qty' in none.stops[0]).toBe(false)
+    })
+
+    it('gives a no-throw house a name but never an amount', () => {
+      const r = updateStop(withStops(house()), 'h', { label: '12 Oak Road', qty: 5 })
+      expect(r.stops[0]).toMatchObject({ id: 'h', label: '12 Oak Road' })
+      expect('qty' in r.stops[0]).toBe(false)
+    })
+
+    it('changes nothing else about the stop, or any other stop', () => {
+      const keep = bundle({ label: 'Old', qty: 3, side: 'left', pathIdx: 2 })
+      const other = house({ label: 'Next door', pathIdx: 4 })
+      const before = withStops(keep, other)
+      const r = updateStop(before, 'b', { label: 'New', qty: 9 })
+      expect(r.stops[0]).toEqual({ ...keep, label: 'New', qty: 9 })
+      expect(r.stops[1]).toBe(other)
+      expect(r.points).toBe(before.points)
+      expect(r.sideChanges).toBe(before.sideChanges)
+    })
+
+    it('is the same route when there is no such stop', () => {
+      const route = withStops(bundle())
+      expect(updateStop(route, 'nope', { label: 'x', qty: 1 })).toBe(route)
+    })
+
+    it('leaves the route it was given alone', () => {
+      const route = withStops(bundle({ label: 'Old', qty: 3 }))
+      const copy = structuredClone(route)
+      updateStop(route, 'b', { label: 'New', qty: 9 })
+      expect(route).toEqual(copy)
     })
   })
 })

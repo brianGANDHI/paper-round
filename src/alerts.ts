@@ -1,3 +1,4 @@
+import { plural } from './format'
 import { bearing, occurrences, sideAt, stopSide, type Occurrence } from './geo'
 import type { Route, Stop } from './types'
 
@@ -39,6 +40,19 @@ export function aheadText(ahead: number): string {
   if (ahead <= -10) return 'Passed'
   if (ahead < 15) return 'Now'
   return `${Math.round(ahead / 10) * 10} m`
+}
+
+/**
+ * What the banner for a stop says: the kind of stop, its name (what it was called, or a line that says what to do
+ * when it was given no name) and, for a bundle drop with an amount, how many papers. Papers is null for anything else.
+ */
+export function alertText(stop: Stop): { title: string; name: string; papers: string | null } {
+  const noThrow = stop.type === 'nothrow'
+  return {
+    title: noThrow ? 'No Throw' : 'Bundle Drop',
+    name: stop.label ?? (noThrow ? 'This house does not want a paper.' : 'Bundle stop ahead.'),
+    papers: !noThrow && stop.qty ? plural(stop.qty, 'paper', 'papers') : null,
+  }
 }
 
 /** Whether the route runs the same way along two of its segments, as opposed to back the other way. */
