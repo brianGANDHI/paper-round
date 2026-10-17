@@ -1,3 +1,4 @@
+import { plural } from './format'
 import { alongPath, bearing, cumulativeDistances, haversine, sideAt, snapWithin, type Occurrence, type Snap } from './geo'
 import { isSide, type Pt, type Route, type Side, type SideChange, type Stop, type StopType } from './types'
 
@@ -260,6 +261,93 @@ export function removeSplit(route: Route, index: number): SideChange[] {
   return sections(route)
     .filter((s) => s.index !== index || index === 0)
     .map((s) => ({ idx: s.idx, side: s.side }))
+}
+
+/** What deleting a section leaves: the route, and what went with the section. */
+export interface SectionDeletion {
+  route: Route
+  /** Where the section was: at the start of the route, at its end, or between two others. */
+  where: 'start' | 'end' | 'middle'
+  /** How much of the route went, in metres. */
+  meters: number
+  /** Whether the two ends it left behind were joined by a straight line of transit, rather than already meeting. */
+  line: boolean
+  /** The stops that were along it and are not beside any other part of the route. */
+  removed: Stop[]
+}
+
+/**
+ * The route without one of its sections. A section at the start or the end just comes off, and the route
+ * begins or ends where the next or the previous one does. One in the middle leaves a gap, which is closed
+ * with a straight line of transit, since nothing is thrown on a stretch nobody has drawn. The stops that
+ * were along the section go with it, unless another part of the route that is kept still passes within reach
+ * of them (the other pass of a street driven twice, say). Null for a section that isn't there, and for the
+ * only one: that is clearing the route.
+ */
+export function deleteSection(route: Route, index: number): SectionDeletion | null {
+  const secs = sections(route)
+  const gone = secs[index]
+  if (!gone || secs.length < 2) return null
+  const { idx: a, endIdx: b } = gone
+  const where = index === 0 ? 'start' : index === secs.length - 1 ? 'end' : 'middle'
+  const keep = (s: Section): SideChange => ({ idx: s.idx, side: s.side })
+
+  let points: Pt[]
+  let changes: SideChange[]
+  let line = false
+  if (where === 'start') {
+    points = route.points.slice(b)
+    changes = secs.slice(1).map((s) => ({ idx: s.idx - b, side: s.side }))
+  } else if (where === 'end') {
+    points = route.points.slice(0, a + 1)
+    changes = secs.slice(0, -1).map(keep)
+  } else {
+    // The sections either side meet at the points a and b. When those are the same spot the route simply
+    // carries on; otherwise a straight line joins them, which is a segment of its own.
+    line = haversine(route.points[a], route.points[b]) >= DUPLICATE_TAP_M
+    points = [...route.points.slice(0, a + 1), ...route.points.slice(line ? b : b + 1)]
+    const before = secs.slice(0, index).map(keep)
+    const after = secs.slice(index + 1).map((s) => ({ idx: s.idx - b + a + (line ? 1 : 0), side: s.side }))
+    const previous = secs[index - 1].side
+    const next = secs[index + 1].side
+    // The line is transit: part of a transit section beside it, or a section of its own.
+    if (line && previous !== 'transit') {
+      if (next === 'transit') after[0] = { ...after[0], idx: a }
+      else before.push({ idx: a, side: 'transit' })
+    }
+    changes = [...before, ...after]
+  }
+
+  // The stops along the section go with it. The line that closes the gap doesn't count as a road for them
+  // to be beside: only the parts of the route that are kept do.
+  const kept: Pt[][] =
+    where === 'start' ? [route.points.slice(b)] : where === 'end' ? [route.points.slice(0, a + 1)] : [route.points.slice(0, a + 1), route.points.slice(b)]
+  const nearKept = (p: Pt) => Math.min(...kept.map((part) => nearestOnRoute({ points: part }, p)?.dist ?? Infinity))
+  const removed: Stop[] = []
+  const stops: Stop[] = []
+  for (const stop of route.stops) {
+    const was = nearestOnRoute(route, stop)
+    if (was && was.idx >= a && was.idx < b && nearKept(stop) > MAX_STOP_OFFSET_M) removed.push(stop)
+    else stops.push({ ...stop, pathIdx: nearestOnRoute({ points }, stop)?.idx ?? 0 })
+  }
+  const segs = Math.max(0, points.length - 1)
+  const result: Route = { points, sideChanges: normalizeSideChanges(changes, segs), stops }
+  return { route: result, where, meters: gone.endM - gone.startM, line, removed }
+}
+
+/** What to tell someone before a section is deleted. */
+export function deleteWarning(d: SectionDeletion): string {
+  const length = formatDistance(d.meters)
+  const stops = d.removed.length ? ` and the ${plural(d.removed.length, 'stop', 'stops')} along it` : ''
+  if (d.where === 'start') return `This removes ${length} from the start of your route${stops}.`
+  if (d.where === 'end') return `This removes ${length} from the end of your route${stops}.`
+  return `This removes ${length} of your route${stops}.${d.line ? ' Its two ends are joined by a straight transit line, which you can redraw afterwards.' : ''}`
+}
+
+/** What to tell them once it is done. */
+export function deletedNote(d: SectionDeletion, index: number): string {
+  const stops = d.removed.length ? ` and ${plural(d.removed.length, 'stop', 'stops')}` : ''
+  return `Deleted section ${index + 1}: ${formatDistance(d.meters)}${stops}.${d.line ? ' Its ends are joined by a straight transit line.' : ''}`
 }
 
 /**

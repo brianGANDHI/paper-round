@@ -4,7 +4,10 @@ import {
   appendPoint,
   appendPoints,
   defaultRepeatSide,
+  deletedNote,
   deletePoint,
+  deleteSection,
+  deleteWarning,
   insertPoint,
   isDuplicateTap,
   movePoint,
@@ -16,13 +19,14 @@ import {
   removeLastPoint,
   removeSplit,
   repeatSection,
+  routeLength,
   sections,
   setSectionSide,
   splitAt,
   stopAt,
   stopSides,
 } from './routeEdit'
-import { isSide, SIDES, type Pt, type Route, type Stop } from './types'
+import { isSide, SIDES, type Pt, type Route, type Side, type Stop } from './types'
 
 // A straight road running north, ~111 m between points.
 const pt = (i: number): Pt => ({ lat: 51 + i * 0.001, lng: 0 })
@@ -812,5 +816,285 @@ describe('a side to start from when changing part of a section', () => {
 
   it('is never the side it was given', () => {
     for (const side of SIDES) expect(otherSide(side)).not.toBe(side)
+  })
+})
+
+describe('deleting a section', () => {
+  // Nine points running north: A is points 0 to 3, B is 3 to 5 and C is 5 to 8.
+  const three = (sides: [Side, Side, Side] = ['left', 'right', 'both']): Route => ({
+    points: Array.from({ length: 9 }, (_, i) => pt(i)),
+    sideChanges: [
+      { idx: 0, side: sides[0] },
+      { idx: 3, side: sides[1] },
+      { idx: 5, side: sides[2] },
+    ],
+    stops: [],
+  })
+  const STEP_M = haversine(pt(0), pt(1))
+
+  it('takes a section off the start, and the route begins where the next one did', () => {
+    const d = deleteSection(three(), 0)!
+    expect(d.where).toBe('start')
+    expect(d.line).toBe(false)
+    expect(d.route.points).toEqual(three().points.slice(3))
+    expect(d.route.sideChanges).toEqual([
+      { idx: 0, side: 'right' },
+      { idx: 2, side: 'both' },
+    ])
+    expect(d.meters).toBeCloseTo(3 * STEP_M, 3)
+  })
+
+  it('takes a section off the end, and the route ends where the one before did', () => {
+    const d = deleteSection(three(), 2)!
+    expect(d.where).toBe('end')
+    expect(d.line).toBe(false)
+    expect(d.route.points).toEqual(three().points.slice(0, 6))
+    expect(d.route.sideChanges).toEqual([
+      { idx: 0, side: 'left' },
+      { idx: 3, side: 'right' },
+    ])
+    expect(d.meters).toBeCloseTo(3 * STEP_M, 3)
+  })
+
+  it('joins the ends of a gap in the middle with a straight line of transit', () => {
+    const d = deleteSection(three(), 1)!
+    expect(d.where).toBe('middle')
+    expect(d.line).toBe(true)
+    // Point 4 is gone, so point 3 now runs straight to point 5.
+    expect(d.route.points).toEqual([...three().points.slice(0, 4), ...three().points.slice(5)])
+    expect(d.route.sideChanges).toEqual([
+      { idx: 0, side: 'left' },
+      { idx: 3, side: 'transit' },
+      { idx: 4, side: 'both' },
+    ])
+    expect(d.meters).toBeCloseTo(2 * STEP_M, 3)
+  })
+
+  it('lets a transit section before the gap carry on over the line', () => {
+    const d = deleteSection(three(['transit', 'right', 'both']), 1)!
+    expect(d.route.sideChanges).toEqual([
+      { idx: 0, side: 'transit' },
+      { idx: 4, side: 'both' },
+    ])
+  })
+
+  it('lets a transit section after the gap start on the line', () => {
+    const d = deleteSection(three(['left', 'right', 'transit']), 1)!
+    expect(d.route.sideChanges).toEqual([
+      { idx: 0, side: 'left' },
+      { idx: 3, side: 'transit' },
+    ])
+  })
+
+  it('keeps transit sections either side of the gap as they are, with the line in the one before', () => {
+    const d = deleteSection(three(['transit', 'right', 'transit']), 1)!
+    expect(d.route.sideChanges).toEqual([
+      { idx: 0, side: 'transit' },
+      { idx: 4, side: 'transit' },
+    ])
+  })
+
+  it('needs no line when the section was a loop that ended where it began', () => {
+    const north = (n: number): Pt => ({ lat: 51 + n * 0.001, lng: 0 })
+    const loop: Route = {
+      // A: 0 to 3 north. B: out east, up, and back to the point it started from. C: north again.
+      points: [north(0), north(1), north(2), north(3), { lat: north(3).lat, lng: 0.002 }, { lat: north(4).lat, lng: 0.002 }, north(3), north(4), north(5)],
+      sideChanges: [
+        { idx: 0, side: 'left' },
+        { idx: 3, side: 'right' },
+        { idx: 6, side: 'both' },
+      ],
+      stops: [],
+    }
+    const d = deleteSection(loop, 1)!
+    expect(d.line).toBe(false)
+    // The point where the loop ended is dropped as it is the one it began at: no zero-length stretch is left.
+    expect(d.route.points).toEqual([north(0), north(1), north(2), north(3), north(4), north(5)])
+    expect(d.route.sideChanges).toEqual([
+      { idx: 0, side: 'left' },
+      { idx: 3, side: 'both' },
+    ])
+    for (let i = 0; i < d.route.points.length - 1; i++) expect(haversine(d.route.points[i], d.route.points[i + 1])).toBeGreaterThan(50)
+  })
+
+  it('will not delete the only section, which is clearing the route, or one that is not there', () => {
+    expect(deleteSection(road(5), 0)).toBeNull()
+    expect(deleteSection(three(), 3)).toBeNull()
+    expect(deleteSection(three(), -1)).toBeNull()
+    expect(deleteSection({ points: [], sideChanges: [], stops: [] }, 0)).toBeNull()
+  })
+
+  it('leaves the route it was given alone', () => {
+    const before = three()
+    const copy = structuredClone(before)
+    deleteSection(before, 1)
+    deleteSection(before, 0)
+    deleteSection(before, 2)
+    expect(before).toEqual(copy)
+  })
+
+  it('always leaves a route that is valid and one connected line, whichever section goes', () => {
+    // A zigzag of five sections, each of two or three stretches, with transit among them.
+    const zig: Route = {
+      points: Array.from({ length: 13 }, (_, i) => ({ lat: 51 + i * 0.001, lng: (i % 2) * 0.001 })),
+      sideChanges: [
+        { idx: 0, side: 'left' },
+        { idx: 2, side: 'transit' },
+        { idx: 5, side: 'right' },
+        { idx: 7, side: 'both' },
+        { idx: 10, side: 'transit' },
+      ],
+      stops: [],
+    }
+    const total = routeLength(zig.points)
+    const count = sections(zig).length
+    for (let i = 0; i < count; i++) {
+      const d = deleteSection(zig, i)!
+      expect(normalizeRoute(d.route), `section ${i}`).toEqual(d.route)
+      // Every stretch of what is left belongs to one section or another, and the first section starts at the start.
+      const secs = sections(d.route)
+      expect(secs[0].idx).toBe(0)
+      expect(secs[secs.length - 1].endIdx).toBe(d.route.points.length - 1)
+      // The line, if any, replaces the section by the shortest way between the ends it left.
+      const sec = sections(zig)[i]
+      const closed = d.where === 'middle' ? haversine(zig.points[sec.idx], zig.points[sec.endIdx]) : 0
+      expect(routeLength(d.route.points), `section ${i}`).toBeCloseTo(total - d.meters + (d.line ? closed : 0), 3)
+      // The ends of the route are the same unless the section at that end was the one deleted.
+      if (d.where !== 'start') expect(d.route.points[0]).toEqual(zig.points[0])
+      if (d.where !== 'end') expect(d.route.points[d.route.points.length - 1]).toEqual(zig.points[zig.points.length - 1])
+    }
+  })
+
+  describe('with stops', () => {
+    // A stop `east` metres to the east of point `i`, about as far east as a house sits.
+    const stop = (id: string, i: number, east = 20, extra: Partial<Stop> = {}): Stop => ({
+      id,
+      lat: pt(i).lat,
+      lng: east / (111320 * Math.cos((51 * Math.PI) / 180)),
+      type: 'nothrow',
+      pathIdx: Math.min(i, 7),
+      ...extra,
+    })
+    const withStops = (stops: Stop[], base = three()): Route => ({ ...base, stops })
+
+    it('removes the stops along the section, and says which', () => {
+      const r = withStops([stop('a', 1), stop('b', 4), stop('c', 7)])
+      const d = deleteSection(r, 1)!
+      expect(d.removed.map((s) => s.id)).toEqual(['b'])
+      expect(d.route.stops.map((s) => s.id)).toEqual(['a', 'c'])
+    })
+
+    it('removes them even though the line that closes the gap runs right past them', () => {
+      // The road is straight, so the line from point 3 to point 5 runs through the middle of the deleted section.
+      const d = deleteSection(withStops([stop('b', 4, 5)]), 1)!
+      expect(d.line).toBe(true)
+      expect(d.removed.map((s) => s.id)).toEqual(['b'])
+    })
+
+    it('keeps a stop that is beside the part of the route next to the section', () => {
+      // Ten metres east of point 3, where the sections A and B meet: close to the end of A, which stays.
+      const r = withStops([stop('j', 3, 10)])
+      expect(deleteSection(r, 1)!.removed).toEqual([])
+      expect(deleteSection(r, 0)!.removed).toEqual([])
+      expect(deleteSection(r, 0)!.route.stops).toHaveLength(1)
+    })
+
+    it('keeps a stop that is along the section but also close to the road next to it, whichever side', () => {
+      // 24 m from where A ends, but already on B's first stretch; and 24 m from where C starts, on B's last.
+      const nearBefore = { ...stop('before', 3, 10), lat: pt(3).lat + 0.0002 }
+      const nearAfter = { ...stop('after', 5, 10), lat: pt(5).lat - 0.0002 }
+      const d = deleteSection(withStops([nearBefore, nearAfter]), 1)!
+      expect(d.removed).toEqual([])
+      expect(d.route.stops.map((s) => s.id)).toEqual(['before', 'after'])
+    })
+
+    it('keeps a stop on a road another pass still drives', () => {
+      // Out along a street and back: the stop is passed twice, so deleting either pass leaves it a road.
+      const north = (n: number): Pt => ({ lat: 51 + n * 0.001, lng: 0 })
+      const out: Route = {
+        points: [0, 1, 2, 3, 4, 3, 2, 1, 0].map(north),
+        sideChanges: [
+          { idx: 0, side: 'left' },
+          { idx: 4, side: 'right' },
+        ],
+        stops: [stop('s', 2)],
+      }
+      for (const index of [0, 1]) {
+        const d = deleteSection(out, index)!
+        expect(d.removed, `section ${index}`).toEqual([])
+        expect(d.route.stops).toHaveLength(1)
+      }
+    })
+
+    it('leaves alone stops that were far from the route anyway, and are not along the section', () => {
+      // One out beyond the section that comes after the one deleted, and one out beyond the section before it.
+      const r = withStops([stop('farBefore', 1, 500), stop('farAfter', 7, 500)])
+      const d = deleteSection(r, 1)!
+      expect(d.removed).toEqual([])
+      expect(d.route.stops.map((s) => s.id)).toEqual(['farBefore', 'farAfter'])
+    })
+
+    it('keeps each stop that is left tied to the nearest stretch of the new route', () => {
+      // 'c' is halfway between points 7 and 8, which are points 4 and 5 once the first three are gone.
+      const r = withStops([stop('a', 1), { ...stop('c', 7), lat: pt(7).lat + 0.0005 }, stop('d', 6)])
+      const d = deleteSection(r, 0)!
+      expect(d.removed.map((s) => s.id)).toEqual(['a'])
+      for (const s of d.route.stops) expect(s.pathIdx).toBe(nearestOnRoute(d.route, s)!.idx)
+      expect(d.route.stops.find((s) => s.id === 'c')!.pathIdx).toBe(4)
+    })
+
+    it('keeps everything else about a stop as it was', () => {
+      const keeper = stop('c', 7, 20, { label: '7 Elm St', qty: 3, type: 'bundle', side: 'left' })
+      const d = deleteSection(withStops([keeper]), 0)!
+      expect(d.route.stops[0]).toEqual({ ...keeper, pathIdx: d.route.stops[0].pathIdx })
+    })
+
+    it('has nothing to remove when there are no stops', () => {
+      expect(deleteSection(three(), 1)!.removed).toEqual([])
+    })
+  })
+
+  describe('what is said about it', () => {
+    const base = (): Route => ({
+      points: Array.from({ length: 9 }, (_, i) => pt(i)),
+      sideChanges: [
+        { idx: 0, side: 'left' },
+        { idx: 3, side: 'right' },
+        { idx: 5, side: 'both' },
+      ],
+      stops: [],
+    })
+    const stops = (n: number): Stop[] =>
+      Array.from({ length: n }, (_, i) => ({ id: `s${i}`, lat: pt(4).lat, lng: 0.0003, type: 'nothrow' as const, pathIdx: 3 }))
+
+    it('says how much is removed from the start of the route, or from the end of it', () => {
+      expect(deleteWarning(deleteSection(base(), 0)!)).toBe('This removes 334 m from the start of your route.')
+      expect(deleteWarning(deleteSection(base(), 2)!)).toBe('This removes 334 m from the end of your route.')
+    })
+
+    it('says the ends are joined with transit when a gap is closed, and that it can be redrawn', () => {
+      expect(deleteWarning(deleteSection(base(), 1)!)).toBe(
+        'This removes 222 m of your route. Its two ends are joined by a straight transit line, which you can redraw afterwards.',
+      )
+    })
+
+    it('counts the stops that go with it', () => {
+      const r = { ...base(), stops: stops(2) }
+      expect(deleteWarning(deleteSection(r, 1)!)).toContain('222 m of your route and the 2 stops along it.')
+      expect(deleteWarning(deleteSection({ ...base(), stops: stops(1) }, 1)!)).toContain('and the 1 stop along it.')
+    })
+
+    it('says nothing about a line when the ends already met', () => {
+      const d = { ...deleteSection(base(), 1)!, line: false }
+      expect(deleteWarning(d)).toBe('This removes 222 m of your route.')
+      expect(deletedNote(d, 1)).not.toContain('transit')
+    })
+
+    it('says afterwards which section went, how much, and what came with it', () => {
+      expect(deletedNote(deleteSection(base(), 0)!, 0)).toBe('Deleted section 1: 334 m.')
+      expect(deletedNote(deleteSection({ ...base(), stops: stops(3) }, 1)!, 1)).toBe(
+        'Deleted section 2: 222 m and 3 stops. Its ends are joined by a straight transit line.',
+      )
+    })
   })
 })

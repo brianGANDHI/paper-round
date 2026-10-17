@@ -29,6 +29,7 @@ interface Props {
   onSide: (index: number, side: Side) => void
   onMerge: (index: number) => void
   onRepeat: (index: number) => void
+  onDelete: (index: number) => void
   onBack: () => void
   onNext: () => void
 }
@@ -46,6 +47,7 @@ export function SidesTab({
   onSide,
   onMerge,
   onRepeat,
+  onDelete,
   onBack,
   onNext,
 }: Props) {
@@ -137,14 +139,28 @@ export function SidesTab({
               )}
             </div>
             <Segmented label={`Throw side for section ${s.index + 1}`} value={s.side} options={SIDE_OPTIONS} onChange={(side) => onSide(s.index, side)} />
+            {/* Only on the section that is picked, so the list isn't a row of delete buttons. */}
+            {focus === s.index && secs.length > 1 && !painting && (
+              <button
+                className="btn plain danger small card-delete"
+                aria-label={`Delete section ${s.index + 1}`}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onDelete(s.index)
+                }}
+              >
+                <Icon name="trash" size={16} />
+                Delete Section
+              </button>
+            )}
           </div>
         )
       })}
 
       {!painting && (
         <p className="footnote">
-          To change just part of a road, use Paint a Stretch. Transit, shown dotted, is for a stretch where you only drive, between places you
-          deliver: nothing is thrown there, and no-throw houses on it stay quiet.
+          To change just part of a road, use Paint a Stretch. A section that is picked can be deleted. Transit, shown dotted, is for a stretch
+          where you only drive, between places you deliver: nothing is thrown there, and no-throw houses on it stay quiet.
         </p>
       )}
       {repeated && <p className="footnote">Passes over the same road are drawn side by side on the map, so you can tell them apart.</p>}

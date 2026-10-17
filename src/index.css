@@ -745,6 +745,12 @@ button.row:active:not(:disabled) {
   box-shadow: inset 0 0 0 2px var(--tint);
 }
 
+/* Delete for the section that is picked, under its side toggle. */
+.card-delete {
+  align-self: center;
+  margin-top: -4px;
+}
+
 .card-head {
   display: flex;
   align-items: center;
@@ -1482,9 +1488,17 @@ button.row:active:not(:disabled) {
   padding: 0 4px;
 }
 
+.side-pop-more {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0 8px;
+}
+
 .side-pop .btn.plain {
-  align-self: center;
   min-height: 34px;
+  padding: 0 8px;
   font-size: 15px;
 }
 

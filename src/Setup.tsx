@@ -12,7 +12,10 @@ import type { Spot } from './placement'
 import { RouteTab } from './RouteTab'
 import {
   appendPoint,
+  deletedNote,
   deletePoint,
+  deleteSection,
+  deleteWarning,
   formatDistance,
   insertPoint,
   MAX_STOP_OFFSET_M,
@@ -304,6 +307,26 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
     if (pickedSection.side !== side && changeSide(picking.index, side)) showNoteAtTop()
   }
 
+  /** Delete a section once the person has seen what it takes with it: the stretch of route, and the stops along it. */
+  const deleteSectionAt = async (index: number) => {
+    const deletion = deleteSection(route, index)
+    if (!deletion) return
+    const ok = await confirm({
+      title: `Delete Section ${index + 1}?`,
+      message: deleteWarning(deletion),
+      confirmLabel: 'Delete Section',
+      destructive: true,
+    })
+    if (!ok) return
+    closePick()
+    // Sections are renumbered, so none stays picked, and a stretch half painted no longer fits the route.
+    setFocus(null)
+    setPaintStart(null)
+    onChange(deletion.route)
+    setNotice(deletedNote(deletion, index))
+    showNoteAtTop()
+  }
+
   /** From the box on the map: paint just part of the section, starting from a side it doesn't have already. */
   const paintPart = () => {
     if (!picking || !pickedSection) return
@@ -523,6 +546,7 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
             onSide={changeSide}
             onMerge={merge}
             onRepeat={repeat}
+            onDelete={deleteSectionAt}
             onBack={() => switchTab('route')}
             onNext={() => switchTab('stops')}
           />
@@ -557,6 +581,7 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
           side={pickedSection.side}
           onSide={chooseSide}
           onPart={paintPart}
+          onDelete={secs.length > 1 ? () => void deleteSectionAt(picking.index) : undefined}
           onClose={closePick}
         />
       )}

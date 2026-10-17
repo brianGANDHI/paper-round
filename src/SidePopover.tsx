@@ -15,6 +15,8 @@ interface Props {
   onSide: (side: Side) => void
   /** Change just part of the section, not all of it. */
   onPart: () => void
+  /** Delete the section. Missing when it is the only one, which is clearing the route. */
+  onDelete?: () => void
   onClose: () => void
 }
 
@@ -22,7 +24,7 @@ interface Props {
  * A small box over the map, where a section of the route was tapped, for choosing its side right there.
  * It sits clear of the sheet over the map, and closes when the map moves or is tapped.
  */
-export function SidePopover({ at, title, note, side, onSide, onPart, onClose }: Props) {
+export function SidePopover({ at, title, note, side, onSide, onPart, onDelete, onClose }: Props) {
   const box = useRef<HTMLDivElement>(null)
 
   // Placed before it is first drawn, once its size is known, so it never shows in the wrong place.
@@ -62,9 +64,17 @@ export function SidePopover({ at, title, note, side, onSide, onPart, onClose }: 
       </div>
       {note && <div className="side-pop-note">{note}</div>}
       <Segmented label={`Side for ${title}`} value={side} options={BRUSH_OPTIONS} onChange={onSide} />
-      <button className="btn plain small" onClick={onPart}>
-        Change just part of it
-      </button>
+      <div className="side-pop-more">
+        <button className="btn plain small" onClick={onPart}>
+          Change just part of it
+        </button>
+        {onDelete && (
+          <button className="btn plain danger small" aria-label="Delete this section" onClick={onDelete}>
+            <Icon name="trash" size={15} />
+            Delete
+          </button>
+        )}
+      </div>
     </div>
   )
 }
