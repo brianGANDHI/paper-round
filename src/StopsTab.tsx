@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { onlyInTransit, stopRoadSides, type RoadSide } from './alerts'
 import { STOP_COLOR } from './colors'
 import { occurrences } from './geo'
-import { lookupAddress, type Match } from './geocode'
+import { lookupAddress, shortPlaceName, type Match } from './geocode'
 import { Icon } from './Icon'
 import { formatDistance, stopAt } from './routeEdit'
 import { Empty, Segmented } from './ui'
@@ -52,9 +52,6 @@ function sidesText(sides: (RoadSide | null)[]): string {
   return sides.map((x) => (x ? SIDE_WORD[x] : '?')).join(', then ')
 }
 
-/** "12, Oak Road, Town, County, England, AB1 2CD, UK" is more than needed to recognise a place. */
-const shortName = (name: string) => name.split(', ').slice(0, 3).join(', ')
-
 function describe(r: Row): string {
   switch (r.status) {
     case 'waiting':
@@ -70,7 +67,7 @@ function describe(r: Row): string {
       const notes = [`${formatDistance(m.offM)} from your route`]
       if (!m.exact) notes.push('only the street or area was found, so the position is approximate')
       else if (m.offM > AUTO_SELECT_M) notes.push('far from your route, check it is the right place')
-      return `${shortName(m.place.name)}. ${notes.join('; ')}.`
+      return `${shortPlaceName(m.place.name)}. ${notes.join('; ')}.`
     }
   }
 }

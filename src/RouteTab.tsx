@@ -17,6 +17,8 @@ interface Props {
   follow: boolean
   onFollow: (on: boolean) => void
   finding: boolean
+  /** Opens the dialog that routes between two typed addresses. Offered while Transit is the side being drawn. */
+  onAddress: () => void
   /** The point picked on the map, if any. */
   selectedPoint: number | null
   onDeletePoint: () => void
@@ -89,6 +91,12 @@ export function RouteTab(p: Props) {
           <div className="brush-label">For new points</div>
           <Segmented label="What the points you add are for" value={p.brush} options={BRUSH_OPTIONS} onChange={p.onBrush} />
         </div>
+        {p.brush === 'transit' && (
+          <button className="btn secondary block" disabled={p.finding} title="Type a start and an end address to draw the fastest road" onClick={p.onAddress}>
+            <Icon name="pin" size={18} />
+            Route by Address
+          </button>
+        )}
         <div className="btn-row tools">
           {/* While a road is being looked up, this cancels that tap instead of taking back the one before. */}
           <button className="btn secondary" disabled={n === 0} onClick={p.onUndo}>

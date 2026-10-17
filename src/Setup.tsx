@@ -32,6 +32,8 @@ import {
 import { SidesTab } from './SidesTab'
 import { StopsTab } from './StopsTab'
 import { loadFollowRoads, saveFollowRoads } from './storage'
+import { transitNotice, type TransitResult } from './transit'
+import { TransitDialog } from './TransitDialog'
 import { Banner, RouteChip, Segmented, Sheet } from './ui'
 import { useRoadFollow } from './useRoadFollow'
 import type { Pt, Route, Side, Stop, StopType } from './types'
@@ -74,6 +76,8 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
   const [brush, setBrush] = useState<Side>('both')
   /** Taps follow roads instead of joining with straight lines. Needs internet, so it is the drawer's choice. */
   const [follow, setFollow] = useState(loadFollowRoads)
+  /** The dialog that routes between two typed addresses. */
+  const [addressOpen, setAddressOpen] = useState(false)
   const [selectedPoint, setSelectedPoint] = useState<number | null>(null)
   /** A point being dragged: shown at its new place until it is dropped. */
   const [drag, setDrag] = useState<{ index: number; pos: Pt } | null>(null)
@@ -155,6 +159,24 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
     setFollow(on)
     saveFollowRoads(on)
     setNotice(null)
+  }
+
+  const openAddress = () => {
+    setSelectedPoint(null)
+    setNotice(null)
+    setAddressOpen(true)
+  }
+
+  /** A road between two typed addresses has been worked out: it joins the route, whole, and Undo takes it off whole. */
+  const addTransit = (result: TransitResult) => {
+    roads.remember({ added: result.added, replaced: null })
+    onChange(result.route)
+    setAddressOpen(false)
+    // Include the point it joins, so there is always a line to fit.
+    goTo({ bounds: result.route.points.slice(Math.max(0, result.route.points.length - result.added.length - 1)) })
+    setNotice(transitNotice(result))
+    // The note sits at the top of the sheet, which may have been scrolled down to reach the button.
+    requestAnimationFrame(() => document.querySelector('.sheet-body')?.scrollTo({ top: 0, behavior: 'smooth' }))
   }
 
   const tapPoint = (index: number) => setSelectedPoint((now) => (now === index ? null : index))
@@ -425,6 +447,7 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
             follow={follow}
             onFollow={changeFollow}
             finding={roads.finding !== null}
+            onAddress={openAddress}
             selectedPoint={selectedPoint}
             onDeletePoint={removePoint}
             gpsError={error}
@@ -478,6 +501,7 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
           />
         )}
       </Sheet>
+      <TransitDialog open={addressOpen} route={route} onAdded={addTransit} onClose={() => setAddressOpen(false)} />
       {dialog}
     </div>
   )

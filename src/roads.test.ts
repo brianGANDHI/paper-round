@@ -4,11 +4,13 @@ import {
   canFollow,
   ENDPOINT,
   extendAlongRoads,
+  fetchDrive,
   fetchRoad,
   rate,
   ROAD_NOTICE,
   ROAD_SIMPLIFY_M,
   roadPoints,
+  roadSeconds,
   roadUrl,
   TIMEOUT_MS,
   undoStretch,
@@ -110,6 +112,11 @@ describe('the request', () => {
     expect(roadUrl(START, END)).toContain('radiuses=50;50')
   })
 
+  it('can look farther from the places for a street, as an address needs', () => {
+    expect(roadUrl(START, END, 250)).toContain('radiuses=250;250')
+    expect(roadUrl(START, END, 250)).not.toContain('radiuses=50')
+  })
+
   it('goes to the FOSSGIS server on its car profile', () => {
     expect(ENDPOINT).toBe('https://routing.openstreetmap.de/routed-car/route/v1/driving')
   })
@@ -160,6 +167,44 @@ describe('roadPoints', () => {
       answer('LINESTRING(1 2, 3 4)'),
     ]
     for (const body of bad) expect(thrownKind(() => roadPoints(body))).toBe('service')
+  })
+})
+
+describe('roadSeconds', () => {
+  it('reads how long the drive takes', () => {
+    expect(roadSeconds(answer())).toBe(154.9)
+  })
+
+  it('is null when the answer has no usable time', () => {
+    const bad: unknown[] = [null, undefined, 'x', {}, { routes: [] }, { routes: [{}] }, { routes: [{ duration: '154' }] }, { routes: [{ duration: -3 }] }, { routes: [{ duration: NaN }] }]
+    for (const body of bad) expect(roadSeconds(body)).toBeNull()
+  })
+})
+
+describe('fetchDrive', () => {
+  it('returns the street route with how long it takes', async () => {
+    mockFetch(json(answer()))
+    const drive = await fetchDrive(START, TAP)
+    expect(drive.points).toEqual(roadPoints(answer()))
+    expect(drive.seconds).toBe(154.9)
+  })
+
+  it('looks for a street as far from each end as it is told to', async () => {
+    const f = mockFetch(json(answer()))
+    await fetchDrive(START, TAP, { radiusM: 250 })
+    expect(f.mock.calls[0][0]).toBe(roadUrl(START, TAP, 250))
+  })
+
+  it('has no time when the answer does not give one', async () => {
+    const body = answer()
+    delete (body.routes[0] as { duration?: number }).duration
+    mockFetch(json(body))
+    expect((await fetchDrive(START, TAP)).seconds).toBeNull()
+  })
+
+  it('fails the same ways fetchRoad does', async () => {
+    mockFetch(json({ code: 'NoRoute' }, 400))
+    expect(await failure(fetchDrive(START, TAP))).toBe('no-road')
   })
 })
 

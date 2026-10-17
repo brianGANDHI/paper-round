@@ -3,7 +3,7 @@ import { canFollow, extendAlongRoads, undoStretch, type Stretch } from './roads'
 import { appendPoint } from './routeEdit'
 import type { Pt, Route, Side } from './types'
 
-/** How many taps of road can be taken back one by one. */
+/** How many stretches of road can be taken back one by one. */
 const HISTORY = 50
 
 interface Options {
@@ -87,5 +87,10 @@ export function useRoadFollow({ route, side, active, onRoute, onNotice }: Option
     return true
   }
 
-  return { finding, tap, undo }
+  /** Records a stretch added some other way, such as a route by address, so Undo takes it back whole too. */
+  const remember = (stretch: Stretch) => {
+    history.current = [...history.current, stretch].slice(-HISTORY)
+  }
+
+  return { finding, tap, undo, remember }
 }

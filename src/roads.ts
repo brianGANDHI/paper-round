@@ -10,7 +10,8 @@ import type { Pt, Route, Side } from './types'
  * (fossgis.de/arbeitsgruppen/osm-server/nutzungsbedingungen) allow one request a second, ask for
  * OpenStreetMap attribution with a link to fix the map, rule out heavy use, and promise no
  * availability. So there is a gap between requests, only one runs at a time, and any failure is
- * answered with a straight line instead.
+ * answered with a straight line instead. Route by address (transit.ts) asks the same server for the
+ * road between two typed addresses, and reports a failure instead.
  */
 const DEFAULT_ENDPOINT = 'https://routing.openstreetmap.de/routed-car/route/v1/driving'
 
@@ -48,12 +49,12 @@ export const ROAD_NOTICE: Record<Exclude<RoadFailure, 'cancelled'>, string> = {
 const lngLat = (p: Pt) => `${p.lng.toFixed(6)},${p.lat.toFixed(6)}`
 
 /** The request for the way from one place to another. OSRM wants longitude first. */
-export const roadUrl = (from: Pt, to: Pt) =>
-  `${ENDPOINT}/${lngLat(from)};${lngLat(to)}?overview=full&geometries=geojson&radiuses=${SNAP_RADIUS_M};${SNAP_RADIUS_M}`
+export const roadUrl = (from: Pt, to: Pt, radiusM = SNAP_RADIUS_M) =>
+  `${ENDPOINT}/${lngLat(from)};${lngLat(to)}?overview=full&geometries=geojson&radiuses=${radiusM};${radiusM}`
 
 interface RawRoute {
   code?: unknown
-  routes?: { geometry?: { coordinates?: unknown } }[]
+  routes?: { duration?: unknown; geometry?: { coordinates?: unknown } }[]
 }
 
 /** OSRM's two ways of saying there is nothing to follow: no street near a point, or no way between them. */
@@ -73,10 +74,25 @@ export function roadPoints(json: unknown): Pt[] {
   return simplify(points, ROAD_SIMPLIFY_M)
 }
 
+/** How long the drive takes, in seconds, as the service works it out. Null when the answer doesn't say. */
+export function roadSeconds(json: unknown): number | null {
+  const seconds = (json as RawRoute | null)?.routes?.[0]?.duration
+  return typeof seconds === 'number' && Number.isFinite(seconds) && seconds >= 0 ? seconds : null
+}
+
 export interface LookupOptions {
   /** Cancels the lookup, wherever it has got to. */
   signal?: AbortSignal
   timeoutMs?: number
+  /** How far from each end to look for a street, in metres. */
+  radiusM?: number
+}
+
+/** A drive from one place to another. */
+export interface Drive {
+  /** The street route, thinned, from the snapped start to the snapped end. */
+  points: Pt[]
+  seconds: number | null
 }
 
 const offline = () => typeof navigator !== 'undefined' && navigator.onLine === false
@@ -105,13 +121,13 @@ function spaced(signal?: AbortSignal): Promise<void> {
 }
 
 /**
- * The street route from one place to another, thinned, from the snapped start to the snapped end.
- * One request, never faster than the service allows. Always a RoadError when it fails:
- * offline (no connection, or the request never got through), timeout, service (an error
+ * The fastest street route from one place to another, thinned, from the snapped start to the snapped end,
+ * with how long it takes. One request, never faster than the service allows. Always a RoadError when it
+ * fails: offline (no connection, or the request never got through), timeout, service (an error
  * or an answer that makes no sense), no-road (nothing to follow there) or cancelled.
  */
-export async function fetchRoad(from: Pt, to: Pt, opts: LookupOptions = {}): Promise<Pt[]> {
-  const { signal, timeoutMs = TIMEOUT_MS } = opts
+export async function fetchDrive(from: Pt, to: Pt, opts: LookupOptions = {}): Promise<Drive> {
+  const { signal, timeoutMs = TIMEOUT_MS, radiusM } = opts
   if (signal?.aborted) throw new RoadError('cancelled')
   if (offline()) throw new RoadError('offline')
   await spaced(signal)
@@ -132,7 +148,7 @@ export async function fetchRoad(from: Pt, to: Pt, opts: LookupOptions = {}): Pro
     let res: Response
     try {
       // No custom headers, so the browser sends a plain request with no preflight.
-      res = await fetch(roadUrl(from, to), { signal: stop.signal })
+      res = await fetch(roadUrl(from, to, radiusM), { signal: stop.signal })
     } catch {
       throw stopped() ?? new RoadError('offline')
     }
@@ -143,11 +159,16 @@ export async function fetchRoad(from: Pt, to: Pt, opts: LookupOptions = {}): Pro
       throw stopped() ?? new RoadError('service', `unreadable answer (${res.status})`)
     }
     if (!res.ok) throw new RoadError(isNoRoad((json as RawRoute | null)?.code) ? 'no-road' : 'service', `status ${res.status}`)
-    return roadPoints(json)
+    return { points: roadPoints(json), seconds: roadSeconds(json) }
   } finally {
     clearTimeout(timer)
     signal?.removeEventListener('abort', cancel)
   }
+}
+
+/** The street route from one place to another: `fetchDrive` without the time. */
+export async function fetchRoad(from: Pt, to: Pt, opts: LookupOptions = {}): Promise<Pt[]> {
+  return (await fetchDrive(from, to, opts)).points
 }
 
 /** Whether a tap can be followed along roads: there has to be a point to start from, and the tap has to be somewhere new. */

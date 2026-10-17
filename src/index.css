@@ -1294,6 +1294,42 @@ button.row:active:not(:disabled) {
   border-color: var(--tint);
 }
 
+/* A labelled line of text in a dialog, like the From and To of a route by address. */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.field-label {
+  padding: 0 4px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--label-2);
+}
+
+.field-input {
+  display: block;
+  width: 100%;
+  padding: 11px 12px;
+  border: 0.5px solid var(--sep);
+  border-radius: 12px;
+  outline: 0;
+  font-size: 17px;
+  color: var(--label);
+  background: var(--card);
+}
+
+.field-input::placeholder {
+  color: var(--label-3);
+}
+
+.field-input:focus {
+  border-color: var(--tint);
+}
+
 .save-warning {
   position: relative;
   z-index: 1300;

@@ -55,6 +55,18 @@ export function viewboxFor(points: Pt[], marginM = 3000): string | null {
   return [minLng - dLng, maxLat + dLat, maxLng + dLng, minLat - dLat].map((n) => n.toFixed(6)).join(',')
 }
 
+/**
+ * "12, Oak Road, Town, County, England, AB1 2CD, UK" is more than needed to recognise a place:
+ * the house number joined to its street (after the name of a shop or hall, if it has one), and the next part or two.
+ */
+export function shortPlaceName(name: string, parts = 3): string {
+  const bits = name.split(', ').filter(Boolean)
+  // Nominatim gives the house number a part of its own: first, or after the name of a shop or a hall.
+  const number = bits.findIndex((b, i) => i < 2 && i + 1 < bits.length && /^\d+[a-z]?([-/]\d+[a-z]?)?$/i.test(b))
+  if (number >= 0) bits.splice(number, 2, `${bits[number]} ${bits[number + 1]}`)
+  return bits.slice(0, parts).join(', ')
+}
+
 export function parsePlaces(json: unknown): Place[] {
   if (!Array.isArray(json)) return []
   return (json as RawPlace[]).flatMap((r) => {

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { lookupAddress, parsePlaces, rate, searchPlaces, viewboxFor } from './geocode'
+import { lookupAddress, parsePlaces, rate, searchPlaces, shortPlaceName, viewboxFor } from './geocode'
 import { AUSTRALIA } from './region'
 import type { Route } from './types'
 
@@ -48,6 +48,49 @@ describe('parsePlaces', () => {
   it('drops rubbish and non-arrays', () => {
     expect(parsePlaces([{ lat: 'x', lon: '1' }, null])).toEqual([])
     expect(parsePlaces({ error: 'nope' })).toEqual([])
+  })
+})
+
+describe('shortPlaceName', () => {
+  const long = '12, Illawarra Road, Marrickville, Sydney, Inner West Council, New South Wales, 2204, Australia'
+
+  it('keeps a house number with its street, and the next part or two', () => {
+    expect(shortPlaceName(long)).toBe('12 Illawarra Road, Marrickville, Sydney')
+  })
+
+  it('shortens a street the same way', () => {
+    expect(shortPlaceName('Oak Road, Town, County, England, AB1 2CD, UK')).toBe('Oak Road, Town, County')
+  })
+
+  it('joins flat and range numbers to the street too', () => {
+    expect(shortPlaceName('3A, Oak Road, Town, County')).toBe('3A Oak Road, Town, County')
+    expect(shortPlaceName('12-14, Oak Road, Town, County')).toBe('12-14 Oak Road, Town, County')
+    expect(shortPlaceName('12/3, Oak Road, Town, County')).toBe('12/3 Oak Road, Town, County')
+  })
+
+  it('joins the number after the name of a hall or a shop too', () => {
+    expect(shortPlaceName('Marrickville Town Hall, 303, Marrickville Road, Marrickville, Inner West, Sydney')).toBe(
+      'Marrickville Town Hall, 303 Marrickville Road, Marrickville',
+    )
+  })
+
+  it('does not join a number that has no street after it, or one that comes later in the name', () => {
+    expect(shortPlaceName('Shop, 12')).toBe('Shop, 12')
+    expect(shortPlaceName('Oak Road, Town, 2204, Australia')).toBe('Oak Road, Town, 2204')
+  })
+
+  it('leaves a name that only starts with a digit alone', () => {
+    expect(shortPlaceName('7-Eleven, Oak Road, Town, County')).toBe('7-Eleven, Oak Road, Town')
+  })
+
+  it('copes with short and empty names', () => {
+    expect(shortPlaceName('Australia')).toBe('Australia')
+    expect(shortPlaceName('12')).toBe('12')
+    expect(shortPlaceName('')).toBe('')
+  })
+
+  it('can be asked for fewer parts', () => {
+    expect(shortPlaceName(long, 2)).toBe('12 Illawarra Road, Marrickville')
   })
 })
 
