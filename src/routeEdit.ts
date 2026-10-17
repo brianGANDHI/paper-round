@@ -291,6 +291,16 @@ export function defaultRepeatSide(side: Side, mode: RepeatMode): Side {
   return side === 'left' ? 'right' : 'left'
 }
 
+/**
+ * A side to start from when changing just part of a section, so it isn't the side the section already has:
+ * Left and Right swap, Both goes to Left and Transit to Both.
+ */
+export function otherSide(side: Side): Side {
+  if (side === 'left') return 'right'
+  if (side === 'right') return 'left'
+  return side === 'transit' ? 'both' : 'left'
+}
+
 /** A gap this small between the end of the route and the start of a repeated pass is the same spot. */
 const JOIN_M = 15
 

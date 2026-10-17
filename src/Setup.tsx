@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { quietNoThrows, quietNote, sideNote, stopsWithoutSide } from './alerts'
 import { useDialogs } from './confirm'
 import { useGps } from './device'
@@ -7,7 +7,8 @@ import { haversine, sideAt, simplify } from './geo'
 import { searchPlaces } from './geocode'
 import { Icon } from './Icon'
 import { MapView, type ViewCmd } from './MapView'
-import { passViews } from './passes'
+import { passNote, passViews } from './passes'
+import type { Spot } from './placement'
 import { RouteTab } from './RouteTab'
 import {
   appendPoint,
@@ -18,6 +19,7 @@ import {
   movePoint,
   nearestOnRoute,
   ON_ROUTE_M,
+  otherSide,
   paintStretch,
   removeLastPoint,
   removeSplit,
@@ -29,6 +31,7 @@ import {
   stopAt,
   type RepeatMode,
 } from './routeEdit'
+import { SidePopover } from './SidePopover'
 import { SidesTab } from './SidesTab'
 import { StopsTab } from './StopsTab'
 import { loadFollowRoads, saveFollowRoads } from './storage'
@@ -78,6 +81,8 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
   const [follow, setFollow] = useState(loadFollowRoads)
   /** The dialog that routes between two typed addresses. */
   const [addressOpen, setAddressOpen] = useState(false)
+  /** The section tapped on the map, and where, while the box for choosing its side is open. */
+  const [pick, setPick] = useState<{ index: number; at: Spot; route: Route } | null>(null)
   const [selectedPoint, setSelectedPoint] = useState<number | null>(null)
   /** A point being dragged: shown at its new place until it is dropped. */
   const [drag, setDrag] = useState<{ index: number; pos: Pt } | null>(null)
@@ -112,9 +117,15 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
     setTrace((t) => [...t, { lat: fix.lat, lng: fix.lng }])
   }, [fix, recording])
 
+  /** What a tap on the map does. Changing it closes the box on the map, which only makes sense while taps do nothing else. */
+  const changeTool = (t: Tool) => {
+    setTool(t)
+    setPick(null)
+  }
+
   const switchTab = (t: Tab) => {
     setTab(t)
-    setTool('none')
+    changeTool('none')
     setNotice(null)
     setSelectedPoint(null)
     setPaintStart(null)
@@ -129,6 +140,9 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
       ? movePoint(route, drag.index, drag.pos)
       : route
   const highlight = focus !== null ? views[focus]?.points : undefined
+  /** The section whose box is open, for as long as nothing has changed since it was tapped. */
+  const picking = pick && pick.route === route && tool === 'none' && !recording && (tab === 'route' || tab === 'sides') ? pick : null
+  const pickedSection = picking ? secs[picking.index] : undefined
   /** When a road is driven twice both passes lie under a tap, so a picked section says which one is meant. */
   const overlapping = views.some((v) => v.repeatOf !== null)
 
@@ -137,14 +151,14 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
     // Carry on with the side the route already ends on.
     const segs = segmentCount(route)
     if (segs) setBrush(sideAt(route, segs - 1))
-    setTool('draw')
+    changeTool('draw')
     setExpanded(false)
     setNotice(null)
     setSelectedPoint(null)
   }
 
   const finishDraw = () => {
-    setTool('none')
+    changeTool('none')
     setSelectedPoint(null)
   }
 
@@ -161,6 +175,9 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
     setNotice(null)
   }
 
+  /** A note sits at the top of the sheet, which may have been scrolled down to reach the control that made it. */
+  const showNoteAtTop = () => requestAnimationFrame(() => document.querySelector('.sheet-body')?.scrollTo({ top: 0, behavior: 'smooth' }))
+
   const openAddress = () => {
     setSelectedPoint(null)
     setNotice(null)
@@ -175,8 +192,7 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
     // Include the point it joins, so there is always a line to fit.
     goTo({ bounds: result.route.points.slice(Math.max(0, result.route.points.length - result.added.length - 1)) })
     setNotice(transitNotice(result))
-    // The note sits at the top of the sheet, which may have been scrolled down to reach the button.
-    requestAnimationFrame(() => document.querySelector('.sheet-body')?.scrollTo({ top: 0, behavior: 'smooth' }))
+    showNoteAtTop()
   }
 
   const tapPoint = (index: number) => setSelectedPoint((now) => (now === index ? null : index))
@@ -224,7 +240,7 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
     }
     lastRef.current = null
     setTrace([])
-    setTool('none')
+    changeTool('none')
     setNotice(null)
     setRecording(true)
   }
@@ -245,7 +261,7 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
       destructive: true,
     })
     if (!ok) return
-    setTool('none')
+    changeTool('none')
     setFocus(null)
     onChange({ points: [], sideChanges: [], stops: [] })
   }
@@ -268,7 +284,33 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
     const next = { ...route, sideChanges: setSectionSide(route, index, side) }
     onChange(next)
     // Nothing is thrown on transit, so no-throw houses there stay quiet: say so rather than let it be a surprise.
-    setNotice(side === 'transit' ? quietNote(quietNoThrows(next)) || null : null)
+    const note = side === 'transit' ? quietNote(quietNoThrows(next)) : ''
+    setNotice(note || null)
+    return note
+  }
+
+  /** A section's line was tapped on the map: pick it, and open the box for choosing its side where it was tapped. */
+  const tapSection = (index: number, at: Spot) => {
+    setFocus(index)
+    setPick({ index, at, route })
+  }
+
+  const closePick = useCallback(() => setPick(null), [])
+
+  /** A side chosen in the box on the map: the whole section takes it. */
+  const chooseSide = (side: Side) => {
+    if (!picking || !pickedSection) return
+    closePick()
+    if (pickedSection.side !== side && changeSide(picking.index, side)) showNoteAtTop()
+  }
+
+  /** From the box on the map: paint just part of the section, starting from a side it doesn't have already. */
+  const paintPart = () => {
+    if (!picking || !pickedSection) return
+    if (brush === pickedSection.side) setBrush(otherSide(pickedSection.side))
+    setFocus(picking.index)
+    switchTab('sides')
+    setPainting(true)
   }
 
   const merge = (index: number) => {
@@ -326,7 +368,7 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
   }
 
   const setPainting = (on: boolean) => {
-    setTool(on ? 'paint' : 'none')
+    changeTool(on ? 'paint' : 'none')
     setPaintStart(null)
     setNotice(null)
     if (on) setExpanded(false)
@@ -384,6 +426,8 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
       paintTap(p)
     } else if (tool === 'place') {
       placeStop(p)
+    } else {
+      closePick()
     }
   }
 
@@ -395,15 +439,16 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
         follow={recording}
         fit={tool !== 'draw'}
         bottomFrac={tool === 'draw' || tool === 'paint' ? 0.42 : 0.5}
-        highlight={tab === 'sides' ? highlight : undefined}
+        highlight={picking ? views[picking.index]?.points : tab === 'sides' ? highlight : undefined}
         editable={tool === 'draw'}
         selectedPoint={selectedPoint}
         onPointTap={tapPoint}
         onPointDrag={dragPoint}
         onPointDrop={dropPoint}
         onMidTap={addPointInside}
-        selectable={tab === 'sides' && tool === 'none'}
-        onSectionTap={setFocus}
+        selectable={(tab === 'sides' || tab === 'route') && tool === 'none' && !recording}
+        onSectionTap={tapSection}
+        onMoveStart={closePick}
         pin={
           roads.finding
             ? { pos: roads.finding, label: 'Finding road…', color: SIDE_COLOR[brush] }
@@ -423,7 +468,10 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
 
       <Sheet
         expanded={expanded}
-        onExpandedChange={setExpanded}
+        onExpandedChange={(open) => {
+          setExpanded(open)
+          closePick()
+        }}
         compact={tool === 'draw' || tool === 'paint'}
         // While drawing or painting, the sheet is just that tool's controls, so the map gets the room.
         header={
@@ -489,7 +537,7 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
             label={stopLabel}
             onLabel={setStopLabel}
             placing={tool === 'place'}
-            onPlacing={(on) => setTool(on ? 'place' : 'none')}
+            onPlacing={(on) => changeTool(on ? 'place' : 'none')}
             canMark={!!fix}
             onMarkHere={() => fix && placeStop(fix)}
             onAdd={addStops}
@@ -501,6 +549,17 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
           />
         )}
       </Sheet>
+      {picking && pickedSection && (
+        <SidePopover
+          at={picking.at}
+          title={`Section ${picking.index + 1} · ${formatDistance(pickedSection.endM - pickedSection.startM)}`}
+          note={passNote(views[picking.index])}
+          side={pickedSection.side}
+          onSide={chooseSide}
+          onPart={paintPart}
+          onClose={closePick}
+        />
+      )}
       <TransitDialog open={addressOpen} route={route} onAdded={addTransit} onClose={() => setAddressOpen(false)} />
       {dialog}
     </div>

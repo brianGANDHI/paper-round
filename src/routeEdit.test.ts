@@ -10,6 +10,7 @@ import {
   movePoint,
   nearestOnRoute,
   normalizeRoute,
+  otherSide,
   paintRange,
   paintStretch,
   removeLastPoint,
@@ -795,5 +796,21 @@ describe('transit stretches, where nothing is thrown', () => {
       { idx: 2, side: 'both' },
       { idx: 4, side: 'left' },
     ])
+  })
+})
+
+describe('a side to start from when changing part of a section', () => {
+  it('swaps left and right', () => {
+    expect(otherSide('left')).toBe('right')
+    expect(otherSide('right')).toBe('left')
+  })
+
+  it('moves both to left, and transit to both', () => {
+    expect(otherSide('both')).toBe('left')
+    expect(otherSide('transit')).toBe('both')
+  })
+
+  it('is never the side it was given', () => {
+    for (const side of SIDES) expect(otherSide(side)).not.toBe(side)
   })
 })

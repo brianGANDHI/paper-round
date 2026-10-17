@@ -92,8 +92,13 @@ function ViewController({ view, bottomFrac }: { view?: ViewCmd; bottomFrac: numb
   return null
 }
 
-function Clicks({ onTap }: { onTap?: (p: Pt) => void }) {
-  useMapEvents({ click: (e) => onTap?.({ lat: e.latlng.lat, lng: e.latlng.lng }) })
+function MapEvents({ onTap, onMoveStart }: { onTap?: (p: Pt) => void; onMoveStart?: () => void }) {
+  useMapEvents({
+    click: (e) => onTap?.({ lat: e.latlng.lat, lng: e.latlng.lng }),
+    // Panning, zooming and fitting all move what a box over the map was pointing at.
+    movestart: () => onMoveStart?.(),
+    zoomstart: () => onMoveStart?.(),
+  })
   return null
 }
 
@@ -203,9 +208,11 @@ interface Props {
   onPointDrag?: (index: number, pos: Pt) => void
   onPointDrop?: (index: number, pos: Pt) => void
   onMidTap?: (segment: number) => void
-  /** Tapping a section's line selects it. */
+  /** Tapping a section's line selects it, and says where on the map, in pixels from its top left corner. */
   selectable?: boolean
-  onSectionTap?: (index: number) => void
+  onSectionTap?: (index: number, at: { x: number; y: number }) => void
+  /** The map starts to move: panned, zoomed or fitted. */
+  onMoveStart?: () => void
   /** A labelled pin, for example where a stretch being painted starts. It is a ring in `color`, so it reads apart from the route's own markers. */
   pin?: { pos: Pt; label: string; color: string } | null
   view?: ViewCmd
@@ -229,6 +236,7 @@ export function MapView({
   onMidTap,
   selectable,
   onSectionTap,
+  onMoveStart,
   pin,
   view,
   onTap,
@@ -282,7 +290,7 @@ export function MapView({
             key={`h${v.index}`}
             positions={v.points.map(toLatLng)}
             pathOptions={{ ...LINE, color: '#000', weight: 30, opacity: 0, bubblingMouseEvents: false }}
-            eventHandlers={{ click: () => onSectionTap?.(v.index) }}
+            eventHandlers={{ click: (e) => onSectionTap?.(v.index, { x: e.containerPoint.x, y: e.containerPoint.y }) }}
           />
         ))}
       {arrows.map((a, i) => (
@@ -328,7 +336,7 @@ export function MapView({
       {editable && (
         <EditHandles points={route.points} selected={selectedPoint} onTap={onPointTap} onDrag={onPointDrag} onDrop={onPointDrop} onMid={onMidTap} />
       )}
-      <Clicks onTap={onTap} />
+      <MapEvents onTap={onTap} onMoveStart={onMoveStart} />
       {opensOnDefault && <FitRegion bottomFrac={bottomFrac} />}
       <ViewController view={view} bottomFrac={bottomFrac} />
       {follow ? (

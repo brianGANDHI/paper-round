@@ -1,7 +1,7 @@
 import { useEffect } from 'react'
 import { SIDE_COLOR } from './colors'
 import { Icon } from './Icon'
-import type { PassView } from './passes'
+import { passNote, type PassView } from './passes'
 import { formatDistance, sections } from './routeEdit'
 import { BRUSH_OPTIONS } from './sideOptions'
 import { Banner, Empty, Segmented } from './ui'
@@ -76,9 +76,8 @@ export function SidesTab({
     <>
       {!painting && (
         <p className="footnote">
-          Left and right are as you face the way you drive, and the arrows on the map show that direction. Tap a line on the map to pick its
-          section, or paint a stretch of road with a side. Choose Transit, shown dotted, for a stretch where you only drive, between places you
-          deliver: nothing is thrown there, and no-throw houses on it stay quiet.
+          Tap a line on the map to change its side right there. Left and right are as you face the way you drive, and the arrows on the map show
+          that direction.
         </p>
       )}
 
@@ -102,7 +101,7 @@ export function SidesTab({
 
       {secs.map((s) => {
         const view = views[s.index]
-        const note = view?.repeatOf != null ? `${view.reversed ? 'back along' : 'again along'} section ${view.repeatOf + 1}` : ''
+        const note = passNote(view)
         return (
           <div key={s.idx} id={`section-${s.index}`} className={focus === s.index ? 'card on' : 'card'} onClick={() => onFocus(s.index)}>
             <div className="card-head">
@@ -142,6 +141,12 @@ export function SidesTab({
         )
       })}
 
+      {!painting && (
+        <p className="footnote">
+          To change just part of a road, use Paint a Stretch. Transit, shown dotted, is for a stretch where you only drive, between places you
+          deliver: nothing is thrown there, and no-throw houses on it stay quiet.
+        </p>
+      )}
       {repeated && <p className="footnote">Passes over the same road are drawn side by side on the map, so you can tell them apart.</p>}
 
       <button className="btn primary block" onClick={onNext}>

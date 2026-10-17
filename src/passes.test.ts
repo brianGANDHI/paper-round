@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { distanceToPath } from './geo'
-import { PASS_OFFSET_M, passViews } from './passes'
+import { PASS_OFFSET_M, passNote, passViews } from './passes'
 import { repeatSection } from './routeEdit'
 import type { Pt, Route } from './types'
 
@@ -76,5 +76,26 @@ describe('drawing the sections of a route', () => {
     const third = passViews(route).filter((v) => v.repeatOf === 0).pop()!
     const first = passViews(route)[0]
     expect(distanceToPath(third.points[2], first.points)).toBeGreaterThan(PASS_OFFSET_M)
+  })
+})
+
+describe('describing a pass', () => {
+  it('says nothing for a section that is the first to drive its road', () => {
+    expect(passNote(passViews(oneStreet())[0])).toBe('')
+    expect(passNote(undefined)).toBe('')
+  })
+
+  it('says which section a pass drives again, and which way', () => {
+    const back = passViews(repeatSection(oneStreet(), 0, 'back')!)[1]
+    expect(passNote(back)).toBe('back along section 1')
+    // Driving it again the same way adds a link back to the start first, then the pass itself.
+    const [, link, again] = passViews(repeatSection(oneStreet(), 0, 'again')!)
+    expect(passNote(link)).toBe('back along section 1')
+    expect(passNote(again)).toBe('again along section 1')
+  })
+
+  it('counts sections from one', () => {
+    expect(passNote({ repeatOf: 4, reversed: false })).toBe('again along section 5')
+    expect(passNote({ repeatOf: 0, reversed: true })).toBe('back along section 1')
   })
 })
