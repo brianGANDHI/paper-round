@@ -1,6 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { activeRoute, addRoute, createLibrary } from './library'
-import { canSave, loadAlertDistance, loadFollowRoads, loadLibrary, saveAlertDistance, saveFollowRoads, saveLibrary } from './storage'
+import {
+  canSave,
+  loadAlertDistance,
+  loadFollowRoads,
+  loadLibrary,
+  loadVoiceTurns,
+  saveAlertDistance,
+  saveFollowRoads,
+  saveLibrary,
+  saveVoiceTurns,
+} from './storage'
 import type { Route } from './types'
 
 /** A stand-in for the phone's local storage. */
@@ -150,6 +160,53 @@ describe('the Follow roads switch', () => {
       store.data.set('paperround.followRoads', junk)
       expect(loadFollowRoads()).toBe(false)
     }
+  })
+})
+
+describe('the voice directions switch', () => {
+  let store: ReturnType<typeof fakeStorage>
+
+  beforeEach(() => {
+    store = fakeStorage()
+    vi.stubGlobal('localStorage', store)
+  })
+
+  it('starts off, so the turns are only an arrow until someone asks to hear them', () => {
+    expect(loadVoiceTurns()).toBe(false)
+  })
+
+  it('stays as it was left', () => {
+    saveVoiceTurns(true)
+    expect(loadVoiceTurns()).toBe(true)
+    saveVoiceTurns(false)
+    expect(loadVoiceTurns()).toBe(false)
+  })
+
+  it('is kept apart from the routes and from the other choices', () => {
+    saveVoiceTurns(true)
+    expect(store.data.has('paperround.library.v2')).toBe(false)
+    expect(loadFollowRoads()).toBe(false)
+    expect(loadAlertDistance()).toBe(40)
+  })
+
+  it('reads anything unexpected as off', () => {
+    for (const junk of ['{not json', '"yes"', '1', 'null', '[]']) {
+      store.data.set('paperround.voiceTurns', junk)
+      expect(loadVoiceTurns()).toBe(false)
+    }
+  })
+
+  it('still works on a phone that stores nothing, starting off each time', () => {
+    vi.stubGlobal('localStorage', {
+      getItem: () => {
+        throw new Error('no storage')
+      },
+      setItem: () => {
+        throw new Error('no storage')
+      },
+    })
+    expect(() => saveVoiceTurns(true)).not.toThrow()
+    expect(loadVoiceTurns()).toBe(false)
   })
 })
 

@@ -7,6 +7,7 @@ import type { Library, RoundState, Route } from './types'
 const LIBRARY_KEY = 'paperround.library.v2'
 const FOLLOW_ROADS_KEY = 'paperround.followRoads'
 const ALERT_DISTANCE_KEY = 'paperround.alertDistance'
+const VOICE_TURNS_KEY = 'paperround.voiceTurns'
 
 /** The single route and its progress, as saved by earlier versions of the app. */
 const LEGACY_ROUTE_KEY = 'paperround.route.v1'
@@ -65,6 +66,19 @@ export function saveFollowRoads(on: boolean): void {
     localStorage.setItem(FOLLOW_ROADS_KEY, JSON.stringify(on))
   } catch {
     // The phone won't store it; the switch just starts off next time.
+  }
+}
+
+/** Whether the next turn is also said out loud, as last chosen. Off until someone turns it on: the arrow is enough on its own. */
+export function loadVoiceTurns(): boolean {
+  return read(VOICE_TURNS_KEY) === true
+}
+
+export function saveVoiceTurns(on: boolean): void {
+  try {
+    localStorage.setItem(VOICE_TURNS_KEY, JSON.stringify(on))
+  } catch {
+    // The phone won't store it; the voice starts off next time.
   }
 }
 

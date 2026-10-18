@@ -20,8 +20,11 @@ import {
 import { Icon } from './Icon'
 import { MapView } from './MapView'
 import { formatDistance, routeLength } from './routeEdit'
-import { loadAlertDistance, saveAlertDistance } from './storage'
+import { loadAlertDistance, loadVoiceTurns, saveAlertDistance, saveVoiceTurns } from './storage'
 import { RouteChip, Segmented } from './ui'
+import { speak, speechAvailable, stopSpeaking, unlockSpeech } from './speech'
+import { TurnCard } from './TurnCard'
+import { onTheRoute, routeTurns, turnCue, turnSpeech, upcomingTurn, type TurnCue } from './turns'
 import type { Pt, RoundState, Route } from './types'
 
 /** The phone must move this far before its direction of travel is worked out again, so GPS jitter doesn't turn it. */
@@ -61,6 +64,13 @@ export function Round({ route, round, routeName, onRound, onGoSetup, onGoRoutes 
   const [snapIdx, setSnapIdx] = useState(0)
   /** How far along the route the driver is, in metres. */
   const [along, setAlong] = useState(0)
+  /** How far the phone is from the route at the latest fix, in metres. Null until there is one. */
+  const [routeGap, setRouteGap] = useState<number | null>(null)
+  const turns = useMemo(() => routeTurns(route.points), [route.points])
+  /** Whether the next turn is said out loud as well as shown. */
+  const [voice, setVoice] = useState(loadVoiceTurns)
+  /** What has been said about each turn, by how far along the route it is, so each is said once. */
+  const saidTurn = useRef(new Map<number, TurnCue>())
   const side = sideAt(route, snapIdx)
   /** How close to a stop its alert shows, as the driver chose it. */
   const [alertDistance, setAlertDistance] = useState(loadAlertDistance)
@@ -86,6 +96,7 @@ export function Round({ route, round, routeName, onRound, onGoSetup, onGoRoutes 
     if (!snap) return
     idxRef.current = snap.idx
     setSnapIdx(snap.idx)
+    setRouteGap(snap.dist)
     const driverAt = alongPath(cum, snap.idx, snap.t)
     setAlong(driverAt)
 
@@ -118,6 +129,38 @@ export function Round({ route, round, routeName, onRound, onGoSetup, onGoRoutes 
   const ahead = !current ? 0 : here && fix ? haversine(fix, current.stop) : current.at - along
   const currentSide = !current ? null : here ? approachSide(headingDeg, fix, current.stop) : alertSide(route, allOccs, current)
 
+  // The next turn, once it is near, while the phone is on the route and its fix is good enough to say how far along it is.
+  const next = fix && onTheRoute(routeGap, fix.accuracy) ? upcomingTurn(turns, along) : null
+  const nextAt = next?.turn.at ?? null
+  const nextAngle = next?.turn.angle ?? 0
+  const nextAhead = next?.ahead ?? 0
+
+  // With the voice on, each turn is said twice: a warning when it comes into view, and the last word as it is reached.
+  useEffect(() => {
+    if (!voice || nextAt === null) return
+    const cue = turnCue(nextAhead, saidTurn.current.get(nextAt) ?? null)
+    if (!cue) return
+    saidTurn.current.set(nextAt, cue)
+    speak(turnSpeech({ at: nextAt, angle: nextAngle }, nextAhead, cue))
+  }, [voice, nextAt, nextAngle, nextAhead])
+  // Leaving the round ends anything still being said.
+  useEffect(() => stopSpeaking, [])
+
+  const changeVoice = (on: boolean) => {
+    setVoice(on)
+    saveVoiceTurns(on)
+    if (!on) return stopSpeaking()
+    // Said as the button is tapped, which is also what lets the phone speak later, when a turn comes up. When a
+    // turn is due to be said just now, that is what is said, and it is not said again.
+    const cue = next ? turnCue(next.ahead, saidTurn.current.get(next.turn.at) ?? null) : null
+    if (next && cue) {
+      saidTurn.current.set(next.turn.at, cue)
+      speak(turnSpeech(next.turn, next.ahead, cue))
+    } else {
+      speak('Voice directions on')
+    }
+  }
+
   const changeAlertDistance = (distance: AlertDistance) => {
     setAlertDistance(distance)
     saveAlertDistance(distance)
@@ -143,6 +186,9 @@ export function Round({ route, round, routeName, onRound, onGoSetup, onGoRoutes 
     lastMoved.current = null
     setSnapIdx(0)
     setAlong(0)
+    setRouteGap(null)
+    saidTurn.current.clear()
+    stopSpeaking()
     setQueue([])
     onRound({ handledStopIds: [] })
   }
@@ -161,6 +207,7 @@ export function Round({ route, round, routeName, onRound, onGoSetup, onGoRoutes 
   const begin = (fresh: boolean) => {
     if (fresh) resetRun()
     unlockAudio()
+    if (voice) unlockSpeech()
     setStarted(true)
   }
 
@@ -217,6 +264,21 @@ export function Round({ route, round, routeName, onRound, onGoSetup, onGoRoutes 
               In metres. An alert comes up when you are within {alertDistance} m of a stop, and goes by itself once you are further away than that.
             </p>
           </div>
+          {speechAvailable() && (
+            <div className="alert-setting">
+              <div className="brush-label">Turn directions</div>
+              <Segmented
+                label="Whether the next turn is also said out loud"
+                value={voice ? 'voice' : 'arrow'}
+                options={[
+                  { value: 'arrow', label: 'Arrow only' },
+                  { value: 'voice', label: 'Arrow and voice' },
+                ]}
+                onChange={(v) => changeVoice(v === 'voice')}
+              />
+              <p className="fine">Turns show as an arrow on the map. The voice says them out loud too.</p>
+            </div>
+          )}
           {partial ? (
             <>
               <button className="btn primary block" onClick={() => begin(false)}>
@@ -261,6 +323,7 @@ export function Round({ route, round, routeName, onRound, onGoSetup, onGoRoutes 
           {SIDE_LABEL[side]}
           {(side === 'right' || side === 'both') && <Icon name="arrow-right" size={22} strokeWidth={2.5} />}
         </div>
+        {next && <TurnCard key={next.turn.at} turn={next.turn} ahead={next.ahead} />}
       </div>
 
       <div className="fab-group">
@@ -270,6 +333,11 @@ export function Round({ route, round, routeName, onRound, onGoSetup, onGoRoutes 
         <button className="fab" data-on={overview || undefined} aria-label="Show whole route" onClick={() => setOverview(true)}>
           <Icon name="map" />
         </button>
+        {speechAvailable() && (
+          <button className="fab" data-on={voice || undefined} aria-pressed={voice} aria-label="Voice directions" onClick={() => changeVoice(!voice)}>
+            <Icon name={voice ? 'volume-2' : 'volume-x'} />
+          </button>
+        )}
       </div>
 
       <div className="status-card">
