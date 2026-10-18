@@ -1,6 +1,7 @@
 import { plural } from './format'
-import { bearing, occurrences, sideAt, stopSide, type Occurrence } from './geo'
-import type { Route, Stop } from './types'
+import { bearing, byPosition, haversine, occurrences, sideAt, stopSide, type Occurrence } from './geo'
+import { houseNumber, MAX_STOP_OFFSET_M, withoutNumber } from './routeEdit'
+import type { Pt, Route, Stop } from './types'
 
 /** How near a stop you have to be, in metres, for its alert to come up. The driver picks one of these. */
 export const ALERT_DISTANCES = [10, 20, 30, 40, 50, 60] as const
@@ -26,10 +27,14 @@ export type ZoneExit = 'passed' | 'back'
 /**
  * Whether the driver has left a stop's zone, and which way. Null while still inside it.
  * `driverAt` is how far along the route the driver is, in metres.
+ *
+ * A stop that is off the route has no way along the route to be passed or backed away from. Its zone is the
+ * ground around it, and it counts as done once the driver, at `pos`, has been in it and is out of it again.
  */
-export function zoneExit(o: Occurrence, driverAt: number, radius: Record<Stop['type'], number>): ZoneExit | null {
-  const ahead = o.at - driverAt
+export function zoneExit(o: Occurrence, driverAt: number, radius: Record<Stop['type'], number>, pos?: Pt): ZoneExit | null {
   const r = radius[o.stop.type]
+  if (byPosition(o, radius)) return pos && haversine(pos, o.stop) > r + BACK_OFF_SLACK_M ? 'passed' : null
+  const ahead = o.at - driverAt
   if (ahead < -r) return 'passed'
   if (ahead > r + BACK_OFF_SLACK_M) return 'back'
   return null
@@ -44,16 +49,20 @@ export function aheadText(ahead: number): string {
 
 /**
  * What the banner for a stop says: the kind of stop, its name (what it was called, or else its address, or else a
- * line that says what to do), the address to show under a name when it has both, and for a bundle drop with an
- * amount how many papers. Papers is null for anything else.
+ * line that says what to do), the address to show under a name when it has both, the house number to look for, and
+ * for a bundle drop with an amount how many papers. Papers and number are null when there is none. The number is
+ * taken off the front of the name and address, as it is shown on its own.
  */
-export function alertText(stop: Stop): { title: string; name: string; address: string | null; papers: string | null } {
+export function alertText(stop: Stop): { title: string; name: string; address: string | null; papers: string | null; number: string | null } {
   const noThrow = stop.type === 'nothrow'
+  const number = houseNumber(stop)
   return {
     title: noThrow ? 'No Throw' : 'Bundle Drop',
-    name: stop.label ?? stop.address ?? (noThrow ? 'This house does not want a paper.' : 'Bundle stop ahead.'),
-    address: stop.label && stop.address ? stop.address : null,
+    // The number is on a plate of its own, so it is left off the front of the lines beside it.
+    name: withoutNumber(stop.label ?? stop.address ?? (noThrow ? 'This house does not want a paper.' : 'Bundle stop ahead.'), number),
+    address: stop.label && stop.address ? withoutNumber(stop.address, number) : null,
     papers: !noThrow && stop.qty ? plural(stop.qty, 'paper', 'papers') : null,
+    number,
   }
 }
 
@@ -98,17 +107,48 @@ export function alertSide(route: Pick<Route, 'points' | 'sideChanges'>, occs: Oc
 /** Whether the route is only being driven, with nothing thrown, where it passes this stop. */
 export const inTransit = (route: Pick<Route, 'sideChanges'>, o: Occurrence): boolean => sideAt(route, o.idx) === 'transit'
 
+/** Whether a stop is off the route: too far from it to be along it, as stops placed on the map used to have to be. */
+export const isOffRoute = (o: Pick<Occurrence, 'off'>): boolean => o.off > MAX_STOP_OFFSET_M
+
 /**
  * The stops worth an alert. A no-throw house means nothing on a stretch where nothing is thrown at all,
- * so it stays quiet there. A bundle drop still alerts, as it has nothing to do with throwing.
+ * so it stays quiet there. A bundle drop still alerts, as it has nothing to do with throwing. A stop off
+ * the route is on no stretch of it, so it is never quiet for that.
  */
 export const alertable = (route: Pick<Route, 'sideChanges'>, occs: Occurrence[]): Occurrence[] =>
-  occs.filter((o) => !(o.stop.type === 'nothrow' && inTransit(route, o)))
+  occs.filter((o) => !(o.stop.type === 'nothrow' && !isOffRoute(o) && inTransit(route, o)))
 
-/** Whether every time the route passes this stop is on a stretch where nothing is thrown. */
+/** Whether every time the route passes this stop is on a stretch where nothing is thrown. A stop off the route never is. */
 export function onlyInTransit(route: Pick<Route, 'sideChanges'>, occs: Occurrence[], stopId: string): boolean {
   const passes = occs.filter((o) => o.stop.id === stopId)
-  return passes.length > 0 && passes.every((o) => inTransit(route, o))
+  return passes.length > 0 && passes.every((o) => !isOffRoute(o) && inTransit(route, o))
+}
+
+/** Whether a stop is off the route, going by every time the route passes it. */
+export const stopOffRoute = (occs: Occurrence[], stopId: string): boolean => occs.some((o) => o.stop.id === stopId && isOffRoute(o))
+
+/** What to tell the driver about stops just added that are off the route. Empty when none is. */
+export function offRouteNote(offsM: number[]): string {
+  const far = offsM.filter((m) => m > MAX_STOP_OFFSET_M)
+  if (far.length === 0) return ''
+  return far.length === 1
+    ? `It is ${Math.round(far[0])} m from your route, so its alert comes up by where you are, whenever you are within the alert distance of it.`
+    : `${far.length} of them are off your route, so their alerts come up by where you are, whenever you are within the alert distance of them.`
+}
+
+/** Dead ahead or dead behind is within this many degrees of the way you are heading, and has no side. */
+const NO_SIDE_DEG = 15
+
+/**
+ * Which side of the road a stop is on as you come up to it: the left or right of the way you are heading. For
+ * a stop off the route, which has no road of the route's to be beside. Null when there is no heading yet or
+ * the stop is straight ahead or behind.
+ */
+export function approachSide(heading: number | null, pos: Pt | null, stop: Pt): RoadSide | null {
+  if (heading === null || !pos) return null
+  const turn = ((bearing(pos, stop) - heading + 540) % 360) - 180
+  if (Math.abs(turn) < NO_SIDE_DEG || Math.abs(turn) > 180 - NO_SIDE_DEG) return null
+  return turn > 0 ? 'right' : 'left'
 }
 
 /** How many no-throw houses sit on transit stretches, where they won't alert. */

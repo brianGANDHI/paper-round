@@ -75,6 +75,7 @@ export function StopDialog({ stop, onSave, onClose }: Props) {
             spellCheck={false}
             onChange={(e) => setAddress(e.target.value)}
           />
+          <span className="field-hint">The alert shows the house number from the start of the address.</span>
         </label>
         {bundle && (
           <label className="dialog-field">

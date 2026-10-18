@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { AlertBanner } from './AlertBanner'
-import { alertable, alertRadius, alertSide, ALERT_DISTANCES, isAlertDistance, zoneExit, type AlertDistance } from './alerts'
+import { alertable, alertRadius, alertSide, ALERT_DISTANCES, approachSide, isAlertDistance, zoneExit, type AlertDistance } from './alerts'
 import { SIDE_LABEL, SIDE_PILL } from './colors'
 import { useDialogs } from './confirm'
 import { alertBundle, alertNoThrow, unlockAudio, useGps, useWakeLock } from './device'
@@ -9,6 +9,7 @@ import {
   alongPath,
   approachingOccurrences,
   bearing,
+  byPosition,
   cumulativeDistances,
   haversine,
   occurrences,
@@ -45,6 +46,8 @@ export function Round({ route, round, routeName, onRound, onGoSetup, onGoRoutes 
   const idxRef = useRef(0)
   const lastMoved = useRef<Pt | null>(null)
   const heading = useRef<number | null>(null)
+  /** The same heading for drawing: which side of the road a stop off the route is on depends on it. */
+  const [headingDeg, setHeadingDeg] = useState<number | null>(null)
   const { fix, error } = useGps(started)
   const wake = useWakeLock(started)
   const { confirm, choose, dialog } = useDialogs()
@@ -76,6 +79,7 @@ export function Round({ route, round, routeName, onRound, onGoSetup, onGoRoutes 
     if (!lastMoved.current) lastMoved.current = fix
     else if (haversine(lastMoved.current, fix) >= HEADING_MIN_M) {
       heading.current = bearing(lastMoved.current, fix)
+      setHeadingDeg(heading.current)
       lastMoved.current = fix
     }
     const snap = snapToPath(fix, route.points, idxRef.current, heading.current)
@@ -88,7 +92,7 @@ export function Round({ route, round, routeName, onRound, onGoSetup, onGoRoutes 
     // An alert has nothing to tap: it goes when you are away from its stop. Driving on past a stop counts
     // it as done, and backing away from it first lets it alert again when you come back.
     const left = queueRef.current.flatMap((o) => {
-      const exit = zoneExit(o, driverAt, radius)
+      const exit = zoneExit(o, driverAt, radius, fix)
       return exit ? [{ o, exit }] : []
     })
     if (left.length) {
@@ -99,7 +103,7 @@ export function Round({ route, round, routeName, onRound, onGoSetup, onGoRoutes 
       if (passed.length) onRoundRef.current({ handledStopIds: [...handled, ...passed] })
     }
 
-    const fresh = approachingOccurrences(driverAt, fix, occs, handled, radius).filter((o) => !seen.current.has(o.key))
+    const fresh = approachingOccurrences(driverAt, fix, occs, handled, radius, fix.accuracy).filter((o) => !seen.current.has(o.key))
     if (!fresh.length) return
     fresh.forEach((o) => seen.current.add(o.key))
     setQueue((q) => [...q, ...fresh])
@@ -108,7 +112,11 @@ export function Round({ route, round, routeName, onRound, onGoSetup, onGoRoutes 
   }, [fix, route, handled, occs, cum, radius])
 
   const current = queue.find((o) => o.stop.type === 'nothrow') ?? queue[0]
-  const currentSide = current ? alertSide(route, allOccs, current) : null
+  // A stop off the route is met by where the driver is: its distance is how far off it is, and its side is the side it is on
+  // as the driver comes up to it. One along the route has a distance and a side along the route.
+  const here = current ? byPosition(current, radius) : false
+  const ahead = !current ? 0 : here && fix ? haversine(fix, current.stop) : current.at - along
+  const currentSide = !current ? null : here ? approachSide(headingDeg, fix, current.stop) : alertSide(route, allOccs, current)
 
   const changeAlertDistance = (distance: AlertDistance) => {
     setAlertDistance(distance)
@@ -131,6 +139,7 @@ export function Round({ route, round, routeName, onRound, onGoSetup, onGoRoutes 
     seen.current.clear()
     idxRef.current = 0
     heading.current = null
+    setHeadingDeg(null)
     lastMoved.current = null
     setSnapIdx(0)
     setAlong(0)
@@ -241,7 +250,7 @@ export function Round({ route, round, routeName, onRound, onGoSetup, onGoRoutes 
             key={current.key}
             stop={current.stop}
             pass={Number(current.key.split('#')[1] ?? 1)}
-            ahead={current.at - along}
+            ahead={ahead}
             side={currentSide}
             waiting={queue.length - 1}
           />

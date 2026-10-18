@@ -2,10 +2,12 @@ import { describe, expect, it } from 'vitest'
 import {
   alongPath,
   approachingOccurrences,
+  byPosition,
   cumulativeDistances,
   distanceToPath,
   haversine,
   occurrences,
+  POSITION_MAX_ACCURACY_M,
   offsetPath,
   sideAt,
   simplify,
@@ -335,7 +337,7 @@ describe('which side of the road a stop is on', () => {
 
 describe('a small alert zone', () => {
   const stop: Stop = { id: 's', type: 'nothrow', pathIdx: 0, lat: 51.005, lng: 0 }
-  const o: Occurrence = { key: 's', stop, idx: 4, at: 500 }
+  const o: Occurrence = { key: 's', stop, idx: 4, at: 500, off: 0 }
   const here: Pt = { lat: 51.005, lng: 0 }
   const zone = (m: number) => ({ nothrow: m, bundle: m })
 
@@ -360,5 +362,112 @@ describe('the throw side along a route with transit in it', () => {
   it('is transit from where that stretch starts until the next change', () => {
     const r = { sideChanges: [{ idx: 0, side: 'both' as const }, { idx: 3, side: 'transit' as const }, { idx: 6, side: 'left' as const }] }
     expect([0, 2, 3, 5, 6, 9].map((i) => sideAt(r, i))).toEqual(['both', 'both', 'transit', 'transit', 'left', 'left'])
+  })
+})
+
+describe('how far a stop is from the route', () => {
+  const east = (m: number) => m / 70050 // degrees of longitude in m metres, at this latitude
+
+  it('is given with every occurrence of a stop, as the distance to the nearest part of the route', () => {
+    const near = occurrences({ points: road, stops: [{ ...stopOnStreet('a', 51.0055), lng: east(14) }] })
+    expect(near[0].off).toBeCloseTo(14, 0)
+    const far = occurrences({ points: road, stops: [{ ...stopOnStreet('b', 51.0055), lng: east(250) }] })
+    expect(far[0].off).toBeCloseTo(250, 0)
+  })
+
+  it('is the same for each pass of a street driven twice', () => {
+    const passes = occurrences({ points: outAndBack, stops: [{ ...stopOnStreet('a', 51.0055), lng: east(14) }] })
+    expect(passes).toHaveLength(2)
+    expect(passes[0].off).toBe(passes[1].off)
+  })
+
+  it('is zero for a stop on the line of the route', () => {
+    expect(occurrences({ points: road, stops: [{ ...stopOnStreet('a', 51.0055), lng: 0 }] })[0].off).toBeCloseTo(0, 3)
+  })
+})
+
+describe('stops that are met by where the driver is, not along the route', () => {
+  const east = (m: number) => m / 70050
+  const zone = (m: number) => ({ nothrow: m, bundle: m })
+  const stopAtOff = (id: string, lat: number, offM: number, type: Stop['type'] = 'bundle'): Stop => ({
+    id,
+    type,
+    pathIdx: 0,
+    lat,
+    lng: east(offM),
+  })
+  const keys = (list: { key: string }[]) => list.map((o) => o.key)
+
+  it('are those further from the route than the alert distance and the slack beside it', () => {
+    const [near, far] = occurrences({ points: road, stops: [stopAtOff('n', 51.005, 60), stopAtOff('f', 51.005, 80)] }).sort((a, b) => a.off - b.off)
+    // 40 m zone: the route brings the driver near enough to a stop up to 70 m away.
+    expect(byPosition(near, zone(40))).toBe(false)
+    expect(byPosition(far, zone(40))).toBe(true)
+    // A bigger zone reaches the further stop from the route too, and a smaller one lets go of the nearer.
+    expect(byPosition(far, zone(60))).toBe(false)
+    expect(byPosition(near, zone(10))).toBe(true)
+  })
+
+  it('go by the zone of their own kind of stop', () => {
+    const [o] = occurrences({ points: road, stops: [stopAtOff('f', 51.005, 80)] })
+    expect(byPosition(o, { nothrow: 60, bundle: 40 })).toBe(true)
+    expect(byPosition({ ...o, stop: { ...o.stop, type: 'nothrow' } }, { nothrow: 60, bundle: 40 })).toBe(false)
+  })
+
+  it('alert when the driver is within the alert distance of them, wherever the driver is along the route', () => {
+    const occs = occurrences({ points: road, stops: [stopAtOff('f', 51.005, 120)] })
+    // 30 m from the stop, whether the driver is far from the part of the route it is beside or right at it.
+    const close = { lat: 51.005, lng: east(150) }
+    expect(keys(approachingOccurrences(1500, close, occs, new Set(), zone(40)))).toEqual(['f'])
+    expect(keys(approachingOccurrences(0, close, occs, new Set(), zone(40)))).toEqual(['f'])
+    expect(keys(approachingOccurrences(occs[0].at, close, occs, new Set(), zone(40)))).toEqual(['f'])
+    // 50 m from it is outside the zone, wherever along the route the driver is.
+    const outside = { lat: 51.005, lng: east(170) }
+    expect(approachingOccurrences(0, outside, occs, new Set(), zone(40))).toHaveLength(0)
+    expect(approachingOccurrences(occs[0].at, outside, occs, new Set(), zone(40))).toHaveLength(0)
+  })
+
+  it('do not alert further away than the alert distance, even for a driver on the route level with them', () => {
+    const occs = occurrences({ points: road, stops: [stopAtOff('f', 51.005, 120)] })
+    // On the road, level with the stop: 120 m away.
+    expect(approachingOccurrences(occs[0].at, { lat: 51.005, lng: 0 }, occs, new Set(), zone(40))).toHaveLength(0)
+    // 41 m away is outside a 40 m zone, and 39 m is inside it.
+    expect(approachingOccurrences(occs[0].at, { lat: 51.005, lng: east(120 - 41) }, occs, new Set(), zone(40))).toHaveLength(0)
+    expect(approachingOccurrences(occs[0].at, { lat: 51.005, lng: east(120 - 39) }, occs, new Set(), zone(40))).toHaveLength(1)
+  })
+
+  it('leave stops that are done alone', () => {
+    const occs = occurrences({ points: road, stops: [stopAtOff('f', 51.005, 120)] })
+    expect(approachingOccurrences(0, { lat: 51.005, lng: east(120) }, occs, new Set(['f']), zone(40))).toHaveLength(0)
+  })
+
+  it('are met one pass at a time, in order, when the route goes by them more than once', () => {
+    const occs = occurrences({ points: outAndBack, stops: [stopAtOff('f', 51.005, 90)] })
+    expect(keys(occs)).toEqual(['f', 'f#2'])
+    const here = { lat: 51.005, lng: east(90) }
+    expect(keys(approachingOccurrences(0, here, occs, new Set(), zone(40)))).toEqual(['f'])
+    expect(keys(approachingOccurrences(0, here, occs, new Set(['f']), zone(40)))).toEqual(['f#2'])
+    expect(keys(approachingOccurrences(0, here, occs, new Set(['f', 'f#2']), zone(40)))).toEqual([])
+  })
+
+  it('ignore a fix that is too uncertain to say the driver is near', () => {
+    const occs = occurrences({ points: road, stops: [stopAtOff('f', 51.005, 120)] })
+    const here = { lat: 51.005, lng: east(120) }
+    expect(approachingOccurrences(0, here, occs, new Set(), zone(40), POSITION_MAX_ACCURACY_M)).toHaveLength(1)
+    expect(approachingOccurrences(0, here, occs, new Set(), zone(40), POSITION_MAX_ACCURACY_M + 1)).toHaveLength(0)
+  })
+
+  it('leave stops along the route to the route, so a fix that is not good is no reason to miss them', () => {
+    const occs = occurrences({ points: road, stops: [{ ...stopOnStreet('a', 51.005), lng: east(14) }] })
+    expect(approachingOccurrences(occs[0].at - 20, { lat: 51.0048, lng: 0 }, occs, new Set(), zone(40), 500)).toHaveLength(1)
+  })
+
+  it('come with the nearest first, among stops of both kinds', () => {
+    const occs = occurrences({
+      points: road,
+      stops: [stopAtOff('far', 51.005, 100), { ...stopAtOff('near', 51.0052, 100), type: 'nothrow' }],
+    })
+    const here = { lat: 51.0051, lng: east(100) }
+    expect(keys(approachingOccurrences(0, here, occs, new Set(), zone(40)))).toEqual(['far', 'near'])
   })
 })

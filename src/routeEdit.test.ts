@@ -10,6 +10,7 @@ import {
   deletePoint,
   deleteSection,
   deleteWarning,
+  houseNumber,
   insertPoint,
   isDuplicateTap,
   looksLikeAddress,
@@ -38,6 +39,7 @@ import {
   stopSides,
   stopWhere,
   updateStop,
+  withoutNumber,
 } from './routeEdit'
 import { isSide, SIDES, type Pt, type Route, type Side, type Stop } from './types'
 
@@ -1055,6 +1057,19 @@ describe('deleting a section', () => {
       expect(d.route.stops.map((s) => s.id)).toEqual(['farBefore', 'farAfter'])
     })
 
+    it('keeps a stop that is off the route, even when the section deleted is the nearest part of it', () => {
+      // 500 m and 70 m east of point 4, in the middle of the section deleted. A stop 50 m east is still along it.
+      const r = withStops([stop('far', 4, 500), stop('off', 4, 70), stop('along', 4, 50)])
+      const d = deleteSection(r, 1)!
+      expect(d.removed.map((s) => s.id)).toEqual(['along'])
+      expect(d.route.stops.map((s) => s.id)).toEqual(['far', 'off'])
+    })
+
+    it('does not count a stop that is off the route among those a deletion warns about', () => {
+      const r = withStops([stop('far', 4, 500), stop('along', 4, 20)])
+      expect(deleteWarning(deleteSection(r, 1)!)).toContain('1 stop along it')
+    })
+
     it('keeps each stop that is left tied to the nearest stretch of the new route', () => {
       // 'c' is halfway between points 7 and 8, which are points 4 and 5 once the first three are gone.
       const r = withStops([stop('a', 1), { ...stop('c', 7), lat: pt(7).lat + 0.0005 }, stop('d', 6)])
@@ -1164,6 +1179,14 @@ describe('naming a stop and saying how many papers it gets', () => {
       for (const address of ['12 Oak Road', '12 Oak Road, Lewes', '  12 Oak Road ', '12A Oak Road', '3/12 Oak Road', '12-14 Oak Road', '3b/12-14 Oak Rd']) {
         expect(looksLikeAddress(address), address).toBe(true)
       }
+    })
+
+    it('does not read a number and a word that is not a street as an address', () => {
+      for (const name of ['24 Hour Pharmacy', '7 Day Cafe', '5 Star Motel', '2 Minute Noodles', '24 hours Fitness']) {
+        expect(looksLikeAddress(name), name).toBe(false)
+      }
+      // But a street whose name only starts with one of those words is still an address.
+      for (const address of ['24 Hourglass Road', '5 Starling Street', '7 Dayton Avenue']) expect(looksLikeAddress(address), address).toBe(true)
     })
 
     it('leaves names alone, including ones that start with a number', () => {
@@ -1302,5 +1325,95 @@ describe('naming a stop and saying how many papers it gets', () => {
       updateStop(route, 'b', { label: 'New', qty: 9 })
       expect(route).toEqual(copy)
     })
+  })
+})
+
+describe('the house number to look for', () => {
+  it('is the number an address starts with', () => {
+    expect(houseNumber({ address: '12 Oak Road' })).toBe('12')
+    expect(houseNumber({ address: '  12 Oak Road, Lewes ' })).toBe('12')
+    expect(houseNumber({ address: '12a Oak Road' })).toBe('12A')
+    expect(houseNumber({ address: '3/12 Oak Road' })).toBe('3/12')
+    expect(houseNumber({ address: '12-14 High Street' })).toBe('12-14')
+    expect(houseNumber({ address: '3b/12-14 High Street' })).toBe('3B/12-14')
+    expect(houseNumber({ address: '1204 Mulgoa Road' })).toBe('1204')
+  })
+
+  it('skips a unit, a flat or a shop in front of it', () => {
+    expect(houseNumber({ address: 'Unit 3, 12 Oak Road' })).toBe('12')
+    expect(houseNumber({ address: 'Shop 4, 120 High Street, Lewes' })).toBe('120')
+    expect(houseNumber({ address: 'Flat 2, 7B Elm Street' })).toBe('7B')
+    expect(houseNumber({ address: 'unit 12/3, 45 King St' })).toBe('45')
+  })
+
+  it('shows the letters of a number in capitals, whichever way they were typed', () => {
+    expect(houseNumber({ address: 'unit 3, 12a Oak Road' })).toBe('12A')
+    expect(houseNumber({ address: 'lot 7a Smith Road' })).toBe('7A')
+    expect(houseNumber({ address: '12a Oak Road' })).toBe('12A')
+    expect(houseNumber({ label: 'no. 14b' })).toBe('14B')
+  })
+
+  it('reads a lot number, or a number that says it is one', () => {
+    expect(houseNumber({ address: 'Lot 7 Smith Road' })).toBe('7')
+    expect(houseNumber({ address: 'No. 14' })).toBe('14')
+    expect(houseNumber({ address: 'No 14 Oak Road' })).toBe('14')
+    expect(houseNumber({ address: '#14' })).toBe('14')
+    expect(houseNumber({ address: 'Number 9, Elm Street' })).toBe('9')
+  })
+
+  it('comes from the address before the name', () => {
+    expect(houseNumber({ label: 'No. 5', address: '12 Oak Road' })).toBe('12')
+    expect(houseNumber({ label: "Joe's Cafe", address: '12 Oak Road' })).toBe('12')
+  })
+
+  it('comes from the name when the address has no number', () => {
+    expect(houseNumber({ label: 'No. 14', address: 'Oak Road, Lewes' })).toBe('14')
+    expect(houseNumber({ label: '14', address: 'Oak Road' })).toBe('14')
+  })
+
+  it('comes from a name only when it says it is a number, is one, or is an address typed as the name', () => {
+    for (const [name, number] of [['14', '14'], ['14a', '14A'], ['No. 14', '14'], ['#14', '14'], ['14 Oak Road', '14'], ['14 Oak Road, Lewes', '14']] as const) {
+      expect(houseNumber({ label: name }), name).toBe(number)
+    }
+    for (const name of ["Joe's Cafe", '7-Eleven', '24 Hour Pharmacy', '1st Choice Pharmacy', 'Corner Kiosk', '5 Star Motel', '']) {
+      expect(houseNumber({ label: name }), name).toBeNull()
+    }
+  })
+
+  it('is nothing when there is none', () => {
+    expect(houseNumber({})).toBeNull()
+    expect(houseNumber({ address: '' })).toBeNull()
+    expect(houseNumber({ address: 'Oak Road, Lewes' })).toBeNull()
+    expect(houseNumber({ address: 'Unit 3' })).toBeNull()
+  })
+})
+
+describe('text with the house number taken off the front', () => {
+  it('leaves the rest of an address', () => {
+    expect(withoutNumber('12 Oak Road, Lewes', '12')).toBe('Oak Road, Lewes')
+    expect(withoutNumber('12A Oak Road', '12A')).toBe('Oak Road')
+    expect(withoutNumber('3/12 High Street', '3/12')).toBe('High Street')
+    expect(withoutNumber('12-14 High Street', '12-14')).toBe('High Street')
+    expect(withoutNumber('  12,  Oak Road ', '12')).toBe('Oak Road')
+  })
+
+  it('goes by the number in capitals, as it is shown, whatever was typed', () => {
+    expect(withoutNumber('12a Oak Road', '12A')).toBe('Oak Road')
+  })
+
+  it('leaves text that does not start with the number as it was', () => {
+    expect(withoutNumber('Unit 3, 12 Oak Road', '12')).toBe('Unit 3, 12 Oak Road')
+    expect(withoutNumber("Joe's Cafe", '12')).toBe("Joe's Cafe")
+    expect(withoutNumber('120 Oak Road', '12')).toBe('120 Oak Road')
+    expect(withoutNumber('12th Street', '12')).toBe('12th Street')
+  })
+
+  it('leaves text that is only the number, so there is still something to show', () => {
+    expect(withoutNumber('14', '14')).toBe('14')
+    expect(withoutNumber('14,', '14')).toBe('14,')
+  })
+
+  it('leaves everything when there is no number', () => {
+    expect(withoutNumber('12 Oak Road', null)).toBe('12 Oak Road')
   })
 })

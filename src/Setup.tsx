@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { quietNoThrows, quietNote, sideNote, stopsWithoutSide } from './alerts'
+import { offRouteNote, quietNoThrows, quietNote, sideNote, stopsWithoutSide } from './alerts'
 import { useDialogs } from './confirm'
 import { useGps } from './device'
 import { SIDE_COLOR, SIDE_LABEL } from './colors'
@@ -20,7 +20,6 @@ import {
   deleteWarning,
   formatDistance,
   insertPoint,
-  MAX_STOP_OFFSET_M,
   movePoint,
   nearestOnRoute,
   ON_ROUTE_M,
@@ -441,8 +440,8 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
     const qty = stopType === 'bundle' ? parseQty(stopQty) : undefined
     const hit = stopAt(route, p, stopType, { label: cleanLabel(stopLabel), address: cleanAddress(stopAddress), qty })
     if (!hit) return setNotice('Draw your route first.')
-    if (hit.offM > MAX_STOP_OFFSET_M) return setNotice(`That spot is ${Math.round(hit.offM)} m from your route. Tap closer to it.`)
-    const note = addStops([hit.stop])
+    // A stop can go anywhere: one a long way from the route alerts by where you are, and the note says so.
+    const note = [offRouteNote([hit.offM]), addStops([hit.stop])].filter(Boolean).join(' ')
     setStopLabel('')
     setStopAddress('')
     setNotice(note || null)

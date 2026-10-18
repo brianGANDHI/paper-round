@@ -262,6 +262,8 @@ export interface Occurrence {
   idx: number
   /** How far along the route that closest point is, in metres. */
   at: number
+  /** How far the stop is from the route, in metres: the same for every time the route passes it. */
+  off: number
 }
 
 /** A pass counts as passing a stop if it comes within this much of it, or 1.5 times its closest pass. */
@@ -316,6 +318,7 @@ export function occurrences(route: Pick<Route, 'points' | 'stops'>): Occurrence[
         stop,
         idx: seg,
         at: alongPath(cum, seg, distToSegment(p, xy[seg], xy[seg + 1]).t),
+        off: nearest,
       })
     })
   }
@@ -325,13 +328,26 @@ export function occurrences(route: Pick<Route, 'points' | 'stops'>): Occurrence[
 /** How far behind the driver a stop may be and still count, to forgive GPS jitter. */
 const PASSED_M = 20
 /** How much farther than the alert radius the stop may be from the driver's real position. */
-const LATERAL_SLACK_M = 30
+export const LATERAL_SLACK_M = 30
+/** A fix out by more than this, in metres, isn't trusted to say the driver is near a stop that is off the route. */
+export const POSITION_MAX_ACCURACY_M = 40
+
+/**
+ * Whether a stop is too far from the route for driving the route to bring the driver near enough to be
+ * alerted for it. Such a stop alerts by where the driver is instead: within the alert distance of it,
+ * however they got there.
+ */
+export const byPosition = (o: Pick<Occurrence, 'off' | 'stop'>, radius: Record<Stop['type'], number>): boolean =>
+  o.off > radius[o.stop.type] + LATERAL_SLACK_M
 
 /**
  * The stops the driver is approaching: not yet handled, no more than the alert
  * distance ahead along the route (so the next pass of a street doesn't warn early),
  * and physically close. `driverAt` is how far along the route the driver is.
- * Nearest first.
+ *
+ * A stop that is off the route (see `byPosition`) is not met along it, so it needs only the driver to be
+ * within the alert distance of it. It is met one pass at a time, the first the stop has not been done for,
+ * and only on a fix that is accurate enough to say so (`accuracy`, in metres). Nearest first.
  */
 export function approachingOccurrences(
   driverAt: number,
@@ -339,12 +355,20 @@ export function approachingOccurrences(
   occs: Occurrence[],
   handled: ReadonlySet<string>,
   radius: Record<Stop['type'], number> = APPROACH_RADIUS,
+  accuracy = 0,
 ): Occurrence[] {
+  const next = new Map<string, Occurrence>()
+  for (const o of occs) {
+    if (!byPosition(o, radius) || handled.has(o.key)) continue
+    const first = next.get(o.stop.id)
+    if (!first || o.at < first.at) next.set(o.stop.id, o)
+  }
   return occs
     .filter((o) => {
       if (handled.has(o.key)) return false
-      const ahead = o.at - driverAt
       const r = radius[o.stop.type]
+      if (byPosition(o, radius)) return next.get(o.stop.id) === o && accuracy <= POSITION_MAX_ACCURACY_M && haversine(pos, o.stop) <= r
+      const ahead = o.at - driverAt
       // A small zone is also small behind the stop, so a stop already out of it doesn't alert and clear at once.
       return ahead <= r && ahead >= -Math.min(PASSED_M, r) && haversine(pos, o.stop) <= r + LATERAL_SLACK_M
     })

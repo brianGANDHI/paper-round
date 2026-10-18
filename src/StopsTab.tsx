@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { onlyInTransit, stopRoadSides, type RoadSide } from './alerts'
+import { offRouteNote, onlyInTransit, stopOffRoute, stopRoadSides, type RoadSide } from './alerts'
 import { STOP_COLOR } from './colors'
 import { occurrences } from './geo'
 import { lookupAddress, shortPlaceName, type Match } from './geocode'
@@ -167,15 +167,17 @@ export function StopsTab(p: Props) {
   const editingStop = editing ? p.route.stops.find((s) => s.id === editing) : undefined
 
   const addChosen = () => {
-    const stops = chosen.flatMap((r) => {
+    const hits = chosen.flatMap((r) => {
       const hit = stopAt(p.route, r.match!.place, p.type, {
         label: cleanLabel(r.name),
         address: cleanAddress(r.line),
         qty: isBundle ? parseQty(r.qty) : undefined,
       })
-      return hit ? [hit.stop] : []
+      return hit ? [hit] : []
     })
-    const note = p.onAdd(stops)
+    const stops = hits.map((h) => h.stop)
+    // Stops a long way from the route are added as they are: they alert by where you are, and the note says so.
+    const note = [p.onAdd(stops), offRouteNote(hits.map((h) => h.offM))].filter(Boolean).join(' ')
     const added = new Set(chosen.map((r) => r.line))
     setRows((rs) => rs.filter((r) => !added.has(r.line)))
     setText((t) => t.split('\n').filter((l) => !added.has(l.trim())).join('\n'))
@@ -350,6 +352,9 @@ export function StopsTab(p: Props) {
               // Nothing is thrown where it is only transit, so a no-throw house there never alerts and needs no side.
               const quiet = s.type === 'nothrow' && onlyInTransit(p.route, occs, s.id)
               const unknown = sides.every((x) => x === null)
+              // A stop off the route has no side of the route's to be on: its alert comes up when you are near it.
+              const off = stopOffRoute(occs, s.id)
+              const offM = occs.find((o) => o.stop.id === s.id)?.off ?? 0
               return (
                 <li className="row stop-row" key={s.id}>
                   <span className="dot" style={{ background: STOP_COLOR[s.type] }} />
@@ -360,18 +365,20 @@ export function StopsTab(p: Props) {
                     <div className="sub">
                       {/* A bundle drop with no amount says so, since its alert can't say how many to leave. */}
                       <span className={s.type === 'bundle' && !s.qty ? 'warn-text' : undefined}>{stopDetail(s)}</span> ·{' '}
-                      {quiet ? 'in transit, so no alert' : sidesText(sides)}
+                      {off ? `off the route (${formatDistance(offM)})` : quiet ? 'in transit, so no alert' : sidesText(sides)}
                     </div>
                   </button>
-                  <button
-                    className="chip-btn"
-                    data-warn={(unknown && !quiet) || undefined}
-                    aria-label={`Side of the road: ${sidesText(sides)}. Tap to change.`}
-                    onClick={() => p.onPickSide(s.id)}
-                  >
-                    {unknown ? 'Set side' : SIDE_WORD[sides.find((x) => x) as RoadSide]}
-                  </button>
-                  <button className="icon-btn edit" aria-label={`Edit ${stopName(s)}`} onClick={() => setEditing(s.id)}>
+                  {!off && (
+                    <button
+                      className="chip-btn"
+                      data-warn={(unknown && !quiet) || undefined}
+                      aria-label={`Side of the road: ${sidesText(sides)}. Tap to change.`}
+                      onClick={() => p.onPickSide(s.id)}
+                    >
+                      {unknown ? 'Set side' : SIDE_WORD[sides.find((x) => x) as RoadSide]}
+                    </button>
+                  )}
+                  <button className={off ? 'icon-btn edit solo' : 'icon-btn edit'} aria-label={`Edit ${stopName(s)}`} onClick={() => setEditing(s.id)}>
                     <Icon name="edit" size={20} />
                   </button>
                   <button className="icon-btn" aria-label={`Delete ${stopName(s)}`} onClick={() => p.onRemove(s.id)}>

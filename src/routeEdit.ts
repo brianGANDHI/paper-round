@@ -8,7 +8,10 @@ export const ON_ROUTE_M = 40
 const VERTEX_SNAP_M = 3
 /** Taps this close to the previous point are accidental double taps. */
 const DUPLICATE_TAP_M = 2
-/** How far from the route a stop may be placed. */
+/**
+ * How far from the route a stop can be and still count as along it. A stop further off is off the route:
+ * it can be placed there all the same, and alerts by where the driver is rather than along the route.
+ */
 export const MAX_STOP_OFFSET_M = 60
 
 export const segmentCount = (r: Pick<Route, 'points'>) => Math.max(0, r.points.length - 1)
@@ -281,8 +284,8 @@ export interface SectionDeletion {
  * begins or ends where the next or the previous one does. One in the middle leaves a gap, which is closed
  * with a straight line of transit, since nothing is thrown on a stretch nobody has drawn. The stops that
  * were along the section go with it, unless another part of the route that is kept still passes within reach
- * of them (the other pass of a street driven twice, say). Null for a section that isn't there, and for the
- * only one: that is clearing the route.
+ * of them (the other pass of a street driven twice, say). A stop that is off the route altogether is along
+ * no section and stays. Null for a section that isn't there, and for the only one: that is clearing the route.
  */
 export function deleteSection(route: Route, index: number): SectionDeletion | null {
   const secs = sections(route)
@@ -327,7 +330,8 @@ export function deleteSection(route: Route, index: number): SectionDeletion | nu
   const stops: Stop[] = []
   for (const stop of route.stops) {
     const was = nearestOnRoute(route, stop)
-    if (was && was.idx >= a && was.idx < b && nearKept(stop) > MAX_STOP_OFFSET_M) removed.push(stop)
+    // One that is off the route is along no section, however near one it happens to be, so none takes it with it.
+    if (was && was.dist <= MAX_STOP_OFFSET_M && was.idx >= a && was.idx < b && nearKept(stop) > MAX_STOP_OFFSET_M) removed.push(stop)
     else stops.push({ ...stop, pathIdx: nearestOnRoute({ points }, stop)?.idx ?? 0 })
   }
   const segs = Math.max(0, points.length - 1)
@@ -442,8 +446,47 @@ export const cleanLabel = (text: string): string | undefined => tidy(text, MAX_L
 /** An address for a stop as it was typed, tidied the same way. Nothing when it is blank. */
 export const cleanAddress = (text: string): string | undefined => tidy(text, MAX_ADDRESS)
 
+/** A house number: 12, 12A, 3/12 (a unit and a number) or 12-14. */
+const HOUSE = String.raw`(?:\d+[a-z]?\/)?\d+[a-z]?(?:-\d+[a-z]?)?`
+/** Words that follow a number in a name that is not an address: "24 Hour Pharmacy", "5 Star Motel". */
+const NOT_A_STREET = String.raw`(?:hours?|hrs?|days?|nights?|stars?|minutes?|mins?|pm|am|percent|plus|weeks?|months?|years?)`
+
 /** Whether a piece of text reads as a street address: a house number, perhaps with a unit or a range, and then words. */
-export const looksLikeAddress = (text: string): boolean => /^(?:\d+[a-z]?\/)?\d+[a-z]?(?:-\d+[a-z]?)?\s+\p{L}/iu.test(text.trim())
+export const looksLikeAddress = (text: string): boolean => new RegExp(String.raw`^${HOUSE}\s+(?!${NOT_A_STREET}\b)\p{L}`, 'iu').test(text.trim())
+
+const UNIT_THEN_NUMBER = new RegExp(String.raw`^(?:unit|flat|apt|apartment|shop|suite|level|room)\s+[\w/-]+\s*,\s*(${HOUSE})(?=[\s,]|$)`, 'i')
+const NAMED_NUMBER = new RegExp(String.raw`^(?:lot|no\.?|number|#)\s*(${HOUSE})(?=[\s,]|$)`, 'i')
+const LEADING_NUMBER = new RegExp(String.raw`^(${HOUSE})(?=[\s,]|$)`, 'i')
+
+/**
+ * The house number to look for, as a driver would read it off the front of a house: "12", "12A", "3/12", "12-14".
+ * It is the number an address starts with (after a unit or shop, if it has one: "Unit 3, 12 Oak Road" is 12), or
+ * the number after "Lot", "No." or "#". A name gives one only when it says it is a number ("No. 14"), is one ("14"),
+ * or is an address that was typed as the name, so "7-Eleven" and "24 Hour Pharmacy" give none. Null when there is none.
+ */
+export function houseNumber(s: Pick<Stop, 'label' | 'address'>): string | null {
+  const find = (text: string, name: boolean): string | null => {
+    const t = text.trim()
+    const found = UNIT_THEN_NUMBER.exec(t) ?? NAMED_NUMBER.exec(t)
+    if (found) return found[1].toUpperCase()
+    const lead = LEADING_NUMBER.exec(t)
+    if (!lead) return null
+    return !name || lead[0] === t || looksLikeAddress(t) ? lead[1].toUpperCase() : null
+  }
+  return (s.address ? find(s.address, false) : null) ?? (s.label ? find(s.label, true) : null)
+}
+
+/**
+ * Some text with the house number taken off the front, for when the number is shown on a plate of its own:
+ * "12 Oak Road, Lewes" is "Oak Road, Lewes". The text as it was when it doesn't start with the number, and
+ * when the number is all there is.
+ */
+export function withoutNumber(text: string, number: string | null): string {
+  if (!number) return text
+  const t = text.trim()
+  if (t.slice(0, number.length).toUpperCase() !== number || !/^[\s,]/.test(t.slice(number.length))) return text
+  return t.slice(number.length).replace(/^[\s,]+/, '') || text
+}
 
 /**
  * The name and the address to offer for a stop that is being edited. Stops made before a place had an address of

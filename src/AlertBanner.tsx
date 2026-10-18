@@ -19,17 +19,17 @@ interface Props {
  * underneath. It has nothing to tap and goes by itself once you are away from the stop. No-throw is
  * red and flashes; a bundle drop is blue. Either has the stop's name, with its address under it when it has
  * both, and a bundle drop has how many papers beside them, in a badge that a long name can't push off. The
- * side of the road the stop is on sits at that edge of the banner, with an arrow.
+ * house number to look for is on a plate at the front of that line, big enough to read at a glance. The side
+ * of the road the stop is on sits at that edge of the banner, with an arrow.
  */
 export function AlertBanner({ stop, pass = 1, ahead, side, waiting }: Props) {
   const noThrow = stop.type === 'nothrow'
-  const { title, name, address, papers } = alertText(stop)
+  const { title, name, address, papers, number } = alertText(stop)
   const where = `${name}${pass > 1 ? ` · pass ${pass}` : ''}`
   const marker = side ? (
     <div className="stop-alert-side">
-      {side === 'left' && <Icon name="arrow-left" size={26} strokeWidth={2.8} />}
+      <Icon name={side === 'left' ? 'arrow-left' : 'arrow-right'} size={26} strokeWidth={2.8} />
       {side === 'left' ? 'Left' : 'Right'}
-      {side === 'right' && <Icon name="arrow-right" size={26} strokeWidth={2.8} />}
     </div>
   ) : (
     <div className="stop-alert-glyph">
@@ -45,6 +45,11 @@ export function AlertBanner({ stop, pass = 1, ahead, side, waiting }: Props) {
           <span className="stop-alert-dist">{aheadText(ahead)}</span>
         </div>
         <div className="stop-alert-sub">
+          {number && (
+            <span className={number.length > 4 ? 'stop-alert-num long' : 'stop-alert-num'} aria-label={`House number ${number}`}>
+              {number}
+            </span>
+          )}
           <div className="stop-alert-lines">
             <span className={address ? 'stop-alert-name one' : 'stop-alert-name'}>{where}</span>
             {address && <span className="stop-alert-address">{address}</span>}
