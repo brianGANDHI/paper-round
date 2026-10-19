@@ -251,6 +251,7 @@ export function sideAt(route: Pick<Route, 'sideChanges'>, idx: number): Side {
 export const APPROACH_RADIUS: Record<Stop['type'], number> = {
   bundle: 150,
   nothrow: 100,
+  request: 150,
 }
 
 /** A stop as met along the route: once for every time the route passes it. */

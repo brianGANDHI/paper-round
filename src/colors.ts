@@ -8,4 +8,4 @@ export const SIDE_PILL: Record<Side, string> = { both: '#0a6ae0', left: '#2b9a4a
 
 export const SIDE_LABEL: Record<Side, string> = { both: 'Both Sides', left: 'Left Side', right: 'Right Side', transit: 'Transit' }
 
-export const STOP_COLOR = { bundle: '#007aff', nothrow: '#ff3b30' } as const
+export const STOP_COLOR = { bundle: '#007aff', nothrow: '#ff3b30', request: '#af52de' } as const

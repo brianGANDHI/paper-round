@@ -45,8 +45,8 @@ describe('the distances an alert can come up at', () => {
     for (const junk of [0, 5, 35, 70, 100, '40', null, undefined, NaN]) expect(isAlertDistance(junk)).toBe(false)
   })
 
-  it('apply to both kinds of stop', () => {
-    expect(alertRadius(30)).toEqual({ nothrow: 30, bundle: 30 })
+  it('apply to every kind of stop', () => {
+    expect(alertRadius(30)).toEqual({ nothrow: 30, bundle: 30, request: 30 })
   })
 })
 
@@ -383,6 +383,79 @@ describe('what the banner for a stop says', () => {
   })
 })
 
+describe('what the banner for a special request says', () => {
+  const request = (extra: Partial<Stop> = {}): Stop => ({ id: 'r', type: 'request', pathIdx: 0, lat: 0, lng: 0, ...extra })
+
+  it('is told by its note, with the house number on the plate and nothing else to read', () => {
+    expect(alertText(request({ address: '23 Oak Road, Lewes', note: 'Blue gate, deliver by hand' }))).toEqual({
+      title: 'Special Request',
+      name: 'Blue gate, deliver by hand',
+      address: null,
+      papers: null,
+      number: '23',
+    })
+  })
+
+  it('puts the address under the note when there is no house number to show instead', () => {
+    expect(alertText(request({ address: 'Rose Cottage, Mill Lane', note: 'Blue gate' }))).toEqual({
+      title: 'Special Request',
+      name: 'Blue gate',
+      address: 'Rose Cottage, Mill Lane',
+      papers: null,
+      number: null,
+    })
+  })
+
+  it('shows the note as it was written, even when it starts with a number', () => {
+    expect(alertText(request({ address: '23 Oak Road', note: '23 is the one with the blue gate' })).name).toBe('23 is the one with the blue gate')
+  })
+
+  it('has the address for its line, without the number, when it has no note', () => {
+    expect(alertText(request({ address: '23 Oak Road, Lewes' }))).toEqual({
+      title: 'Special Request',
+      name: 'Oak Road, Lewes',
+      address: null,
+      papers: null,
+      number: '23',
+    })
+  })
+
+  it('has an address with no number for its line as it is, and shows it only once', () => {
+    expect(alertText(request({ address: 'Rose Cottage, Mill Lane' }))).toEqual({
+      title: 'Special Request',
+      name: 'Rose Cottage, Mill Lane',
+      address: null,
+      papers: null,
+      number: null,
+    })
+  })
+
+  it('says what it is when it has neither a note nor an address', () => {
+    expect(alertText(request())).toEqual({ title: 'Special Request', name: 'Special request ahead.', address: null, papers: null, number: null })
+  })
+
+  it('never counts papers, whatever it was left with', () => {
+    expect(alertText(request({ note: 'Blue gate', qty: 4 })).papers).toBeNull()
+  })
+
+  it('is not kept quiet on a stretch where nothing is thrown, as a no-throw house is', () => {
+    const route: Route = {
+      points: [{ lat: 51, lng: 0 }, { lat: 51.01, lng: 0 }],
+      sideChanges: [{ idx: 0, side: 'transit' }],
+      stops: [
+        { id: 'r', type: 'request', pathIdx: 0, lat: 51.005, lng: 0.0002 },
+        { id: 'n', type: 'nothrow', pathIdx: 0, lat: 51.005, lng: 0.0002 },
+        { id: 'b', type: 'bundle', pathIdx: 0, lat: 51.005, lng: 0.0002 },
+      ],
+    }
+    const occs = occurrences(route)
+    expect(alertable(route, occs).map((o) => o.stop.id).sort()).toEqual(['b', 'r'])
+    expect(onlyInTransit(route, occs, 'r')).toBe(true)
+    // It is not a no-throw house, so it isn't one of those that stay quiet.
+    expect(quietNoThrows(route)).toBe(1)
+  })
+})
+
 describe('a stop that is off the route', () => {
   const east = (m: number) => m / 70050
   const zone = alertRadius(40)
@@ -414,7 +487,7 @@ describe('a stop that is off the route', () => {
     })
 
     it('goes by the zone of its own kind of stop', () => {
-      const wide = { nothrow: 60, bundle: 20 }
+      const wide = { nothrow: 60, bundle: 20, request: 20 }
       expect(zoneExit(off('bundle'), 500, wide, at(40))).toBe('passed')
       expect(zoneExit(off('nothrow'), 500, wide, at(40))).toBeNull()
     })

@@ -16,7 +16,7 @@ export const isAlertDistance = (v: unknown): v is AlertDistance => ALERT_DISTANC
  * The zone around a stop in which its banner shows: from this far before it until this far past it,
  * for either kind of stop.
  */
-export const alertRadius = (distance: AlertDistance): Record<Stop['type'], number> => ({ nothrow: distance, bundle: distance })
+export const alertRadius = (distance: AlertDistance): Record<Stop['type'], number> => ({ nothrow: distance, bundle: distance, request: distance })
 
 /** Backing away only ends a banner this far outside the zone, so GPS jitter at its edge can't set it off again and again. */
 export const BACK_OFF_SLACK_M = 15
@@ -52,10 +52,22 @@ export function aheadText(ahead: number): string {
  * line that says what to do), the address to show under a name when it has both, the house number to look for, and
  * for a bundle drop with an amount how many papers. Papers and number are null when there is none. The number is
  * taken off the front of the name and address, as it is shown on its own.
+ *
+ * A special request is told by its note, which is what has to be done there, so the note is the line and has the
+ * room. The address goes under it only when there is no house number to show on the plate instead.
  */
 export function alertText(stop: Stop): { title: string; name: string; address: string | null; papers: string | null; number: string | null } {
   const noThrow = stop.type === 'nothrow'
   const number = houseNumber(stop)
+  if (stop.type === 'request') {
+    return {
+      title: 'Special Request',
+      name: stop.note ?? withoutNumber(stop.address ?? 'Special request ahead.', number),
+      address: stop.note && !number ? (stop.address ?? null) : null,
+      papers: null,
+      number,
+    }
+  }
   return {
     title: noThrow ? 'No Throw' : 'Bundle Drop',
     // The number is on a plate of its own, so it is left off the front of the lines beside it.

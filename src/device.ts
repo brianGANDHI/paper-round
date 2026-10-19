@@ -89,6 +89,13 @@ export function alertBundle() {
   navigator.vibrate?.(200)
 }
 
+/** A special request: two notes going up, to tell it from a bundle drop's single beep and a no-throw house's three. */
+export function alertRequest() {
+  beep(660, 0, 0.12)
+  beep(880, 0.17, 0.2)
+  navigator.vibrate?.([120, 80, 120])
+}
+
 /** iOS Safari has no Vibration API, so the sound and red flash carry this alert. */
 export function alertNoThrow() {
   beep(440, 0, 0.25)

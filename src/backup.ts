@@ -73,7 +73,7 @@ function parseStops(raw: unknown, label: string): Stop[] | string {
   const seen = new Set<string>()
   const stops: Stop[] = []
   for (const s of raw) {
-    if (!isObject(s) || !isPoint(s) || (s.type !== 'bundle' && s.type !== 'nothrow')) {
+    if (!isObject(s) || !isPoint(s) || (s.type !== 'bundle' && s.type !== 'nothrow' && s.type !== 'request')) {
       return `${label} has a stop that isn't valid.`
     }
     const id = typeof s.id === 'string' && s.id && !seen.has(s.id) ? s.id : newStopId()
@@ -86,6 +86,7 @@ function parseStops(raw: unknown, label: string): Stop[] | string {
       pathIdx: typeof s.pathIdx === 'number' && Number.isFinite(s.pathIdx) ? Math.max(0, Math.trunc(s.pathIdx)) : 0,
     }
     if (typeof s.qty === 'number' && Number.isFinite(s.qty) && s.qty > 0) stop.qty = Math.trunc(s.qty)
+    if (s.type === 'request' && typeof s.note === 'string' && s.note.trim()) stop.note = s.note.trim().slice(0, 120)
     if (typeof s.label === 'string' && s.label.trim()) stop.label = s.label.trim().slice(0, 120)
     if (typeof s.address === 'string' && s.address.trim()) stop.address = s.address.trim().slice(0, 120)
     if (s.side === 'left' || s.side === 'right') stop.side = s.side

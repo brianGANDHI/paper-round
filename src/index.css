@@ -973,6 +973,25 @@ button.row:active:not(:disabled) {
   animation: drop 0.25s ease-out, flash 0.8s steps(1) 0.25s infinite;
 }
 
+/* A special request: purple, and a little taller, because its note is what it is for and can run to three lines. */
+.stop-alert.purple {
+  background: #7e3ec9;
+}
+
+.screen:has(.stop-alert.purple) {
+  --stop-alert-h: 100px;
+}
+
+.stop-alert.purple .stop-alert-name {
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+}
+
+.stop-alert.purple .stop-alert-name.two {
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+
 /* Which side of the road the stop is on: the arrow with the word under it, at that edge of the banner. */
 .stop-alert-side {
   flex: none;
@@ -1068,6 +1087,10 @@ button.row:active:not(:disabled) {
 
 .stop-alert.red .stop-alert-num {
   color: #e0241b;
+}
+
+.stop-alert.purple .stop-alert-num {
+  color: #7e3ec9;
 }
 
 /* A long number, such as a unit and a number, is smaller so the plate doesn't take the whole line. */
@@ -1558,6 +1581,13 @@ button.row:active:not(:disabled) {
 
 .field-input::placeholder {
   color: var(--label-3);
+}
+
+/* A note can run to two lines, so it is a box rather than a line. */
+textarea.field-input {
+  resize: none;
+  font-family: inherit;
+  line-height: 1.3;
 }
 
 .field-hint {

@@ -5,6 +5,7 @@ import {
   appendPoints,
   cleanAddress,
   cleanLabel,
+  cleanNote,
   defaultRepeatSide,
   deletedNote,
   deletePoint,
@@ -16,6 +17,7 @@ import {
   looksLikeAddress,
   MAX_ADDRESS,
   MAX_LABEL,
+  MAX_NOTE,
   MAX_QTY,
   movePoint,
   nearestOnRoute,
@@ -35,6 +37,7 @@ import {
   stopAt,
   stopDetail,
   stopFields,
+  stopIncomplete,
   stopName,
   stopSides,
   stopWhere,
@@ -176,6 +179,13 @@ describe('stopAt', () => {
     expect(haversine(hit.stop, { lat: 51.0025, lng: 0.0002 })).toBe(0)
   })
 
+  it('keeps the note of a special request, and has none when none is given', () => {
+    const hit = stopAt(road(6), { lat: 51.0025, lng: 0.0002 }, 'request', { address: '23 Oak Road', note: 'Blue gate' })!
+    expect(hit.stop).toMatchObject({ type: 'request', address: '23 Oak Road', note: 'Blue gate' })
+    const bare = stopAt(road(6), { lat: 51.0025, lng: 0.0002 }, 'request')!
+    expect('note' in bare.stop).toBe(false)
+  })
+
   it('needs a route', () => {
     expect(stopAt({ points: [], sideChanges: [], stops: [] }, pt(0), 'bundle')).toBeNull()
   })
@@ -194,6 +204,14 @@ describe('normalizeRoute', () => {
 
   it('copes with nothing at all', () => {
     expect(normalizeRoute(null)).toEqual({ points: [], sideChanges: [], stops: [] })
+  })
+
+  it('keeps a special request and its note as they were saved', () => {
+    const r = normalizeRoute({
+      points: road(3).points,
+      stops: [{ id: 'q', pathIdx: 0, type: 'request', ...pt(1), address: '23 Oak Road', note: 'Blue gate' }],
+    })
+    expect(r.stops[0]).toMatchObject({ type: 'request', address: '23 Oak Road', note: 'Blue gate' })
   })
 
   it('keeps a side picked by hand for a stop, and drops anything else in its place', () => {
@@ -1138,6 +1156,7 @@ describe('deleting a section', () => {
 describe('naming a stop and saying how many papers it gets', () => {
   const bundle = (extra: Partial<Stop> = {}): Stop => ({ id: 'b', type: 'bundle', lat: 51.0015, lng: 0.0003, pathIdx: 1, ...extra })
   const house = (extra: Partial<Stop> = {}): Stop => ({ id: 'h', type: 'nothrow', lat: 51.0035, lng: 0.0003, pathIdx: 3, ...extra })
+  const request = (extra: Partial<Stop> = {}): Stop => ({ id: 'r', type: 'request', lat: 51.0025, lng: 0.0003, pathIdx: 2, ...extra })
   const withStops = (...stops: Stop[]): Route => ({ ...road(6), stops })
 
   describe('a name as it was typed', () => {
@@ -1158,6 +1177,20 @@ describe('naming a stop and saying how many papers it gets', () => {
     it('counts the length of what is kept, not of the spaces in front of it, and does not end on a space', () => {
       expect(cleanLabel('   ' + 'x'.repeat(100))).toHaveLength(MAX_LABEL)
       expect(cleanLabel('x'.repeat(MAX_LABEL - 1) + ' ' + 'y'.repeat(10))).toBe('x'.repeat(MAX_LABEL - 1))
+    })
+  })
+
+  describe('a note as it was typed', () => {
+    it('is tidied like a name, and nothing when blank', () => {
+      expect(cleanNote('  Blue   gate,\n deliver by hand ')).toBe('Blue gate, deliver by hand')
+      for (const blank of ['', '   ', '\n\t']) expect(cleanNote(blank)).toBeUndefined()
+    })
+
+    it('is kept short enough to read at a glance, and no longer than an address', () => {
+      expect(cleanNote('x'.repeat(300))).toHaveLength(MAX_NOTE)
+      expect(cleanNote('x'.repeat(MAX_NOTE))).toHaveLength(MAX_NOTE)
+      expect(MAX_NOTE).toBe(60)
+      expect(MAX_NOTE).toBeLessThanOrEqual(MAX_ADDRESS)
     })
   })
 
@@ -1259,6 +1292,21 @@ describe('naming a stop and saying how many papers it gets', () => {
       expect(stopDetail(bundle())).toBe('no amount set')
       expect(stopDetail(house())).toBe('No-throw')
     })
+
+    it('calls a special request by its address, or says what it is, and tells it by its note', () => {
+      expect(stopName(request({ address: '23 Oak Road' }))).toBe('23 Oak Road')
+      expect(stopName(request())).toBe('Special request')
+      expect(stopDetail(request({ note: 'Blue gate' }))).toBe('Blue gate')
+      expect(stopDetail(request())).toBe('no note set')
+    })
+
+    it('points out a bundle drop with no amount and a special request with no note, and nothing else', () => {
+      expect(stopIncomplete(bundle())).toBe(true)
+      expect(stopIncomplete(bundle({ qty: 3 }))).toBe(false)
+      expect(stopIncomplete(request())).toBe(true)
+      expect(stopIncomplete(request({ note: 'Blue gate' }))).toBe(false)
+      expect(stopIncomplete(house())).toBe(false)
+    })
   })
 
   describe('changing them', () => {
@@ -1301,6 +1349,25 @@ describe('naming a stop and saying how many papers it gets', () => {
     it('takes the address off when it is left out', () => {
       const r = updateStop(withStops(bundle({ label: 'Name', address: '1 Road', qty: 3 })), 'b', { label: 'Name', qty: 3 })
       expect('address' in r.stops[0]).toBe(false)
+    })
+
+    it('gives a special request a note and an address, but never an amount', () => {
+      const r = updateStop(withStops(request()), 'r', { address: '23 Oak Road', note: 'Blue gate', qty: 5 })
+      expect(r.stops[0]).toMatchObject({ id: 'r', address: '23 Oak Road', note: 'Blue gate' })
+      expect('qty' in r.stops[0]).toBe(false)
+    })
+
+    it('takes the note off a special request when it is left out, so blank means none', () => {
+      const r = updateStop(withStops(request({ address: '23 Oak Road', note: 'Blue gate' })), 'r', { address: '23 Oak Road' })
+      expect('note' in r.stops[0]).toBe(false)
+      expect(r.stops[0].address).toBe('23 Oak Road')
+    })
+
+    it('gives a note only to a special request', () => {
+      const b = updateStop(withStops(bundle()), 'b', { label: 'Cafe', qty: 3, note: 'Blue gate' })
+      const h = updateStop(withStops(house()), 'h', { label: 'Mrs Smith', note: 'Blue gate' })
+      expect('note' in b.stops[0]).toBe(false)
+      expect('note' in h.stops[0]).toBe(false)
     })
 
     it('changes nothing else about the stop, or any other stop', () => {

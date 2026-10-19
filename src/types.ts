@@ -10,7 +10,8 @@ export interface Pt {
 export const SIDES = ['both', 'left', 'right', 'transit'] as const
 export type Side = (typeof SIDES)[number]
 export const isSide = (v: unknown): v is Side => SIDES.some((s) => s === v)
-export type StopType = 'bundle' | 'nothrow'
+/** A bundle drop, a house that doesn't want a paper thrown, or a special request: somewhere that needs something done by hand. */
+export type StopType = 'bundle' | 'nothrow' | 'request'
 
 /** Side applies from `idx` along the path until the next change. */
 export interface SideChange {
@@ -24,6 +25,8 @@ export interface Stop extends Pt {
   pathIdx: number
   type: StopType
   qty?: number
+  /** For a special request, what to do there: "Blue gate, deliver by hand". */
+  note?: string
   /** What the place is called, such as the name of a business. */
   label?: string
   /** Where it is, as an address to read. The stop's position on the map is its own latitude and longitude. */

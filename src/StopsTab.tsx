@@ -7,13 +7,16 @@ import { Icon } from './Icon'
 import {
   cleanAddress,
   cleanLabel,
+  cleanNote,
   formatDistance,
   MAX_ADDRESS,
   MAX_LABEL,
+  MAX_NOTE,
   parseQty,
   qtyProblem,
   stopAt,
   stopDetail,
+  stopIncomplete,
   stopName,
   stopWhere,
 } from './routeEdit'
@@ -27,16 +30,21 @@ const AUTO_SELECT_M = 120
 const TYPE_OPTIONS: { value: StopType; label: string }[] = [
   { value: 'nothrow', label: 'No-Throw' },
   { value: 'bundle', label: 'Bundle Drop' },
+  { value: 'request', label: 'Special Request' },
 ]
+
+/** What each kind of stop is called when it is counted: "Add 2 Bundle Drops". */
+const NOUN: Record<StopType, string> = { nothrow: 'No-Throw House', bundle: 'Bundle Drop', request: 'Special Request' }
 
 interface Row {
   line: string
   status: 'waiting' | 'looking' | 'found' | 'none' | 'error'
   match?: Match
   selected: boolean
-  /** What it is called and, for a bundle drop, how many papers it gets, as typed. The address is the line that was looked up. */
+  /** What it is called, how many papers a bundle drop gets and what a special request says, as typed. The address is the line that was looked up. */
   name: string
   qty: string
+  note: string
 }
 
 interface Props {
@@ -45,6 +53,8 @@ interface Props {
   onType: (t: StopType) => void
   qty: string
   onQty: (q: string) => void
+  note: string
+  onNote: (n: string) => void
   label: string
   onLabel: (l: string) => void
   address: string
@@ -56,8 +66,8 @@ interface Props {
   /** Adds the stops, and says what to tell the driver about any whose side of the road couldn't be told. */
   onAdd: (stops: Stop[]) => string
   onPickSide: (id: string) => void
-  /** A stop's name, address and papers changed. Anything left out is taken off the stop. */
-  onEdit: (id: string, change: { label?: string; address?: string; qty?: number }) => void
+  /** A stop's name, address, papers and note changed. Anything left out is taken off the stop. */
+  onEdit: (id: string, change: { label?: string; address?: string; qty?: number; note?: string }) => void
   onRemove: (id: string) => void
   onFocus: (p: Pt) => void
   onNotice: (message: string | null) => void
@@ -106,9 +116,10 @@ export function StopsTab(p: Props) {
   const [editing, setEditing] = useState<string | null>(null)
   const abort = useRef<AbortController | null>(null)
   const isBundle = p.type === 'bundle'
+  const isRequest = p.type === 'request'
   // A stop on a road driven twice is passed on more than one side, so the list shows each.
   const occs = useMemo(() => occurrences(p.route), [p.route])
-  const noun = isBundle ? 'Bundle Drop' : 'No-Throw House'
+  const noun = NOUN[p.type]
 
   // Leaving the tab mid-lookup must not keep calling the address service.
   useEffect(() => () => abort.current?.abort(), [])
@@ -139,7 +150,7 @@ export function StopsTab(p: Props) {
     const ctl = new AbortController()
     abort.current = ctl
     setBusy(true)
-    setRows(lines.map((line) => ({ line, status: 'waiting', selected: false, name: '', qty: '' })))
+    setRows(lines.map((line) => ({ line, status: 'waiting', selected: false, name: '', qty: '', note: '' })))
     for (let i = 0; i < lines.length; i++) {
       if (ctl.signal.aborted) break
       patch(i, { status: 'looking' })
@@ -169,9 +180,10 @@ export function StopsTab(p: Props) {
   const addChosen = () => {
     const hits = chosen.flatMap((r) => {
       const hit = stopAt(p.route, r.match!.place, p.type, {
-        label: cleanLabel(r.name),
+        label: isRequest ? undefined : cleanLabel(r.name),
         address: cleanAddress(r.line),
         qty: isBundle ? parseQty(r.qty) : undefined,
+        note: isRequest ? cleanNote(r.note) : undefined,
       })
       return hit ? [hit] : []
     })
@@ -205,7 +217,9 @@ export function StopsTab(p: Props) {
         One address per line. Include the town or postcode for the best match.{' '}
         {isBundle
           ? 'Once one is found, give it a business name and the number of papers it gets: the alert shows both, with the address under the name.'
-          : 'Once one is found you can give it a name too: the alert shows it, with the address under it.'}
+          : isRequest
+            ? 'Once one is found, add a note saying what to do, such as Blue gate, deliver by hand: the alert shows the note, with the house number beside it.'
+            : 'Once one is found you can give it a name too: the alert shows it, with the address under it.'}
       </p>
 
       {busy ? (
@@ -246,18 +260,32 @@ export function StopsTab(p: Props) {
                   <div className={`sub ${tone(r)}`}>{describe(r)}</div>
                   {r.status === 'found' && (
                     <div className="row-fields">
-                      <input
-                        className="mini-input name"
-                        value={r.name}
-                        maxLength={MAX_LABEL}
-                        placeholder={isBundle ? 'Business name' : 'Name (optional)'}
-                        aria-label={`${isBundle ? 'Business name' : 'Name'} for ${r.line}`}
-                        enterKeyHint={isBundle ? 'next' : 'done'}
-                        autoCapitalize="words"
-                        autoCorrect="off"
-                        spellCheck={false}
-                        onChange={(e) => patch(i, { name: e.target.value })}
-                      />
+                      {isRequest ? (
+                        <input
+                          className="mini-input name"
+                          value={r.note}
+                          maxLength={MAX_NOTE}
+                          placeholder="Note, e.g. Blue gate, deliver by hand"
+                          aria-label={`Note for ${r.line}`}
+                          enterKeyHint="done"
+                          autoCapitalize="sentences"
+                          autoCorrect="on"
+                          onChange={(e) => patch(i, { note: e.target.value })}
+                        />
+                      ) : (
+                        <input
+                          className="mini-input name"
+                          value={r.name}
+                          maxLength={MAX_LABEL}
+                          placeholder={isBundle ? 'Business name' : 'Name (optional)'}
+                          aria-label={`${isBundle ? 'Business name' : 'Name'} for ${r.line}`}
+                          enterKeyHint={isBundle ? 'next' : 'done'}
+                          autoCapitalize="words"
+                          autoCorrect="off"
+                          spellCheck={false}
+                          onChange={(e) => patch(i, { name: e.target.value })}
+                        />
+                      )}
                       {isBundle && (
                         <input
                           className="mini-input qty"
@@ -287,18 +315,20 @@ export function StopsTab(p: Props) {
 
       <div className="section-label">Or place it on the map</div>
       <div className="group">
-        <label className="row field">
-          <span className="title">{isBundle ? 'Business name' : 'Name'}</span>
-          <input
-            value={p.label}
-            maxLength={MAX_LABEL}
-            onChange={(e) => p.onLabel(e.target.value)}
-            placeholder={isBundle ? "e.g. Joe's Cafe" : 'Optional'}
-            autoCapitalize="words"
-            autoCorrect="off"
-            spellCheck={false}
-          />
-        </label>
+        {!isRequest && (
+          <label className="row field">
+            <span className="title">{isBundle ? 'Business name' : 'Name'}</span>
+            <input
+              value={p.label}
+              maxLength={MAX_LABEL}
+              onChange={(e) => p.onLabel(e.target.value)}
+              placeholder={isBundle ? "e.g. Joe's Cafe" : 'Optional'}
+              autoCapitalize="words"
+              autoCorrect="off"
+              spellCheck={false}
+            />
+          </label>
+        )}
         <label className="row field">
           <span className="title">Address</span>
           <input
@@ -311,6 +341,19 @@ export function StopsTab(p: Props) {
             spellCheck={false}
           />
         </label>
+        {isRequest && (
+          <label className="row field">
+            <span className="title">Note</span>
+            <input
+              value={p.note}
+              maxLength={MAX_NOTE}
+              onChange={(e) => p.onNote(e.target.value)}
+              placeholder="e.g. Blue gate"
+              autoCapitalize="sentences"
+              autoCorrect="on"
+            />
+          </label>
+        )}
         {isBundle && (
           <label className="row field">
             <span className="title">Papers</span>
@@ -363,8 +406,8 @@ export function StopsTab(p: Props) {
                     {/* The address is under the name only when there is a name: with none, the address is the name. */}
                     {stopWhere(s) && <div className="sub">{stopWhere(s)}</div>}
                     <div className="sub">
-                      {/* A bundle drop with no amount says so, since its alert can't say how many to leave. */}
-                      <span className={s.type === 'bundle' && !s.qty ? 'warn-text' : undefined}>{stopDetail(s)}</span> ·{' '}
+                      {/* A bundle drop with no amount, or a request with no note, says so, since its alert can't say what to do. */}
+                      <span className={stopIncomplete(s) ? 'warn-text' : undefined}>{stopDetail(s)}</span> ·{' '}
                       {off ? `off the route (${formatDistance(offM)})` : quiet ? 'in transit, so no alert' : sidesText(sides)}
                     </div>
                   </button>

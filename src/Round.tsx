@@ -3,7 +3,7 @@ import { AlertBanner } from './AlertBanner'
 import { alertable, alertRadius, alertSide, ALERT_DISTANCES, approachSide, isAlertDistance, zoneExit, type AlertDistance } from './alerts'
 import { SIDE_LABEL, SIDE_PILL } from './colors'
 import { useDialogs } from './confirm'
-import { alertBundle, alertNoThrow, unlockAudio, useGps, useWakeLock } from './device'
+import { alertBundle, alertNoThrow, alertRequest, unlockAudio, useGps, useWakeLock } from './device'
 import { plural } from './format'
 import {
   alongPath,
@@ -119,6 +119,7 @@ export function Round({ route, round, routeName, onRound, onGoSetup, onGoRoutes 
     fresh.forEach((o) => seen.current.add(o.key))
     setQueue((q) => [...q, ...fresh])
     if (fresh.some((o) => o.stop.type === 'nothrow')) alertNoThrow()
+    else if (fresh.some((o) => o.stop.type === 'request')) alertRequest()
     else alertBundle()
   }, [fix, route, handled, occs, cum, radius])
 
@@ -250,7 +251,7 @@ export function Round({ route, round, routeName, onRound, onGoSetup, onGoRoutes 
           </p>
           {finished && <p className="fine">Your last round is finished, so this will start a new one.</p>}
           <p className="fine">
-            You'll only be alerted for bundle drops and no‑throw houses. Keep the phone unlocked and mounted, because GPS pauses when the screen is off.
+            You'll only be alerted for bundle drops, no‑throw houses and special requests. Keep the phone unlocked and mounted, because GPS pauses when the screen is off.
           </p>
           <div className="alert-setting">
             <div className="brush-label">Alert distance</div>

@@ -83,6 +83,36 @@ describe('reading a backup back', () => {
     expect(ok(makeBackup([{ name: 'Monday Round', route: long }]))[0].route.stops[0].address).toHaveLength(120)
   })
 
+  it('restores a special request with its address and note, tidied, and keeps the note to a limit', () => {
+    const requests: Route = {
+      ...route,
+      stops: [
+        { id: 'q1', type: 'request', lat: -33.8691, lng: 151.2101, pathIdx: 0, address: '23 Oak Road', note: '  Blue gate, deliver by hand ' },
+        { id: 'q2', type: 'request', lat: -33.8699, lng: 151.2125, pathIdx: 1, note: 'x'.repeat(500) },
+        { id: 'q3', type: 'request', lat: -33.8695, lng: 151.211, pathIdx: 1 },
+      ],
+    }
+    const back = ok(makeBackup([{ name: 'Monday Round', route: requests }]))[0].route.stops
+    expect(back.map((s) => s.type)).toEqual(['request', 'request', 'request'])
+    expect(back[0]).toMatchObject({ address: '23 Oak Road', note: 'Blue gate, deliver by hand' })
+    expect(back[1].note).toHaveLength(120)
+    expect('note' in back[2]).toBe(false)
+  })
+
+  it('drops a note that is not text or is blank, and one on a stop that is not a special request', () => {
+    const odd: Route = {
+      ...route,
+      stops: [
+        { id: 'a', type: 'request', lat: -33.8691, lng: 151.2101, pathIdx: 0, note: 'Blue gate' },
+        { id: 'b', type: 'request', lat: -33.8699, lng: 151.2125, pathIdx: 1, note: 'Red door' },
+        { id: 'c', type: 'bundle', lat: -33.8695, lng: 151.211, pathIdx: 1, qty: 3, note: 'Blue gate' },
+        { id: 'd', type: 'nothrow', lat: -33.8693, lng: 151.2105, pathIdx: 0, note: 'Blue gate' },
+      ],
+    }
+    const text = makeBackup([{ name: 'Monday Round', route: odd }]).replace('"Blue gate"', '7').replace('"Red door"', '"   "')
+    expect(ok(text)[0].route.stops.map((s) => s.note)).toEqual([undefined, undefined, undefined, undefined])
+  })
+
   it('copes with text that came through Notes or Messages', () => {
     const text = makeBackup(routes)
     const curly = text.replace(/"/g, (_, i) => (i % 2 ? '”' : '“'))

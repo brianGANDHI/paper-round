@@ -14,6 +14,7 @@ import {
   appendPoint,
   cleanAddress,
   cleanLabel,
+  cleanNote,
   deletedNote,
   deletePoint,
   deleteSection,
@@ -81,6 +82,7 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
   const [trace, setTrace] = useState<Pt[]>([])
   const [stopType, setStopType] = useState<StopType>('nothrow')
   const [stopQty, setStopQty] = useState('')
+  const [stopNote, setStopNote] = useState('')
   const [stopLabel, setStopLabel] = useState('')
   const [stopAddress, setStopAddress] = useState('')
   /** The side new points are drawn on, and the side painted onto a stretch. */
@@ -438,12 +440,19 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
     const problem = stopType === 'bundle' ? qtyProblem(stopQty) : null
     if (problem) return setNotice(problem)
     const qty = stopType === 'bundle' ? parseQty(stopQty) : undefined
-    const hit = stopAt(route, p, stopType, { label: cleanLabel(stopLabel), address: cleanAddress(stopAddress), qty })
+    const request = stopType === 'request'
+    const hit = stopAt(route, p, stopType, {
+      label: request ? undefined : cleanLabel(stopLabel),
+      address: cleanAddress(stopAddress),
+      qty,
+      note: request ? cleanNote(stopNote) : undefined,
+    })
     if (!hit) return setNotice('Draw your route first.')
     // A stop can go anywhere: one a long way from the route alerts by where you are, and the note says so.
     const note = [offRouteNote([hit.offM]), addStops([hit.stop])].filter(Boolean).join(' ')
     setStopLabel('')
     setStopAddress('')
+    setStopNote('')
     setNotice(note || null)
   }
 
@@ -566,6 +575,8 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
             onType={setStopType}
             qty={stopQty}
             onQty={setStopQty}
+            note={stopNote}
+            onNote={setStopNote}
             label={stopLabel}
             onLabel={setStopLabel}
             address={stopAddress}

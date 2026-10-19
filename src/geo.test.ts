@@ -232,6 +232,12 @@ describe('approaching a stop on a street driven twice', () => {
     const found = approachingOccurrences(at(51.0009, false), pos(51.0009), pair, new Set())
     expect(keys(found)).toEqual(['bundle'])
   })
+
+  it('warns for a special request from as far away as for a bundle drop', () => {
+    const pair = occurrences({ points: outAndBack, stops: [stopOnStreet('request', 51.0021, 'request'), stopOnStreet('house', 51.0021)] })
+    const found = approachingOccurrences(at(51.0009, false), pos(51.0009), pair, new Set())
+    expect(keys(found)).toEqual(['request'])
+  })
 })
 
 describe('drawing a pass beside the road it repeats', () => {
@@ -339,7 +345,7 @@ describe('a small alert zone', () => {
   const stop: Stop = { id: 's', type: 'nothrow', pathIdx: 0, lat: 51.005, lng: 0 }
   const o: Occurrence = { key: 's', stop, idx: 4, at: 500, off: 0 }
   const here: Pt = { lat: 51.005, lng: 0 }
-  const zone = (m: number) => ({ nothrow: m, bundle: m })
+  const zone = (m: number) => ({ nothrow: m, bundle: m, request: m })
 
   it('does not alert for a stop already further behind than the zone reaches', () => {
     // 15 m past the stop: inside a zone of 20 m or more, outside one of 10 m.
@@ -388,7 +394,7 @@ describe('how far a stop is from the route', () => {
 
 describe('stops that are met by where the driver is, not along the route', () => {
   const east = (m: number) => m / 70050
-  const zone = (m: number) => ({ nothrow: m, bundle: m })
+  const zone = (m: number) => ({ nothrow: m, bundle: m, request: m })
   const stopAtOff = (id: string, lat: number, offM: number, type: Stop['type'] = 'bundle'): Stop => ({
     id,
     type,
@@ -410,8 +416,8 @@ describe('stops that are met by where the driver is, not along the route', () =>
 
   it('go by the zone of their own kind of stop', () => {
     const [o] = occurrences({ points: road, stops: [stopAtOff('f', 51.005, 80)] })
-    expect(byPosition(o, { nothrow: 60, bundle: 40 })).toBe(true)
-    expect(byPosition({ ...o, stop: { ...o.stop, type: 'nothrow' } }, { nothrow: 60, bundle: 40 })).toBe(false)
+    expect(byPosition(o, { nothrow: 60, bundle: 40, request: 40 })).toBe(true)
+    expect(byPosition({ ...o, stop: { ...o.stop, type: 'nothrow' } }, { nothrow: 60, bundle: 40, request: 40 })).toBe(false)
   })
 
   it('alert when the driver is within the alert distance of them, wherever the driver is along the route', () => {
