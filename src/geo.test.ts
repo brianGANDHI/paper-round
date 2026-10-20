@@ -2,16 +2,20 @@ import { describe, expect, it } from 'vitest'
 import {
   alongPath,
   approachingOccurrences,
+  awayFromRoad,
   byPosition,
   cumulativeDistances,
   distanceToPath,
+  handledUpTo,
   haversine,
   occurrences,
   POSITION_MAX_ACCURACY_M,
   offsetPath,
   sideAt,
+  pathLength,
   simplify,
   snapToPath,
+  splitPathAt,
   snapWithin,
   stopSide,
   type Occurrence,
@@ -475,5 +479,93 @@ describe('stops that are met by where the driver is, not along the route', () =>
     })
     const here = { lat: 51.0051, lng: east(100) }
     expect(keys(approachingOccurrences(0, here, occs, new Set(), zone(40)))).toEqual(['far', 'near'])
+  })
+})
+
+describe('cutting a path part way along', () => {
+  // A road running north, ~111 m between points: the cut points are easy to place.
+  const seg = haversine(road[0], road[1])
+
+  it('splits it at a distance, with the cut point on both sides', () => {
+    const { before, after } = splitPathAt(road, seg * 2.5)
+    expect(before).toHaveLength(4)
+    expect(after).toHaveLength(road.length - 2)
+    expect(before[3]).toEqual(after[0])
+    expect(before[3].lat).toBeCloseTo(51.0025, 6)
+    expect(pathLength(before)).toBeCloseTo(seg * 2.5, 1)
+    expect(pathLength(before) + pathLength(after)).toBeCloseTo(pathLength(road), 1)
+  })
+
+  it('puts a cut exactly on a point there without repeating it', () => {
+    const { before, after } = splitPathAt(road, cumulativeDistances(road)[3])
+    expect(before).toEqual(road.slice(0, 4))
+    expect(after).toEqual(road.slice(3))
+  })
+
+  it('leaves it all after a cut at or before the start, and all before one at or past the end', () => {
+    expect(splitPathAt(road, 0)).toEqual({ before: [], after: road })
+    expect(splitPathAt(road, -50)).toEqual({ before: [], after: road })
+    expect(splitPathAt(road, pathLength(road))).toEqual({ before: road, after: [] })
+    expect(splitPathAt(road, pathLength(road) + 500)).toEqual({ before: road, after: [] })
+  })
+
+  it('copes with repeated points and with too few points', () => {
+    const dupes: Pt[] = [road[0], road[0], road[1], road[1], road[2]]
+    const { before, after } = splitPathAt(dupes, seg * 1.5)
+    expect(pathLength(before)).toBeCloseTo(seg * 1.5, 1)
+    expect(pathLength(after)).toBeCloseTo(seg * 0.5, 1)
+    expect(splitPathAt([], 10)).toEqual({ before: [], after: [] })
+    expect(splitPathAt([road[0]], 10)).toEqual({ before: [], after: [road[0]] })
+  })
+
+  it('measures the length of a path', () => {
+    expect(pathLength(road)).toBeCloseTo(seg * 10, 1)
+    expect(pathLength([])).toBe(0)
+    expect(pathLength([road[0]])).toBe(0)
+  })
+})
+
+describe('how far a round has got', () => {
+  const occ = (key: string, at: number): Occurrence => ({ key, stop: { id: key, type: 'nothrow', pathIdx: 0, lat: 0, lng: 0 }, idx: 0, at, off: 0 })
+  const occs = [occ('a', 100), occ('b', 400), occ('b#2', 900), occ('c', 650)]
+
+  it('is how far along the furthest stop already done is', () => {
+    expect(handledUpTo(occs, new Set(['a', 'c']))).toBe(650)
+    expect(handledUpTo(occs, new Set(['a', 'b', 'b#2']))).toBe(900)
+  })
+
+  it('goes by the pass that was done, on a street driven twice', () => {
+    expect(handledUpTo(occs, new Set(['b']))).toBe(400)
+  })
+
+  it('is the start when nothing is done, or what is done is not in the route', () => {
+    expect(handledUpTo(occs, new Set())).toBe(0)
+    expect(handledUpTo(occs, new Set(['gone']))).toBe(0)
+    expect(handledUpTo([], new Set(['a']))).toBe(0)
+  })
+})
+
+describe('which side of a stop is clear of the road', () => {
+  const north: Pt[] = [{ lat: 51, lng: 0 }, { lat: 51.01, lng: 0 }]
+  const east: Pt[] = [{ lat: 51, lng: 0 }, { lat: 51, lng: 0.02 }]
+
+  it('is the east for a house east of a road running north, and the west for one west of it', () => {
+    expect(awayFromRoad(north, { lat: 51.005, lng: 0.0001 })).toBe('right')
+    expect(awayFromRoad(north, { lat: 51.005, lng: -0.0001 })).toBe('left')
+  })
+
+  it('is up for a house north of a road running east, and down for one south of it', () => {
+    expect(awayFromRoad(east, { lat: 51.0001, lng: 0.01 })).toBe('top')
+    expect(awayFromRoad(east, { lat: 50.9999, lng: 0.01 })).toBe('bottom')
+  })
+
+  it('goes by the nearest part of a route that bends, not by the first', () => {
+    const bend: Pt[] = [{ lat: 51, lng: 0 }, { lat: 51, lng: 0.01 }, { lat: 51.01, lng: 0.01 }]
+    expect(awayFromRoad(bend, { lat: 51.005, lng: 0.0099 })).toBe('left')
+    expect(awayFromRoad(bend, { lat: 51.0001, lng: 0.005 })).toBe('top')
+  })
+
+  it('is the right for a route too short to have a road', () => {
+    expect(awayFromRoad([], { lat: 51, lng: 0 })).toBe('right')
   })
 })

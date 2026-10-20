@@ -2,22 +2,36 @@ import { describe, expect, it } from 'vitest'
 import {
   aheadText,
   alertable,
+  alertSpeech,
   alertRadius,
   alertText,
+  aheadOf,
   approachSide,
   alertSide,
   ALERT_DISTANCES,
   BACK_OFF_SLACK_M,
   DEFAULT_ALERT_DISTANCE,
+  HEAD_PASSED_M,
+  houseRow,
   inTransit,
   isAlertDistance,
+  isGoneBy,
   isOffRoute,
   offRouteNote,
   onlyInTransit,
+  pickCurrent,
+  planSpeech,
+  platesLayout,
+  plateText,
   quietNoThrows,
   quietNote,
+  ROW_GAP_M,
+  ROW_MAX,
+  ROW_SPAN_M,
   sameWay,
   sideNote,
+  SPOKEN_ROW_MAX,
+  spokenNumber,
   stopOffRoute,
   stopRoadSides,
   stopsWithoutSide,
@@ -621,5 +635,326 @@ describe('the house number on the banner', () => {
     expect(alertText(stop({ label: "Joe's Cafe" })).number).toBeNull()
     expect(alertText(stop({})).number).toBeNull()
     expect(alertText(stop({ address: 'Oak Road' })).number).toBeNull()
+  })
+})
+
+describe('houses in a row', () => {
+  // A road running north, ~111 m per 0.001 degrees. A house is `m` metres along it, a few metres to the east or west.
+  const road: Pt[] = [{ lat: 51, lng: 0 }, { lat: 51.02, lng: 0 }]
+  const house = (id: string, m: number, side: 'e' | 'w' = 'e', type: StopType = 'nothrow'): Stop => ({
+    id,
+    type,
+    pathIdx: 0,
+    lat: 51 + m / 111195,
+    lng: (side === 'e' ? 1 : -1) * (8 / 70050),
+  })
+  const setup = (stops: Stop[], sideChanges: Route['sideChanges'] = [{ idx: 0, side: 'both' }]) => {
+    const route: Route = { points: road, sideChanges, stops }
+    const all = occurrences(route)
+    const occs = alertable(route, all)
+    return { route, all, occs }
+  }
+  const zone = alertRadius(40)
+  const keys = (row: { key: string }[]) => row.map((o) => o.key)
+
+  it('is every house along the road within a few lots of the one before it, in route order, starting with the first', () => {
+    const { route, all, occs } = setup([house('a', 100), house('b', 120), house('c', 140), house('d', 165)])
+    expect(keys(houseRow(route, all, occs, new Set(), occs[0], zone))).toEqual(['a', 'b', 'c', 'd'])
+  })
+
+  it('ends where the gap to the next house is too long', () => {
+    const { route, all, occs } = setup([house('a', 100), house('b', 150), house('c', 150 + ROW_GAP_M), house('d', 150 + ROW_GAP_M + 80)])
+    expect(keys(houseRow(route, all, occs, new Set(), occs[0], zone))).toEqual(['a', 'b', 'c'])
+  })
+
+  it('counts the gap from each house to the next, not from the first', () => {
+    const { route, all, occs } = setup([house('a', 100), house('b', 150), house('c', 200), house('d', 250)])
+    expect(houseRow(route, all, occs, new Set(), occs[0], zone)).toHaveLength(4)
+  })
+
+  it('starts from the house it is given, and leaves out the ones before it', () => {
+    const { route, all, occs } = setup([house('a', 100), house('b', 120), house('c', 140)])
+    expect(keys(houseRow(route, all, occs, new Set(), occs[1], zone))).toEqual(['b', 'c'])
+  })
+
+  it('leaves out houses already done', () => {
+    const { route, all, occs } = setup([house('a', 100), house('b', 120), house('c', 140), house('d', 160)])
+    expect(keys(houseRow(route, all, occs, new Set(['b']), occs[0], zone))).toEqual(['a', 'c', 'd'])
+  })
+
+  it('keeps the houses on one side of the road apart from those on the other', () => {
+    const { route, all, occs } = setup([house('a', 100, 'e'), house('b', 105, 'w'), house('c', 120, 'e'), house('d', 125, 'w')])
+    const east = occs.find((o) => o.key === 'a')!
+    const west = occs.find((o) => o.key === 'b')!
+    expect(keys(houseRow(route, all, occs, new Set(), east, zone))).toEqual(['a', 'c'])
+    expect(keys(houseRow(route, all, occs, new Set(), west, zone))).toEqual(['b', 'd'])
+  })
+
+  it('does not take a bundle drop or a special request into a row of no-throw houses, nor start one with them', () => {
+    const { route, all, occs } = setup([house('a', 100), house('b', 120, 'e', 'bundle'), house('c', 140), house('d', 160, 'e', 'request')])
+    expect(keys(houseRow(route, all, occs, new Set(), occs[0], zone))).toEqual(['a', 'c'])
+    expect(keys(houseRow(route, all, occs, new Set(), occs[1], zone))).toEqual(['b'])
+    expect(keys(houseRow(route, all, occs, new Set(), occs[3], zone))).toEqual(['d'])
+  })
+
+  it('has houses with the same position in a row together', () => {
+    const { route, all, occs } = setup([house('a', 100), house('b', 100)])
+    expect(houseRow(route, all, occs, new Set(), occs[0], zone)).toHaveLength(2)
+  })
+
+  it('is no more than a driver can read at a glance', () => {
+    const { route, all, occs } = setup(Array.from({ length: 20 }, (_, i) => house(`h${i}`, 100 + i * 15)))
+    expect(houseRow(route, all, occs, new Set(), occs[0], zone)).toHaveLength(ROW_MAX)
+  })
+
+  it('has no other houses on a stretch where nothing is thrown, as those houses stay quiet there', () => {
+    const { route, all, occs } = setup([house('a', 100), house('b', 120), house('c', 140)], [{ idx: 0, side: 'transit' }])
+    expect(occs).toHaveLength(0)
+    expect(keys(houseRow(route, all, occs, new Set(), all[0], zone))).toEqual(['a'])
+  })
+
+  it('is just the house itself when it alerts by where the driver is, as one off the route does', () => {
+    // Nearest to the road before the houses, so the houses come after it and could join it if it were in the row.
+    const far: Stop = { id: 'far', type: 'nothrow', pathIdx: 0, lat: 51 + 90 / 111195, lng: 400 / 70050 }
+    const { route, all, occs } = setup([house('a', 100), far, house('b', 120)])
+    const off = occs.find((o) => o.key === 'far')!
+    expect(keys(houseRow(route, all, occs, new Set(), off, zone))).toEqual(['far'])
+    expect(keys(houseRow(route, all, occs, new Set(), occs.find((o) => o.key === 'a')!, zone))).toEqual(['a', 'b'])
+  })
+
+  it('is a row of one for a lone house', () => {
+    const { route, all, occs } = setup([house('a', 100)])
+    expect(keys(houseRow(route, all, occs, new Set(), occs[0], zone))).toEqual(['a'])
+  })
+
+  it('reaches no further ahead than a driver can see from the first house, however close together they are', () => {
+    const { route, all, occs } = setup(Array.from({ length: 12 }, (_, i) => house(`h${i}`, 100 + i * 40)))
+    const row = houseRow(route, all, occs, new Set(), occs[0], zone)
+    expect(row.length).toBeGreaterThan(1)
+    expect(row.length).toBeLessThan(12)
+    expect(row[row.length - 1].at - row[0].at).toBeLessThanOrEqual(ROW_SPAN_M)
+  })
+
+  it('does not carry on round a U-turn to the houses on the way back', () => {
+    // Up the road and straight back down it. A house on the east side as the driver goes up is on the left coming back, and one on
+    // the west side is on the right coming back, so the same side of the road, driving, is the other side of it by the street.
+    // The houses are far enough back from the road that the turn at the top is two passes of them, not one.
+    const back = (id: string, m: number, side: 'e' | 'w'): Stop => ({ ...house(id, m, side), lng: (side === 'e' ? 1 : -1) * (14 / 70050) })
+    const out: Route = {
+      points: [{ lat: 51, lng: 0 }, { lat: 51.0018, lng: 0 }, { lat: 51, lng: 0.0001 }],
+      sideChanges: [{ idx: 0, side: 'both' }],
+      stops: [back('a', 140, 'e'), back('b', 172, 'e'), back('c', 172, 'w'), back('d', 140, 'w')],
+    }
+    const all = occurrences(out)
+    const occs = alertable(out, all)
+    const first = occs.find((o) => o.key === 'a')!
+    // Every house is passed twice, and the way back is within the gap of the way out here.
+    expect(all.find((o) => o.key === 'c#2')!.at - all.find((o) => o.key === 'b')!.at).toBeLessThan(ROW_GAP_M)
+    expect(keys(houseRow(out, all, occs, new Set(), first, zone))).toEqual(['a', 'b'])
+  })
+})
+
+describe('which of the queued alerts is the one showing', () => {
+  const radius = alertRadius(40)
+  const q = (key: string, type: StopType, at: number, off = 0): Occurrence => ({
+    key,
+    stop: { id: key, type, pathIdx: 0, lat: 0, lng: 0 },
+    idx: 0,
+    at,
+    off,
+  })
+
+  it('is the nearest no-throw house ahead, ahead of anything else queued', () => {
+    const queue = [q('bundle', 'bundle', 110), q('b', 'nothrow', 140), q('a', 'nothrow', 120)]
+    expect(pickCurrent(queue, 100, 100, null, radius)?.key).toBe('a')
+  })
+
+  it('is the nearest of the others when no no-throw house is queued', () => {
+    expect(pickCurrent([q('r', 'request', 150), q('b', 'bundle', 120)], 100, 100, null, radius)?.key).toBe('b')
+  })
+
+  it('moves on to the next house once the one before is gone by, though it is still in the queue', () => {
+    const queue = [q('a', 'nothrow', 120), q('b', 'nothrow', 140)]
+    expect(pickCurrent(queue, 100, 100, null, radius)?.key).toBe('a')
+    expect(pickCurrent(queue, 125 + HEAD_PASSED_M, 125 + HEAD_PASSED_M, null, radius)?.key).toBe('b')
+  })
+
+  it('does not go back to a house the driver has gone by when their position wobbles back', () => {
+    const queue = [q('a', 'nothrow', 120), q('b', 'nothrow', 140)]
+    // The furthest reached is past `a`, though the driver's own position is back before it.
+    expect(pickCurrent(queue, 135, 100, null, radius)?.key).toBe('b')
+  })
+
+  it('is the one least far behind when all are gone by, and nothing when the queue is empty', () => {
+    const queue = [q('a', 'nothrow', 120), q('b', 'nothrow', 140)]
+    expect(pickCurrent(queue, 200, 200, null, radius)?.key).toBe('b')
+    expect(pickCurrent([], 0, 0, null, radius)).toBeUndefined()
+  })
+
+  it('measures a stop met by where the driver is from where they are, not along the route', () => {
+    const far = { ...q('off', 'nothrow', 120, 200), stop: { id: 'off', type: 'nothrow' as const, pathIdx: 0, lat: 0.0009, lng: 0 } }
+    expect(aheadOf(far, 0, { lat: 0, lng: 0 }, radius)).toBeGreaterThan(90)
+    expect(aheadOf(far, 0, { lat: 0, lng: 0 }, radius)).toBeLessThan(110)
+    expect(aheadOf(q('a', 'nothrow', 120), 100, { lat: 0, lng: 0 }, radius)).toBe(20)
+  })
+
+  it('counts a stop as gone by only once the driver is past it by a few metres', () => {
+    const a = q('a', 'nothrow', 120)
+    expect(isGoneBy(a, 118, 118, null, radius)).toBe(false)
+    expect(isGoneBy(a, 125, 125, null, radius)).toBe(false)
+    expect(isGoneBy(a, 120 + HEAD_PASSED_M, 120 + HEAD_PASSED_M, null, radius)).toBe(true)
+  })
+})
+
+describe('how a row of plates is laid out', () => {
+  it('is one line for as many as fit on one', () => {
+    expect(platesLayout(1, 5)).toEqual({ shown: 1, more: 0, lines: 1 })
+    expect(platesLayout(5, 5)).toEqual({ shown: 5, more: 0, lines: 1 })
+  })
+
+  it('is two lines when there are more than fit on one', () => {
+    expect(platesLayout(6, 5)).toEqual({ shown: 6, more: 0, lines: 2 })
+    expect(platesLayout(10, 5)).toEqual({ shown: 10, more: 0, lines: 2 })
+  })
+
+  it('is two lines with the last place saying how many more, when even two are not enough', () => {
+    expect(platesLayout(11, 5)).toEqual({ shown: 9, more: 2, lines: 2 })
+    expect(platesLayout(12, 5)).toEqual({ shown: 9, more: 3, lines: 2 })
+  })
+
+  it('always accounts for every house, in the plates or in the more', () => {
+    for (let n = 1; n <= 30; n++) {
+      const { shown, more } = platesLayout(n, 4)
+      expect(shown + more).toBe(n)
+    }
+  })
+})
+
+describe('what a plate shows', () => {
+  const stop = (extra: Partial<Stop>): Stop => ({ id: 's', type: 'nothrow', pathIdx: 0, lat: 0, lng: 0, ...extra })
+
+  it('shows the house number', () => {
+    expect(plateText(stop({ address: '14 Oak Road' }))).toEqual({ text: '14', named: false })
+  })
+
+  it('shows the start of what a house is called when it has no number, marked as a name', () => {
+    expect(plateText(stop({ label: 'Mrs Smith' }))).toEqual({ text: 'Mrs\u2026', named: true })
+    expect(plateText(stop({ label: 'Rose' }))).toEqual({ text: 'Rose', named: true })
+  })
+
+  it('shows a dot for a house with neither', () => {
+    expect(plateText(stop({}))).toEqual({ text: '\u2022', named: false })
+  })
+})
+
+describe('what is said for the alerts that have just come up', () => {
+  const q = (key: string, type: StopType, at: number, extra: Partial<Stop> = {}): Occurrence => ({
+    key,
+    stop: { id: key, type, pathIdx: 0, lat: 0, lng: 0, ...extra },
+    idx: 0,
+    at,
+    off: 0,
+  })
+  const num = (n: string, at: number) => q(n, 'nothrow', at, { address: `${n} Oak Road` })
+
+  it('says a row of houses once, all together, and marks every one of them as said', () => {
+    const row = [num('12', 100), num('14', 120), num('16', 140)]
+    const plan = planSpeech([row[0]], () => row, new Set())
+    expect(plan.text).toBe('No throw, 12, 14, 16.')
+    expect(plan.announce).toEqual(['12', '14', '16'])
+  })
+
+  it('says the row only once when several of its houses come up together', () => {
+    const row = [num('12', 100), num('14', 120)]
+    const plan = planSpeech(row, () => row, new Set())
+    expect(plan.text).toBe('No throw, 12, 14.')
+  })
+
+  it('says nothing for a row that has been said', () => {
+    const row = [num('12', 100), num('14', 120)]
+    expect(planSpeech([row[1]], () => row, new Set(['12', '14'])).text).toBe('')
+  })
+
+  it('marks as said only the houses that were said, so the rest are said when the driver gets to them', () => {
+    const row = Array.from({ length: 9 }, (_, i) => num(String(10 + i * 2), 100 + i * 20))
+    const plan = planSpeech([row[0]], () => row, new Set())
+    expect(plan.text).toContain(`and ${9 - SPOKEN_ROW_MAX} more`)
+    expect(plan.announce).toEqual(row.slice(0, SPOKEN_ROW_MAX).map((o) => o.key))
+  })
+
+  it('says a bundle drop or a special request on its own, after the houses', () => {
+    const house = num('12', 100)
+    const bundle = q('b', 'bundle', 90, { address: '9 Elm Street', qty: 3 })
+    const plan = planSpeech([bundle, house], () => [house], new Set())
+    expect(plan.text).toBe('No throw, 12. Bundle drop, 9, 3 papers.')
+    expect(plan.announce).toEqual(['12'])
+  })
+
+  it('says nothing when nothing has come up', () => {
+    expect(planSpeech([], () => [], new Set())).toEqual({ text: '', announce: [] })
+  })
+})
+
+describe('saying a house number', () => {
+  it('says a plain number as it is', () => {
+    expect(spokenNumber('14')).toBe('14')
+    expect(spokenNumber('120')).toBe('120')
+  })
+
+  it('says the letter of a number by itself', () => {
+    expect(spokenNumber('12A')).toBe('12 A')
+    expect(spokenNumber('7B')).toBe('7 B')
+  })
+
+  it('says a unit and a number, and a range', () => {
+    expect(spokenNumber('3/12')).toBe('3 slash 12')
+    expect(spokenNumber('12-14')).toBe('12 to 14')
+    expect(spokenNumber('3/12A')).toBe('3 slash 12 A')
+  })
+})
+
+describe('what is said when an alert comes up', () => {
+  const stop = (type: StopType, extra: Partial<Stop> = {}): Stop => ({ id: 's', type, pathIdx: 0, lat: 0, lng: 0, ...extra })
+  const house = (n: string) => stop('nothrow', { id: n, address: `${n} Oak Road` })
+
+  it('says no throw and the number of a no-throw house', () => {
+    expect(alertSpeech([house('14')])).toBe('No throw, 14.')
+    expect(alertSpeech([stop('nothrow', { address: '12A Oak Road' })])).toBe('No throw, 12 A.')
+  })
+
+  it('says every number in a row of no-throw houses, in order', () => {
+    expect(alertSpeech([house('12'), house('14'), house('16')])).toBe('No throw, 12, 14, 16.')
+  })
+
+  it('says how many more there are in a row too long to say', () => {
+    const row = Array.from({ length: 9 }, (_, i) => house(String(10 + i * 2)))
+    expect(alertSpeech(row)).toBe(`No throw, 10, 12, 14, 16, 18, 20, and ${9 - SPOKEN_ROW_MAX} more.`)
+  })
+
+  it('says what a no-throw house is called when it has no number, and just no throw when it has neither', () => {
+    expect(alertSpeech([stop('nothrow', { label: 'Mrs Smith' })])).toBe('No throw, Mrs Smith.')
+    expect(alertSpeech([stop('nothrow', { address: 'Rose Cottage, Mill Lane' })])).toBe('No throw, Rose Cottage, Mill Lane.')
+    expect(alertSpeech([stop('nothrow')])).toBe('No throw.')
+  })
+
+  it('leaves out the houses with nothing to say in a row', () => {
+    expect(alertSpeech([house('12'), stop('nothrow'), house('16')])).toBe('No throw, 12, 16.')
+  })
+
+  it('says how many papers a bundle drop gets, with its number', () => {
+    expect(alertSpeech([stop('bundle', { address: '9 Elm Street', qty: 12 })])).toBe('Bundle drop, 9, 12 papers.')
+    expect(alertSpeech([stop('bundle', { label: "Joe's Cafe", qty: 1 })])).toBe("Bundle drop, Joe's Cafe, 1 paper.")
+    expect(alertSpeech([stop('bundle', { address: '9 Elm Street' })])).toBe('Bundle drop, 9.')
+    expect(alertSpeech([stop('bundle')])).toBe('Bundle drop.')
+  })
+
+  it('says a special request with its number and then its note', () => {
+    expect(alertSpeech([stop('request', { address: '23 Oak Road', note: 'Blue gate, deliver by hand' })])).toBe('Special request, 23. Blue gate, deliver by hand.')
+    expect(alertSpeech([stop('request', { note: 'Blue gate' })])).toBe('Special request. Blue gate.')
+    expect(alertSpeech([stop('request', { address: '23 Oak Road' })])).toBe('Special request, 23.')
+  })
+
+  it('says nothing for nothing', () => {
+    expect(alertSpeech([])).toBe('')
   })
 })

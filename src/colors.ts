@@ -8,4 +8,7 @@ export const SIDE_PILL: Record<Side, string> = { both: '#0a6ae0', left: '#2b9a4a
 
 export const SIDE_LABEL: Record<Side, string> = { both: 'Both Sides', left: 'Left Side', right: 'Right Side', transit: 'Transit' }
 
+/** The same in a word, for where there is little room. */
+export const SIDE_SHORT: Record<Side, string> = { both: 'Both', left: 'Left', right: 'Right', transit: 'Transit' }
+
 export const STOP_COLOR = { bundle: '#007aff', nothrow: '#ff3b30', request: '#af52de' } as const

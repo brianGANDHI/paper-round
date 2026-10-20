@@ -78,6 +78,79 @@ export function alertText(stop: Stop): { title: string; name: string; address: s
   }
 }
 
+/** A house number as it is said: "3/12" is "3 slash 12", "12-14" is "12 to 14", and "12A" has its letter said by itself. */
+export function spokenNumber(number: string): string {
+  return number
+    .replace(/\//g, ' slash ')
+    .replace(/-/g, ' to ')
+    .replace(/(\d)([A-Z])\b/g, '$1 $2')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+/** The most houses of a row that are said by number: a driver can't follow a longer list by ear. */
+export const SPOKEN_ROW_MAX = 6
+
+/** What is said to name a stop: its house number, or else what it is called, or nothing when it has neither. */
+export function spokenName(s: Stop): string | null {
+  const number = houseNumber(s)
+  return number ? spokenNumber(number) : (s.label ?? s.address ?? null)
+}
+
+/**
+ * What to say for alerts that have just come up, and which of them it covers. A row of no-throw houses is said
+ * once, all together, the first time any of it comes up: as many of its numbers as are said (the rest are "and N
+ * more"), and only those are counted as said, so the rest are said when the driver gets near them. Every other stop is
+ * said on its own. `rowOf` gives the row a house is in.
+ */
+export function planSpeech(
+  fresh: Occurrence[],
+  rowOf: (first: Occurrence) => Occurrence[],
+  announced: ReadonlySet<string>,
+): { text: string; announce: string[] } {
+  const parts: string[] = []
+  const announce: string[] = []
+  const covered = new Set<string>()
+  for (const first of fresh.filter((o) => o.stop.type === 'nothrow').sort((a, b) => a.at - b.at)) {
+    if (announced.has(first.key) || covered.has(first.key)) continue
+    const row = rowOf(first)
+    for (const o of row) covered.add(o.key)
+    let said = 0
+    let upTo = 0
+    row.forEach((o, i) => {
+      if (spokenName(o.stop) !== null && said < SPOKEN_ROW_MAX) {
+        said++
+        upTo = i + 1
+      }
+    })
+    announce.push(...row.slice(0, Math.max(upTo, 1)).map((o) => o.key))
+    parts.push(alertSpeech(row.map((o) => o.stop)))
+  }
+  for (const o of fresh) if (o.stop.type !== 'nothrow') parts.push(alertSpeech([o.stop]))
+  return { text: parts.join(' '), announce }
+}
+
+/**
+ * What is said when an alert comes up: the kind of stop, then the house number to look for (or what the stop is called,
+ * if it has no number), and for a bundle drop how many papers and for a special request its note. For a row of no-throw
+ * houses, all their numbers, in order. `stops` is one stop, or a row of no-throw houses.
+ */
+export function alertSpeech(stops: Stop[]): string {
+  const first = stops[0]
+  if (!first) return ''
+  const name = spokenName
+  if (first.type === 'nothrow') {
+    const named = stops.map(name).filter((n): n is string => n !== null)
+    const said = named.slice(0, SPOKEN_ROW_MAX)
+    const more = named.length - said.length
+    const list = said.join(', ')
+    return `No throw${list ? `, ${list}` : ''}${more > 0 ? `, and ${more} more` : ''}.`
+  }
+  const who = name(first)
+  if (first.type === 'request') return `Special request${who ? `, ${who}` : ''}.${first.note ? ` ${first.note}.` : ''}`
+  return `Bundle drop${who ? `, ${who}` : ''}${first.qty ? `, ${plural(first.qty, 'paper', 'papers')}` : ''}.`
+}
+
 /** Whether the route runs the same way along two of its segments, as opposed to back the other way. */
 export function sameWay(points: { lat: number; lng: number }[], i: number, j: number): boolean {
   const a = points[i]
@@ -161,6 +234,91 @@ export function approachSide(heading: number | null, pos: Pt | null, stop: Pt): 
   const turn = ((bearing(pos, stop) - heading + 540) % 360) - 180
   if (Math.abs(turn) < NO_SIDE_DEG || Math.abs(turn) > 180 - NO_SIDE_DEG) return null
   return turn > 0 ? 'right' : 'left'
+}
+
+/** No-throw houses are in a row when each is no further than this, in metres along the route, from the one before. */
+export const ROW_GAP_M = 60
+/** The most houses shown as one row: more than a driver can read at a glance. */
+export const ROW_MAX = 12
+/** A row reaches no further ahead than this, in metres along the route: houses further on can't be seen from the first. */
+export const ROW_SPAN_M = 250
+
+/**
+ * The no-throw houses in a row with `first`, in the order the route reaches them, starting with `first`: each no more
+ * than ROW_GAP_M further on than the one before, on the same side of the road, the route going the same way past
+ * both (so a row doesn't carry on round a U-turn, to the houses on the way back), not yet done, and within ROW_SPAN_M
+ * of the first. `occs` are the alertable occurrences in route order. Only a no-throw house on the route has a row: a
+ * bundle drop, a special request and a stop that alerts by where the driver is each stand alone.
+ */
+export function houseRow(
+  route: Pick<Route, 'points' | 'sideChanges'>,
+  allOccs: Occurrence[],
+  occs: Occurrence[],
+  handled: ReadonlySet<string>,
+  first: Occurrence,
+  radius: Record<Stop['type'], number>,
+): Occurrence[] {
+  if (first.stop.type !== 'nothrow' || byPosition(first, radius)) return [first]
+  const side = alertSide(route, allOccs, first)
+  const row = [first]
+  for (const o of occs) {
+    const last = row[row.length - 1]
+    if (o.at < first.at || o.key === first.key) continue
+    if (o.at - last.at > ROW_GAP_M || o.at - first.at > ROW_SPAN_M) break
+    if (o.stop.type !== 'nothrow' || handled.has(o.key) || byPosition(o, radius)) continue
+    if (!sameWay(route.points, last.idx, o.idx)) break
+    const here = alertSide(route, allOccs, o)
+    if (side && here && side !== here) continue
+    row.push(o)
+    if (row.length >= ROW_MAX) break
+  }
+  return row
+}
+
+/** How far ahead of the driver a queued stop is, in metres, negative once it is behind. One met by where the driver is, not along the route, is as far from them as it is. */
+export function aheadOf(o: Occurrence, along: number, pos: Pt | null, radius: Record<Stop['type'], number>): number {
+  return byPosition(o, radius) && pos ? haversine(pos, o.stop) : o.at - along
+}
+
+/** A stop along the route counts as gone by once the driver is this far past it, in metres, and the alert moves on to the next. */
+export const HEAD_PASSED_M = 10
+
+/**
+ * The alert to show among those queued: the nearest no-throw house still ahead, or else the nearest of the others, and
+ * when everything is behind, the one least far behind. `driven` is the furthest the driver has got along the route,
+ * which doesn't go back, so a stop the driver has gone by isn't brought back by a wobble in their position.
+ */
+export function pickCurrent(queue: Occurrence[], driven: number, along: number, pos: Pt | null, radius: Record<Stop['type'], number>): Occurrence | undefined {
+  const nothrow = queue.filter((o) => o.stop.type === 'nothrow')
+  const pool = nothrow.length ? nothrow : queue
+  const ahead = (o: Occurrence) => aheadOf(o, Math.max(along, driven), pos, radius)
+  const live = pool.filter((o) => ahead(o) > -HEAD_PASSED_M)
+  if (live.length) return live.reduce((a, b) => (ahead(b) < ahead(a) ? b : a))
+  return pool.length ? pool.reduce((a, b) => (ahead(b) > ahead(a) ? b : a)) : undefined
+}
+
+/** Whether a stop in the queue has been gone by, for counting those that are waiting. */
+export const isGoneBy = (o: Occurrence, driven: number, along: number, pos: Pt | null, radius: Record<Stop['type'], number>): boolean =>
+  aheadOf(o, Math.max(along, driven), pos, radius) <= -HEAD_PASSED_M
+
+/**
+ * How a row of houses is laid out in the banner: how many plates fit on a line, then whether it takes one line or two,
+ * and when even two are not enough, all but one place of them show and the last says how many more there are.
+ */
+export function platesLayout(count: number, perLine: number, maxLines = 2): { shown: number; more: number; lines: number } {
+  if (count <= perLine) return { shown: count, more: 0, lines: 1 }
+  if (count <= perLine * maxLines) return { shown: count, more: 0, lines: Math.ceil(count / perLine) }
+  const shown = perLine * maxLines - 1
+  return { shown, more: count - shown, lines: maxLines }
+}
+
+/** What a house shows on its plate: its number, or if it has none the start of what it is called (marked as a name), or a dot. */
+export function plateText(stop: Stop): { text: string; named: boolean } {
+  const number = houseNumber(stop)
+  if (number) return { text: number, named: false }
+  const name = (stop.label ?? stop.address ?? '').trim()
+  if (!name) return { text: '\u2022', named: false }
+  return { text: name.length > 5 ? `${name.slice(0, 4).trimEnd()}\u2026` : name, named: true }
 }
 
 /** How many no-throw houses sit on transit stretches, where they won't alert. */

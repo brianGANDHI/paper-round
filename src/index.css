@@ -27,7 +27,7 @@
 
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
-  --stop-alert-h: 76px;
+  --stop-alert-h: 68px;
   --font: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'SF Pro Display', system-ui, 'Helvetica Neue', Arial, sans-serif;
 }
 
@@ -306,17 +306,28 @@ p {
 }
 
 .side-pill {
+  flex: none;
   display: inline-flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 20px;
+  gap: 8px;
+  white-space: nowrap;
+  padding: 8px 16px;
   border-radius: 999px;
   color: #fff;
-  font-size: 20px;
+  font-size: 18px;
   font-weight: 700;
   letter-spacing: -0.01em;
   box-shadow: var(--shadow);
   transition: background 0.25s;
+}
+
+/* The side being thrown and the next turn, side by side on one line along the top, where they stay when an alert drops in under them. */
+.hud-row {
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
 
 .fab-group {
@@ -335,16 +346,35 @@ p {
   backdrop-filter: saturate(180%) blur(20px);
 }
 
-/* While a stop alert is showing, the map buttons sit below it, level with the side pill. */
-.screen:has(.stop-alert) .fab-group {
-  top: calc(var(--safe-top) + 10px + var(--stop-alert-h) + 8px);
+/* On the road the map buttons sit at the bottom, above the count of stops left, out of the way of what the driver is watching for. */
+.fab-group.low {
+  position: static;
+  align-self: flex-end;
+  flex: none;
+}
+
+/* The map buttons and the count of stops left, together along the bottom of the map. */
+.map-bottom {
+  position: absolute;
+  z-index: 1000;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.map-bottom > * {
+  pointer-events: auto;
 }
 
 .fab {
   display: grid;
   place-items: center;
-  width: 46px;
-  height: 46px;
+  width: 44px;
+  height: 44px;
   color: var(--tint);
 }
 
@@ -357,16 +387,11 @@ p {
 }
 
 .status-card {
-  position: absolute;
-  z-index: 1000;
-  left: 12px;
-  right: 12px;
-  bottom: 12px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 12px 12px 12px 18px;
-  border-radius: 20px;
+  gap: 6px;
+  padding: 8px 8px 8px 14px;
+  border-radius: 18px;
   background: var(--material);
   box-shadow: var(--shadow);
   -webkit-backdrop-filter: saturate(180%) blur(20px);
@@ -385,8 +410,8 @@ p {
 }
 
 .big-number {
-  min-width: 28px;
-  font-size: 38px;
+  min-width: 26px;
+  font-size: 32px;
   font-weight: 700;
   line-height: 1;
   letter-spacing: -0.03em;
@@ -955,7 +980,7 @@ button.row:active:not(:disabled) {
   display: flex;
   align-items: center;
   gap: 10px;
-  height: var(--stop-alert-h);
+  min-height: var(--stop-alert-h);
   padding: 0 12px;
   border-radius: 18px;
   color: #fff;
@@ -970,7 +995,8 @@ button.row:active:not(:disabled) {
 
 .stop-alert.red {
   background: #e0241b;
-  animation: drop 0.25s ease-out, flash 0.8s steps(1) 0.25s infinite;
+  /* It flashes to get the driver's eye, a few times, and then stays a steady red, so it doesn't keep drawing the eye from the road. */
+  animation: drop 0.25s ease-out, flash 0.8s steps(1) 0.25s 4;
 }
 
 /* A special request: purple, and a little taller, because its note is what it is for and can run to three lines. */
@@ -1187,22 +1213,63 @@ button.row:active:not(:disabled) {
   }
 }
 
-/* How many more are waiting, pinned to the banner's corner like a notification badge. */
+/* A row of no-throw houses: a plate for each, in the order the route reaches them. */
+.stop-alert-plates {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 3px 0 4px;
+}
+
+.stop-alert-plates .stop-alert-num {
+  min-width: 38px;
+  height: 34px;
+  font-size: 21px;
+}
+
+.stop-alert-plates .stop-alert-num.long,
+.stop-alert-num.named {
+  font-size: 15px;
+}
+
+/* How many houses more the row has than there is room for. */
+.stop-alert-plus {
+  flex: none;
+  padding: 0 8px;
+  font-size: 18px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+@media (max-width: 350px) {
+  .stop-alert-plates {
+    gap: 4px;
+  }
+
+  .stop-alert-plates .stop-alert-num {
+    min-width: 34px;
+    height: 32px;
+    padding: 0 4px;
+    font-size: 19px;
+  }
+}
+
+/* How many more alerts are waiting, in a small pill beside the title. */
 .stop-alert-more {
-  position: absolute;
-  top: -7px;
-  left: -5px;
+  flex: none;
+  align-self: center;
+  margin-right: auto;
   display: grid;
   place-items: center;
   min-width: 22px;
-  height: 22px;
-  padding: 0 6px;
-  border-radius: 11px;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: 10px;
   background: #fff;
   color: #111;
   font-size: 12px;
-  font-weight: 700;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+  font-weight: 800;
 }
 
 /* ------------------------------------------------------------------ *
@@ -1212,10 +1279,10 @@ button.row:active:not(:disabled) {
 .turn-card {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   max-width: 100%;
-  padding: 7px 18px 7px 7px;
-  border-radius: 18px;
+  padding: 5px 14px 5px 5px;
+  border-radius: 16px;
   color: #fff;
   background: #1c1c1e;
   box-shadow: 0 6px 22px rgba(0, 0, 0, 0.3), inset 0 0 0 1px rgba(255, 255, 255, 0.14);
@@ -1227,10 +1294,15 @@ button.row:active:not(:disabled) {
   flex: none;
   display: grid;
   place-items: center;
-  width: 54px;
-  height: 54px;
-  border-radius: 13px;
+  width: 46px;
+  height: 46px;
+  border-radius: 12px;
   background: rgba(255, 255, 255, 0.14);
+}
+
+.turn-arrow svg {
+  width: 38px;
+  height: 38px;
 }
 
 .turn-text {
@@ -1240,7 +1312,7 @@ button.row:active:not(:disabled) {
 }
 
 .turn-label {
-  font-size: 15px;
+  font-size: 13px;
   font-weight: 700;
   line-height: 1.15;
   white-space: nowrap;
@@ -1248,7 +1320,7 @@ button.row:active:not(:disabled) {
 }
 
 .turn-dist {
-  font-size: 26px;
+  font-size: 22px;
   font-weight: 800;
   line-height: 1.05;
   letter-spacing: -0.02em;
@@ -1258,26 +1330,26 @@ button.row:active:not(:disabled) {
 
 @media (max-width: 350px) {
   .turn-card {
-    gap: 8px;
-    padding: 6px 14px 6px 6px;
+    gap: 6px;
+    padding: 4px 10px 4px 4px;
   }
 
   .turn-arrow {
-    width: 48px;
-    height: 48px;
+    width: 42px;
+    height: 42px;
   }
 
   .turn-arrow svg {
-    width: 38px;
-    height: 38px;
+    width: 34px;
+    height: 34px;
   }
 
   .turn-label {
-    font-size: 14px;
+    font-size: 12px;
   }
 
   .turn-dist {
-    font-size: 23px;
+    font-size: 20px;
   }
 }
 
@@ -1388,6 +1460,28 @@ button.row:active:not(:disabled) {
 
 .pin-label.leaflet-tooltip::before {
   display: none;
+}
+
+/* The number of a house an alert is for, beside its marker on the map. Always light on dark text, whatever the appearance, since the map is. */
+.house-label.leaflet-tooltip {
+  padding: 1px 8px;
+  border: 0;
+  border-radius: 9px;
+  font-size: 18px;
+  font-weight: 800;
+  line-height: 1.25;
+  color: #111;
+  background: #fff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
+.house-label.leaflet-tooltip::before {
+  display: none;
+}
+
+/* The ring round a house an alert is for. */
+.stop-ring {
+  animation: pulse 1.1s ease-in-out infinite;
 }
 
 .arrow span {
@@ -1845,6 +1939,11 @@ textarea.field-input {
  * Wide screens (iPad, desktop): panels float at the side like Apple Maps.
  * ------------------------------------------------------------------ */
 @media (min-width: 700px) {
+  .map-bottom {
+    right: auto;
+    width: 400px;
+  }
+
   .sheet {
     right: auto;
     bottom: 16px;
@@ -1858,10 +1957,6 @@ textarea.field-input {
     max-height: calc(100% - 32px);
   }
 
-  .status-card {
-    right: auto;
-    width: 400px;
-  }
 }
 
 /* ------------------------------------------------------------------ *

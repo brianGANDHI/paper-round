@@ -46,6 +46,8 @@ export interface Route {
 
 export interface RoundState {
   handledStopIds: string[]
+  /** The furthest the round has got along the route, in metres, kept so that carrying on later starts from there. */
+  furthest?: number
 }
 
 /** A route kept on the phone, with its own progress through the current run. */

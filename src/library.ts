@@ -149,11 +149,12 @@ export function normalizeLibrary(raw: unknown): Library | null {
     const handled = Array.isArray(r.round?.handledStopIds)
       ? r.round.handledStopIds.filter((s): s is string => typeof s === 'string')
       : []
+    const furthest = r.round?.furthest
     clean.push({
       id,
       name: cleanName(typeof r.name === 'string' ? r.name : '') || DEFAULT_NAME,
       route: normalizeRoute(r.route),
-      round: { handledStopIds: handled },
+      round: { handledStopIds: handled, ...(typeof furthest === 'number' && Number.isFinite(furthest) && furthest > 0 ? { furthest } : {}) },
       updatedAt: typeof r.updatedAt === 'number' && Number.isFinite(r.updatedAt) ? r.updatedAt : 0,
     })
   }

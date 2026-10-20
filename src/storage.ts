@@ -8,6 +8,7 @@ const LIBRARY_KEY = 'paperround.library.v2'
 const FOLLOW_ROADS_KEY = 'paperround.followRoads'
 const ALERT_DISTANCE_KEY = 'paperround.alertDistance'
 const VOICE_TURNS_KEY = 'paperround.voiceTurns'
+const KEEP_AUDIO_KEY = 'paperround.keepAudioAwake'
 
 /** The single route and its progress, as saved by earlier versions of the app. */
 const LEGACY_ROUTE_KEY = 'paperround.route.v1'
@@ -79,6 +80,22 @@ export function saveVoiceTurns(on: boolean): void {
     localStorage.setItem(VOICE_TURNS_KEY, JSON.stringify(on))
   } catch {
     // The phone won't store it; the voice starts off next time.
+  }
+}
+
+/**
+ * Whether a near-silent signal is played while the voice is on, to keep the audio link to a car or speaker open so the
+ * start of a spoken word isn't lost. On unless someone turns it off.
+ */
+export function loadKeepAudioAwake(): boolean {
+  return read(KEEP_AUDIO_KEY) !== false
+}
+
+export function saveKeepAudioAwake(on: boolean): void {
+  try {
+    localStorage.setItem(KEEP_AUDIO_KEY, JSON.stringify(on))
+  } catch {
+    // The phone won't store it; it comes back on next time.
   }
 }
 

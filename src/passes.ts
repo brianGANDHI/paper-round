@@ -13,6 +13,9 @@ const SAME_GROUND_M = 12
 export interface PassView {
   /** Index of the section. */
   index: number
+  /** How far along the route the section starts and ends, in metres. */
+  startM: number
+  endM: number
   side: Side
   /** The section's path as drawn: shifted sideways when it covers ground an earlier section covers. */
   points: Pt[]
@@ -72,6 +75,8 @@ export function passViews(route: Route, flat = false): PassView[] {
       haversine(paths[i][0], earlier[earlier.length - 1]) < haversine(paths[i][0], earlier[0])
     return {
       index: s.index,
+      startM: s.startM,
+      endM: s.endM,
       side: s.side,
       points: flat ? paths[i] : offsetPath(paths[i], covered.length * PASS_OFFSET_M),
       repeatOf,

@@ -90,6 +90,14 @@ describe('working with routes', () => {
     expect(r.updatedAt).toBe(1234)
   })
 
+  it('keeps how far the round got along with the stops done, until the route is edited', () => {
+    let lib = addRoute(createLibrary(), 'Saturday', drawn())
+    lib = setActiveRound(lib, { handledStopIds: ['a'], furthest: 300 })
+    expect(activeRoute(lib).round).toEqual({ handledStopIds: ['a'], furthest: 300 })
+    lib = editActiveRoute(lib, drawn(4), 1234)
+    expect(activeRoute(lib).round).toEqual({ handledStopIds: [] })
+  })
+
   it("progress belongs to its own route and isn't touched by another", () => {
     let lib = addRoute(createLibrary(), 'Saturday', drawn())
     lib = setActiveRound(lib, { handledStopIds: ['a'] })
@@ -196,6 +204,13 @@ describe('normalizeLibrary', () => {
     expect(lib.routes[1].name).toBe('My Round')
     expect(lib.routes[1].updatedAt).toBe(0)
     expect(lib.activeId).toBe('x')
+  })
+
+  it('keeps how far a round got when that is a sensible number, and drops it when it is not', () => {
+    const lib = (furthest: unknown) =>
+      normalizeLibrary({ routes: [{ id: 'x', name: 'A', route: drawn(), round: { handledStopIds: [], furthest }, updatedAt: 0 }] })!.routes[0].round
+    expect(lib(450)).toEqual({ handledStopIds: [], furthest: 450 })
+    for (const junk of [0, -10, NaN, Infinity, '300', null, undefined, {}]) expect(lib(junk), String(junk)).toEqual({ handledStopIds: [] })
   })
 
   it('returns null when there is nothing usable', () => {

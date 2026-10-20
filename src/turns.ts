@@ -1,4 +1,4 @@
-import { bearing, cumulativeDistances } from './geo'
+import { angleBetween, bearing, cumulativeDistances } from './geo'
 import type { Pt } from './types'
 
 /**
@@ -7,10 +7,12 @@ import type { Pt } from './types'
  * A road that merely bends along its length is not a turn.
  */
 
-/** A turn in the route: how far along it is, and how far the heading changes there (positive to the right, negative to the left). */
+/** A turn in the route: how far along it is, how far the heading changes there (positive to the right, negative to the left), and the way the route heads as it comes up to it. */
 export interface Turn {
   at: number
   angle: number
+  /** The way the route heads just before the turn, in degrees clockwise from north. */
+  heading: number
 }
 
 export type TurnKind = 'bear' | 'turn' | 'sharp' | 'uturn'
@@ -29,15 +31,19 @@ export const TURN_SHOW_M = 200
 /** Inside this the turn is close enough for the last cue, in metres. */
 export const TURN_NEAR_M = 60
 /** A turn stays up until the driver is this far past it, in metres, so a fix a little behind doesn't drop it at once. */
-const TURN_PASSED_M = 15
+export const TURN_PASSED_M = 15
 /** Further than this from the route, in metres, the driver is not on it, and what comes next along it means nothing. */
 export const TURN_MAX_GAP_M = 40
 /** A fix less accurate than this, in metres, can't say how far along the route the driver is. */
-export const TURN_MAX_ACCURACY_M = 50
+export const TURN_MAX_ACCURACY_M = 65
 
-/** Whether the phone is on the route, and its fix good enough, for how far along the route it is to be trusted. `gap` is how far it is from the route. */
-export const onTheRoute = (gap: number | null, accuracy: number): boolean =>
-  gap !== null && gap <= TURN_MAX_GAP_M && accuracy <= TURN_MAX_ACCURACY_M
+/**
+ * Whether the phone is on the route, and its fix good enough, for how far along the route it is to be trusted. `gap` is
+ * how far it is from the route, and `lost` is whether it is too far to say where along the route it is. A poor fix is
+ * allowed to be further off: it can be out by that much.
+ */
+export const onTheRoute = (gap: number | null, accuracy: number, lost = false): boolean =>
+  !lost && gap !== null && gap <= Math.max(TURN_MAX_GAP_M, 2.5 * accuracy) && accuracy <= TURN_MAX_ACCURACY_M
 
 /** A heading change as an angle from -180 (not included) to 180: positive is to the right. */
 const wrap = (deg: number) => 180 - ((((180 - deg) % 360) + 360) % 360)
@@ -88,7 +94,7 @@ export function routeTurns(points: Pt[]): Turn[] {
     }
   }
   return swings
-    .map((s) => ({ at: ((s.first + s.last + 2) / 2) * STEP_M, angle: wrap(s.sum) }))
+    .map((s) => ({ at: ((s.first + s.last + 2) / 2) * STEP_M, angle: wrap(s.sum), heading: heading[s.first] }))
     .filter((t) => Math.abs(t.angle) >= MIN_TURN_DEG)
 }
 
@@ -98,9 +104,26 @@ export interface UpcomingTurn {
   ahead: number
 }
 
-/** The turn to show the driver at `along` metres along the route: the next one not yet passed, once it is near enough. */
-export function upcomingTurn(turns: Turn[], along: number): UpcomingTurn | null {
-  const turn = turns.find((t) => t.at - along >= -TURN_PASSED_M)
+/** A turn only counts as coming up when the driver is heading roughly the way the route does as it reaches it, in degrees. */
+export const TURN_HEADING_TOLERANCE = 60
+
+export interface UpcomingOptions {
+  /** The way the phone is heading, in degrees clockwise from north, or null when it can't say. */
+  heading?: number | null
+  /** Turns at or before this many metres along the route are behind the driver for good, however the position wanders. */
+  after?: number
+}
+
+/**
+ * The turn to show the driver at `along` metres along the route: the next one not yet passed, once it is near enough.
+ * A street driven twice has turns on each pass at the same place, one for each way along it, so a turn that comes up
+ * the other way to the way the phone is heading is not the one being driven to, and one already passed does not return.
+ */
+export function upcomingTurn(turns: Turn[], along: number, options: UpcomingOptions = {}): UpcomingTurn | null {
+  const { heading = null, after = -Infinity } = options
+  const turn = turns.find(
+    (t) => t.at - along >= -TURN_PASSED_M && t.at > after && (heading === null || angleBetween(t.heading, heading) <= TURN_HEADING_TOLERANCE),
+  )
   if (!turn) return null
   const ahead = turn.at - along
   return ahead <= TURN_SHOW_M ? { turn, ahead } : null
@@ -153,7 +176,7 @@ export function turnCue(ahead: number, said: TurnCue | null): TurnCue | null {
 export const spokenMetres = (m: number): number => (m < 100 ? Math.round(m / 10) * 10 : Math.round(m / 50) * 50)
 
 /** The words for a cue. */
-export function turnSpeech(turn: Turn, ahead: number, cue: TurnCue): string {
+export function turnSpeech(turn: Pick<Turn, 'angle'>, ahead: number, cue: TurnCue): string {
   const { spoken } = turnWords(turn.angle)
   if (cue === 'near') return `${spoken[0].toUpperCase()}${spoken.slice(1)}.`
   return `In ${spokenMetres(ahead)} metres, ${spoken}.`

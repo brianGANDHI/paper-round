@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import { divIcon, type DivIcon, type Marker as LeafletMarker } from 'leaflet'
 import {
   AttributionControl,
@@ -13,7 +13,8 @@ import {
 } from 'react-leaflet'
 import 'leaflet/dist/leaflet.css'
 import { SIDE_COLOR, STOP_COLOR } from './colors'
-import { arrowsAlong, haversine, occurrences } from './geo'
+import { arrowsAlong, awayFromRoad, haversine, occurrences, pathLength, splitPathAt } from './geo'
+import { houseNumber } from './routeEdit'
 import { passViews } from './passes'
 import { AUSTRALIA } from './region'
 import type { Pt, Route, Side } from './types'
@@ -30,11 +31,23 @@ const toLatLng = (p: Pt): [number, number] => [p.lat, p.lng]
 
 const LINE = { lineCap: 'round', lineJoin: 'round' } as const
 
+/** How much of its colour the part of the route already driven keeps. */
+const DRIVEN_FADE = 0.28
+/** Where a house number goes from its marker, by the way it is put: just clear of the marker. */
+const LABEL_OFFSET: Record<'top' | 'bottom' | 'left' | 'right', [number, number]> = { right: [20, 0], left: [-20, 0], top: [0, -20], bottom: [0, 20] }
+/** The driven part is cut at multiples of this many metres, so the line isn't redrawn on every fix. */
+const DRIVEN_STEP_M = 10
+
 /** A stretch is a solid line in its colour, or a thinner dotted grey one where nothing is thrown. */
 function lineStyle(side: Side) {
   return side === 'transit'
     ? { casing: { weight: 8, opacity: 0.55 }, line: { weight: 4, dashArray: '0.5 9' } }
     : { casing: { weight: 10, opacity: 0.95 }, line: { weight: 6 } }
+}
+
+/** A stretch's style with only `keep` of its opacity: the part of the route already driven is drawn faded. */
+function faded(style: { opacity?: number }, keep: number) {
+  return { ...style, opacity: (style.opacity ?? 1) * keep }
 }
 
 function Follow({ pos }: { pos: Pt | null }) {
@@ -198,6 +211,10 @@ interface Props {
   fitPosition?: boolean
   /** Fraction of the map height covered by a bottom panel, kept clear when fitting. */
   bottomFrac?: number
+  /** How far along the route has been driven, in metres: that part is drawn faded. */
+  drivenM?: number
+  /** The stops an alert is showing for, in the order the route reaches them: each has its house number beside it, and the first a ring round it, so it is clear which they are. */
+  active?: readonly string[]
   /** A stretch of the route to emphasise. */
   highlight?: Pt[]
   /** Show draggable handles on the route's points, for editing. Sections are drawn on their true lines. */
@@ -227,6 +244,8 @@ export function MapView({
   fit = true,
   fitPosition,
   bottomFrac = 0,
+  drivenM,
+  active,
   highlight,
   editable,
   selectedPoint = null,
@@ -253,7 +272,26 @@ export function MapView({
     for (const o of occurrences(route)) done.set(o.stop.id, (done.get(o.stop.id) ?? true) && handled.has(o.key))
     return done
   }, [route, handled])
-  const arrows = useMemo(() => views.flatMap((v) => arrowsAlong(v.points, 150)), [views])
+  // Each section is cut where the driving has got to, so what is behind can be drawn faded and what is ahead as it was.
+  const cutKey = drivenM === undefined ? undefined : Math.floor(drivenM / DRIVEN_STEP_M)
+  const drawn = useMemo(
+    () =>
+      views.map((v) => {
+        if (cutKey === undefined) return { view: v, before: [] as Pt[], after: v.points }
+        const share = v.endM > v.startM ? (cutKey * DRIVEN_STEP_M - v.startM) / (v.endM - v.startM) : 1
+        return { view: v, ...splitPathAt(v.points, Math.min(1, Math.max(0, share)) * pathLength(v.points)) }
+      }),
+    [views, cutKey],
+  )
+  // Each arrow knows how far along the route it is, to fade with the rest of what has been driven.
+  const arrows = useMemo(
+    () =>
+      views.flatMap((v) => {
+        const length = pathLength(v.points)
+        return arrowsAlong(v.points, 150).map((a, k) => ({ ...a, routeM: v.startM + (length ? (75 + 150 * k) / length : 0) * (v.endM - v.startM) }))
+      }),
+    [views],
+  )
   const first = route.points[0]
   const last = route.points[route.points.length - 1]
   // An out-and-back or a loop ends where it began: one label for both avoids one hiding the other.
@@ -278,11 +316,21 @@ export function MapView({
         <Polyline positions={highlight.map(toLatLng)} pathOptions={{ ...LINE, color: '#000', weight: 18, opacity: 0.22, interactive: false }} />
       )}
       {/* White casing first so the coloured line stays readable on any map background. */}
-      {views.map((v) => (
-        <Polyline key={`c${v.index}`} positions={v.points.map(toLatLng)} pathOptions={{ ...LINE, color: '#fff', ...lineStyle(v.side).casing, interactive: false }} />
-      ))}
-      {views.map((v) => (
-        <Polyline key={v.index} positions={v.points.map(toLatLng)} pathOptions={{ ...LINE, color: SIDE_COLOR[v.side], opacity: 1, ...lineStyle(v.side).line, interactive: false }} />
+      {drawn.map(({ view: v, before, after }) => (
+        <Fragment key={v.index}>
+          {before.length > 1 && (
+            <>
+              <Polyline positions={before.map(toLatLng)} pathOptions={{ ...LINE, color: '#fff', ...faded(lineStyle(v.side).casing, DRIVEN_FADE), interactive: false }} />
+              <Polyline positions={before.map(toLatLng)} pathOptions={{ ...LINE, color: SIDE_COLOR[v.side], ...faded({ opacity: 1, ...lineStyle(v.side).line }, DRIVEN_FADE), interactive: false }} />
+            </>
+          )}
+          {after.length > 1 && (
+            <>
+              <Polyline positions={after.map(toLatLng)} pathOptions={{ ...LINE, color: '#fff', ...lineStyle(v.side).casing, interactive: false }} />
+              <Polyline positions={after.map(toLatLng)} pathOptions={{ ...LINE, color: SIDE_COLOR[v.side], opacity: 1, ...lineStyle(v.side).line, interactive: false }} />
+            </>
+          )}
+        </Fragment>
       ))}
       {selectable &&
         views.map((v) => (
@@ -294,7 +342,14 @@ export function MapView({
           />
         ))}
       {arrows.map((a, i) => (
-        <Marker key={i} position={toLatLng(a.pos)} icon={arrowIcon(a.bearing)} interactive={false} keyboard={false} />
+        <Marker
+          key={i}
+          position={toLatLng(a.pos)}
+          icon={arrowIcon(a.bearing)}
+          opacity={cutKey !== undefined && cutKey * DRIVEN_STEP_M > a.routeM ? DRIVEN_FADE : 1}
+          interactive={false}
+          keyboard={false}
+        />
       ))}
       {route.points.length > 1 && first && last && (
         <>
@@ -312,21 +367,37 @@ export function MapView({
           <Tooltip className="pin-label" permanent direction="bottom" offset={[0, 10]}>{pin.label}</Tooltip>
         </CircleMarker>
       )}
-      {route.stops.map((s) => (
-        <CircleMarker
-          key={s.id}
-          center={[s.lat, s.lng]}
-          radius={12}
-          pathOptions={{
-            color: '#fff',
-            weight: 3,
-            fillColor: STOP_COLOR[s.type],
-            fillOpacity: finished?.get(s.id) ? 0.3 : 1,
-            opacity: finished?.get(s.id) ? 0.6 : 1,
-            interactive: false,
-          }}
-        />
-      ))}
+      {route.stops.map((s) => {
+        const on = active?.includes(s.id) ?? false
+        const number = on ? houseNumber(s) : null
+        // The number goes on the side of the house away from the road, so it doesn't hide the road or the houses along it.
+        const away = number ? awayFromRoad(route.points, s) : 'right'
+        return (
+          <Fragment key={s.id}>
+            {active?.[0] === s.id && (
+              <CircleMarker center={[s.lat, s.lng]} radius={20} pathOptions={{ color: STOP_COLOR[s.type], weight: 4, fill: false, className: 'stop-ring', interactive: false }} />
+            )}
+            <CircleMarker
+              center={[s.lat, s.lng]}
+              radius={12}
+              pathOptions={{
+                color: '#fff',
+                weight: 3,
+                fillColor: STOP_COLOR[s.type],
+                fillOpacity: finished?.get(s.id) ? 0.3 : 1,
+                opacity: finished?.get(s.id) ? 0.6 : 1,
+                interactive: false,
+              }}
+            >
+              {number && (
+                <Tooltip key={away} permanent direction={away} offset={LABEL_OFFSET[away]} className="house-label">
+                  {number}
+                </Tooltip>
+              )}
+            </CircleMarker>
+          </Fragment>
+        )
+      })}
       {position && (
         <>
           <CircleMarker center={toLatLng(position)} radius={22} pathOptions={{ stroke: false, fillColor: '#007aff', fillOpacity: 0.16, interactive: false }} />

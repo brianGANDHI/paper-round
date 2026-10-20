@@ -12,6 +12,8 @@ import {
   turnCue,
   turnKind,
   turnSpeech,
+  TURN_HEADING_TOLERANCE,
+  TURN_PASSED_M,
   turnWords,
   upcomingTurn,
   type Turn,
@@ -215,6 +217,21 @@ describe('finding the turns in a route', () => {
     expect(routeTurns(drive([{ straight: 400 }], 5, 0.5))).toEqual([])
   })
 
+  it('says which way the route heads as it comes up to each turn', () => {
+    const turns = routeTurns(through([0, 0], [0, 200], [200, 200], [200, 0]))
+    expect(turns).toHaveLength(2)
+    // North, then east, then south.
+    expect(near(turns[0].heading, 0, 5)).toBe(true)
+    expect(near(turns[1].heading, 90, 5)).toBe(true)
+  })
+
+  it('says it for a turn that is rounded off, and in the other half of the compass', () => {
+    const turns = routeTurns(drive([{ straight: 150 }, { turn: -90, radius: 15 }, { straight: 150 }, { turn: -90, radius: 15 }, { straight: 100 }]))
+    expect(turns).toHaveLength(2)
+    expect(near(turns[0].heading, 0, 8)).toBe(true)
+    expect(near(turns[1].heading, 270, 8)).toBe(true)
+  })
+
   it('works the same for a route in the northern hemisphere', () => {
     const route: Pt[] = [
       { lat: 51, lng: -0.1 },
@@ -229,8 +246,8 @@ describe('finding the turns in a route', () => {
 
 describe('the turn to show', () => {
   const turns: Turn[] = [
-    { at: 100, angle: 90 },
-    { at: 400, angle: -90 },
+    { at: 100, angle: 90, heading: 0 },
+    { at: 400, angle: -90, heading: 90 },
   ]
 
   it('is the next turn, once it is near enough to be worth showing', () => {
@@ -244,6 +261,39 @@ describe('the turn to show', () => {
     expect(upcomingTurn(turns, 200)).toEqual({ turn: turns[1], ahead: 200 })
     expect(upcomingTurn(turns, 199)).toBeNull()
     expect(TURN_SHOW_M).toBe(200)
+  })
+
+  it('leaves out a turn the route comes up to the other way to the way the phone is heading', () => {
+    // A street driven out and back has a turn at the same place for each way along it.
+    const both: Turn[] = [
+      { at: 100, angle: 90, heading: 0 },
+      { at: 160, angle: -90, heading: 180 },
+    ]
+    expect(upcomingTurn(both, 90, { heading: 0 })?.turn).toBe(both[0])
+    expect(upcomingTurn(both, 90, { heading: 180 })?.turn).toBe(both[1])
+  })
+
+  it('goes by the heading within a margin, whichever way round the compass', () => {
+    const north: Turn[] = [{ at: 100, angle: 90, heading: 355 }]
+    expect(upcomingTurn(north, 50, { heading: 5 })).not.toBeNull()
+    expect(upcomingTurn(north, 50, { heading: 355 - TURN_HEADING_TOLERANCE + 1 })).not.toBeNull()
+    expect(upcomingTurn(north, 50, { heading: 355 - TURN_HEADING_TOLERANCE - 1 })).toBeNull()
+    expect(upcomingTurn(north, 50, { heading: (355 + TURN_HEADING_TOLERANCE + 1) % 360 })).toBeNull()
+    expect(upcomingTurn(north, 50, { heading: 180 })).toBeNull()
+  })
+
+  it('does not go by the heading when the phone has none', () => {
+    const turn: Turn[] = [{ at: 100, angle: 90, heading: 0 }]
+    expect(upcomingTurn(turn, 50, { heading: null })).not.toBeNull()
+    expect(upcomingTurn(turn, 50)).not.toBeNull()
+  })
+
+  it('never brings back a turn already passed, however the position wanders', () => {
+    expect(upcomingTurn(turns, 90, { after: 100 - TURN_PASSED_M })?.turn).toBe(turns[0])
+    expect(upcomingTurn(turns, 90, { after: 100 })?.turn).toBeUndefined()
+    expect(upcomingTurn(turns, 250, { after: 100 })?.turn).toBe(turns[1])
+    // The position has slipped back to before the first turn, but the driver is known to have been past it.
+    expect(upcomingTurn(turns, 60, { after: 300 })).toBeNull()
   })
 
   it('stays on a turn a little past it, and then moves on', () => {
@@ -272,14 +322,32 @@ describe('the turn to show', () => {
 describe('whether to trust where the phone is along the route', () => {
   it('does while it is on the route and the fix is good', () => {
     expect(onTheRoute(0, 5)).toBe(true)
-    expect(onTheRoute(40, 50)).toBe(true)
+    expect(onTheRoute(40, 5)).toBe(true)
+    expect(onTheRoute(40, 16)).toBe(true)
   })
 
-  it('does not once it is further from the route than that, or the fix is worse', () => {
+  it('does not once it is further from the route than that', () => {
     expect(onTheRoute(40.1, 5)).toBe(false)
     expect(onTheRoute(120, 5)).toBe(false)
-    expect(onTheRoute(5, 50.1)).toBe(false)
+  })
+
+  it('lets a poor fix be further from the route, since it can be out by that much, up to a point', () => {
+    expect(onTheRoute(60, 25)).toBe(true)
+    expect(onTheRoute(62.6, 25)).toBe(false)
+    expect(onTheRoute(100, 40)).toBe(true)
+    expect(onTheRoute(160, 65)).toBe(true)
+    expect(onTheRoute(163, 65)).toBe(false)
+  })
+
+  it('does not once the fix is too poor to go by at all', () => {
+    expect(onTheRoute(5, 65)).toBe(true)
+    expect(onTheRoute(5, 65.1)).toBe(false)
     expect(onTheRoute(5, 120)).toBe(false)
+  })
+
+  it('does not when the phone is too far from the route to say where along it the driver is', () => {
+    expect(onTheRoute(5, 5, true)).toBe(false)
+    expect(onTheRoute(5, 5, false)).toBe(true)
   })
 
   it('does not before there is a fix to go by', () => {
@@ -371,15 +439,15 @@ describe('when to speak', () => {
   })
 
   it('has words for each', () => {
-    const right = { at: 0, angle: 90 }
+    const right = { angle: 90 }
     expect(turnSpeech(right, 190, 'far')).toBe('In 200 metres, turn right.')
     expect(turnSpeech(right, 78, 'far')).toBe('In 80 metres, turn right.')
     expect(turnSpeech(right, 40, 'near')).toBe('Turn right.')
-    expect(turnSpeech({ at: 0, angle: -50 }, 120, 'far')).toBe('In 100 metres, bear left.')
-    expect(turnSpeech({ at: 0, angle: -50 }, 30, 'near')).toBe('Bear left.')
-    expect(turnSpeech({ at: 0, angle: 150 }, 30, 'near')).toBe('Turn sharp right.')
-    expect(turnSpeech({ at: 0, angle: 180 }, 150, 'far')).toBe('In 150 metres, make a U-turn.')
-    expect(turnSpeech({ at: 0, angle: 180 }, 20, 'near')).toBe('Make a U-turn.')
+    expect(turnSpeech({ angle: -50 }, 120, 'far')).toBe('In 100 metres, bear left.')
+    expect(turnSpeech({ angle: -50 }, 30, 'near')).toBe('Bear left.')
+    expect(turnSpeech({ angle: 150 }, 30, 'near')).toBe('Turn sharp right.')
+    expect(turnSpeech({ angle: 180 }, 150, 'far')).toBe('In 150 metres, make a U-turn.')
+    expect(turnSpeech({ angle: 180 }, 20, 'near')).toBe('Make a U-turn.')
   })
 })
 

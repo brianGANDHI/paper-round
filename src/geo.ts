@@ -13,11 +13,11 @@ export function haversine(a: Pt, b: Pt): number {
 }
 
 /** Local equirectangular projection to metres around a reference latitude. */
-function project(p: Pt, refLat: number): [number, number] {
+export function project(p: Pt, refLat: number): [number, number] {
   return [rad(p.lng) * R * Math.cos(rad(refLat)), rad(p.lat) * R]
 }
 
-function distToSegment(
+export function distToSegment(
   p: [number, number],
   a: [number, number],
   b: [number, number],
@@ -115,6 +115,26 @@ export function offsetPath(points: Pt[], meters: number): Pt[] {
   })
 }
 
+/** The length of a path, in metres. */
+export const pathLength = (points: Pt[]): number => cumulativeDistances(points).at(-1) ?? 0
+
+/**
+ * A path cut `metres` along it: what comes before the cut and what comes after, which share the cut point.
+ * Cut at or before the start, all of it is after; at or beyond the end, all of it is before.
+ */
+export function splitPathAt(points: Pt[], metres: number): { before: Pt[]; after: Pt[] } {
+  if (points.length < 2) return { before: [], after: points }
+  const cum = cumulativeDistances(points)
+  if (metres <= 0) return { before: [], after: points }
+  if (metres >= cum[cum.length - 1]) return { before: points, after: [] }
+  // Now cum[i] <= metres < cum[i + 1], so the segment has some length.
+  let i = 0
+  while (cum[i + 1] <= metres) i++
+  if (cum[i] === metres) return { before: points.slice(0, i + 1), after: points.slice(i) }
+  const cut = lerp(points[i], points[i + 1], (metres - cum[i]) / (cum[i + 1] - cum[i]))
+  return { before: [...points.slice(0, i + 1), cut], after: [cut, ...points.slice(i + 1)] }
+}
+
 /** Evenly spaced direction markers along the path. */
 export function arrowsAlong(points: Pt[], spacingM: number): { pos: Pt; bearing: number }[] {
   const out: { pos: Pt; bearing: number }[] = []
@@ -183,7 +203,7 @@ const BEHIND_PENALTY_M = 25
 const HEADING_PENALTY_M = 40
 
 /** Smallest angle between two compass bearings, in degrees (0 to 180). */
-const angleBetween = (a: number, b: number) => Math.abs(((a - b + 540) % 360) - 180)
+export const angleBetween = (a: number, b: number) => Math.abs(((a - b + 540) % 360) - 180)
 
 /**
  * Snap a position to the path. With a previous index, prefer a window ahead of
@@ -325,6 +345,28 @@ export function occurrences(route: Pick<Route, 'points' | 'stops'>): Occurrence[
   }
   return out.sort((a, b) => a.at - b.at)
 }
+
+/**
+ * Which side of a stop, on the screen of a map with north up, is clear of the road: the way from the nearest point of the
+ * route to the stop, as the nearest of up, down, left and right. A label put that way doesn't cover the road.
+ */
+export function awayFromRoad(points: Pt[], stop: Pt): 'top' | 'bottom' | 'left' | 'right' {
+  if (points.length < 2) return 'right'
+  const refLat = points[0].lat
+  const xy = points.map((q) => project(q, refLat))
+  const p = project(stop, refLat)
+  let best = { dist: Infinity, dx: 1, dy: 0 }
+  for (let i = 0; i < xy.length - 1; i++) {
+    const { dist, t } = distToSegment(p, xy[i], xy[i + 1])
+    if (dist < best.dist) best = { dist, dx: p[0] - (xy[i][0] + t * (xy[i + 1][0] - xy[i][0])), dy: p[1] - (xy[i][1] + t * (xy[i + 1][1] - xy[i][1])) }
+  }
+  if (Math.abs(best.dx) >= Math.abs(best.dy)) return best.dx >= 0 ? 'right' : 'left'
+  return best.dy >= 0 ? 'top' : 'bottom'
+}
+
+/** How far along the route a round has got, going by the stops already done: where one that is carried on picks up. 0 when none is. */
+export const handledUpTo = (occs: Occurrence[], handled: ReadonlySet<string>): number =>
+  occs.reduce((far, o) => (handled.has(o.key) ? Math.max(far, o.at) : far), 0)
 
 /** How far behind the driver a stop may be and still count, to forgive GPS jitter. */
 const PASSED_M = 20

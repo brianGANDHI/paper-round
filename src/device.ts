@@ -3,7 +3,28 @@ import type { Pt } from './types'
 
 export interface Fix extends Pt {
   accuracy: number
+  /** The way the phone says it is moving, in degrees clockwise from north, or null when it can't say (standing still, or no course yet). */
+  heading: number | null
+  /** How fast the phone says it is moving, in metres a second, or null when it can't say. */
+  speed: number | null
+  /** When the reading was taken, in milliseconds since 1970. */
+  time: number
 }
+
+/** A GPS reading as the app keeps it. The phone's heading is only worth having while it is really moving, and in range. */
+export function fixFrom(
+  coords: { latitude: number; longitude: number; accuracy: number; heading?: number | null; speed?: number | null },
+  time: number = Date.now(),
+): Fix {
+  const finite = (n: number | null | undefined): n is number => typeof n === 'number' && Number.isFinite(n)
+  const speed = finite(coords.speed) && coords.speed >= 0 ? coords.speed : null
+  const moving = speed !== null && speed >= MIN_HEADING_SPEED
+  const heading = moving && finite(coords.heading) && coords.heading >= 0 && coords.heading < 360 ? coords.heading : null
+  return { lat: coords.latitude, lng: coords.longitude, accuracy: coords.accuracy, heading, speed, time }
+}
+
+/** Below this speed, in metres a second, the phone's idea of its heading is noise. */
+export const MIN_HEADING_SPEED = 1.5
 
 export function useGps(enabled: boolean) {
   const [fix, setFix] = useState<Fix | null>(null)
@@ -18,7 +39,7 @@ export function useGps(enabled: boolean) {
     const id = navigator.geolocation.watchPosition(
       (p) => {
         setError(null)
-        setFix({ lat: p.coords.latitude, lng: p.coords.longitude, accuracy: p.coords.accuracy })
+        setFix(fixFrom(p.coords, p.timestamp))
       },
       (e) => setError(e.code === 1 ? 'Location permission denied.' : 'Waiting for GPS signal...'),
       { enableHighAccuracy: true, maximumAge: 1000, timeout: 20000 },
@@ -59,49 +80,6 @@ export function useWakeLock(enabled: boolean) {
   }, [enabled])
 
   return active
-}
-
-let audio: AudioContext | null = null
-
-/** Call from a tap handler: iOS only allows audio after a user gesture. */
-export function unlockAudio() {
-  try {
-    audio ??= new (window.AudioContext ?? (window as any).webkitAudioContext)()
-    void audio.resume()
-  } catch {
-    // Audio unavailable; visual alerts still work.
-  }
-}
-
-function beep(freq: number, start: number, dur: number) {
-  if (!audio) return
-  const o = audio.createOscillator()
-  const g = audio.createGain()
-  o.frequency.value = freq
-  g.gain.value = 0.3
-  o.connect(g).connect(audio.destination)
-  o.start(audio.currentTime + start)
-  o.stop(audio.currentTime + start + dur)
-}
-
-export function alertBundle() {
-  beep(880, 0, 0.15)
-  navigator.vibrate?.(200)
-}
-
-/** A special request: two notes going up, to tell it from a bundle drop's single beep and a no-throw house's three. */
-export function alertRequest() {
-  beep(660, 0, 0.12)
-  beep(880, 0.17, 0.2)
-  navigator.vibrate?.([120, 80, 120])
-}
-
-/** iOS Safari has no Vibration API, so the sound and red flash carry this alert. */
-export function alertNoThrow() {
-  beep(440, 0, 0.25)
-  beep(440, 0.35, 0.25)
-  beep(440, 0.7, 0.25)
-  navigator.vibrate?.([300, 150, 300, 150, 300])
 }
 
 /**
