@@ -8,7 +8,7 @@
  */
 
 /** How long each stop alert's beeps last, in seconds: the voice waits this long to follow one. */
-export const ALERT_SECONDS = { bundle: 0.15, request: 0.37, nothrow: 0.95 } as const
+export const ALERT_SECONDS = { bundle: 0.15, request: 0.37, nothrow: 0.95, offRoute: 0.4 } as const
 
 /** How loud the keep-alive signal is: about 56 decibels below full scale, which is quiet enough not to be heard. */
 const KEEP_ALIVE_GAIN = 0.0015
@@ -81,6 +81,15 @@ export function createSound(makeContext: () => AudioContext, sleep: (ms: number)
     return ALERT_SECONDS.request
   }
 
+  /** Off the route: two notes going down, to tell it from a special request's two going up. Says how long it takes, in seconds. */
+  function offRoute(): number {
+    void ctx?.resume()
+    beep(784, 0, 0.12)
+    beep(523, 0.18, 0.22)
+    navigator.vibrate?.([150, 80, 250])
+    return ALERT_SECONDS.offRoute
+  }
+
   /** iOS Safari has no Vibration API, so the sound and red flash carry this alert. */
   function noThrow(): number {
     void ctx?.resume()
@@ -128,7 +137,7 @@ export function createSound(makeContext: () => AudioContext, sleep: (ms: number)
     keep = null
   }
 
-  return { unlock, ready, bundle, request, noThrow, tick, startKeepAlive, stopKeepAlive, keepingAlive: () => keep !== null }
+  return { unlock, ready, bundle, request, noThrow, offRoute, tick, startKeepAlive, stopKeepAlive, keepingAlive: () => keep !== null }
 }
 
 /** The sound of the app, on the phone's own audio. */

@@ -341,6 +341,8 @@ interface Props {
   headingUp?: boolean
   /** The way the driver is heading, in degrees clockwise from north, unwrapped (it may be past 360 or below 0, so it never turns the long way round). Null when it isn't known: the map stays north up. */
   heading?: number | null
+  /** A dashed line from one place to another, such as from the phone back to where the route was left. */
+  guide?: { from: Pt; to: Pt } | null
   /** The OpenStreetMap credit is shown by the screen itself (as `MapCredit`), not inside the map, where turning it would turn the credit too. */
   outsideCredit?: boolean
   /** A stretch of the route to emphasise. */
@@ -379,6 +381,7 @@ export function MapView({
   headingUp = false,
   heading = null,
   outsideCredit = false,
+  guide = null,
   highlight,
   editable,
   selectedPoint = null,
@@ -495,6 +498,13 @@ export function MapView({
             <CircleMarker center={toLatLng(last)} radius={endsWhereItStarts ? 5 : 8} pathOptions={{ color: '#fff', weight: 3, fillColor: '#1c1c1e', fillOpacity: 1, interactive: false }} />
             {!endsWhereItStarts && <Marker position={toLatLng(first)} icon={tagIcon('pin', 'Start', 'top')} interactive={false} keyboard={false} zIndexOffset={1100} />}
             <Marker position={toLatLng(last)} icon={tagIcon('pin', endsWhereItStarts ? 'Start & End' : 'End', 'top')} interactive={false} keyboard={false} zIndexOffset={1100} />
+          </>
+        )}
+        {guide && (
+          <>
+            <Polyline positions={[toLatLng(guide.from), toLatLng(guide.to)]} pathOptions={{ ...LINE, color: '#fff', weight: 8, opacity: 0.9, interactive: false }} />
+            <Polyline positions={[toLatLng(guide.from), toLatLng(guide.to)]} pathOptions={{ ...LINE, color: '#d97706', weight: 4, dashArray: '2 9', interactive: false }} />
+            <CircleMarker center={toLatLng(guide.to)} radius={8} pathOptions={{ color: '#fff', weight: 3, fillColor: '#d97706', fillOpacity: 1, interactive: false }} />
           </>
         )}
         {marks?.map((m, i) => (

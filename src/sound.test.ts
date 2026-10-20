@@ -258,3 +258,107 @@ describe('keeping the audio link open', () => {
     expect(() => s.stopKeepAlive()).not.toThrow()
   })
 })
+
+describe('the beeps for being off the route', () => {
+  it('are two notes going down, so they are not taken for a special request, whose two go up', () => {
+    const { log, make } = fakeAudio()
+    vi.stubGlobal('navigator', {})
+    const s = createSound(make, noWait)
+    s.unlock()
+    s.offRoute()
+    expect(log).toHaveLength(2)
+    expect(log[0].freq).toBeGreaterThan(log[1].freq)
+    log.length = 0
+    s.request()
+    expect(log[0].freq).toBeLessThan(log[1].freq)
+  })
+
+  it('are loud enough to hear over the road, as loud as the other alerts, and no louder', () => {
+    const { log, make } = fakeAudio()
+    vi.stubGlobal('navigator', {})
+    const s = createSound(make, noWait)
+    s.unlock()
+    s.request()
+    const usual = log[0].gain
+    log.length = 0
+    s.offRoute()
+    expect(log).toHaveLength(2)
+    for (const n of log) expect(n.gain).toBe(usual)
+  })
+
+  it('are in the range a phone speaker can play and a driver can hear', () => {
+    const { log, make } = fakeAudio()
+    vi.stubGlobal('navigator', {})
+    const s = createSound(make, noWait)
+    s.unlock()
+    s.offRoute()
+    for (const n of log) {
+      expect(n.freq).toBeGreaterThanOrEqual(300)
+      expect(n.freq).toBeLessThanOrEqual(2000)
+    }
+  })
+
+  it('say how long they take, and take that long: the second note starts after the first and ends at the length', () => {
+    const { ctx, log, make } = fakeAudio()
+    vi.stubGlobal('navigator', {})
+    const s = createSound(make, noWait)
+    s.unlock()
+    expect(s.offRoute()).toBe(ALERT_SECONDS.offRoute)
+    expect(ALERT_SECONDS.offRoute).toBeGreaterThan(0)
+    expect(log[0].start).toBe(ctx.currentTime)
+    expect(log[1].start).toBeGreaterThanOrEqual(log[0].stop)
+    expect(Math.max(...log.map((n) => n.stop)) - ctx.currentTime).toBeCloseTo(ALERT_SECONDS.offRoute, 5)
+  })
+
+  it('take a moment, but not long: the voice waits that long to follow', () => {
+    expect(ALERT_SECONDS.offRoute).toBeGreaterThan(0.3)
+    expect(ALERT_SECONDS.offRoute).toBeLessThan(1)
+    expect(ALERT_SECONDS.offRoute).not.toBe(ALERT_SECONDS.request)
+  })
+
+  it('buzz the phone where it can', () => {
+    const { make } = fakeAudio()
+    const vibrate = vi.fn()
+    vi.stubGlobal('navigator', { vibrate })
+    const s = createSound(make, noWait)
+    s.unlock()
+    s.offRoute()
+    expect(vibrate).toHaveBeenCalledTimes(1)
+    expect(vibrate.mock.calls[0][0]).not.toEqual([120, 80, 120])
+  })
+
+  it('wake the audio up as they go, in case it fell asleep', () => {
+    const { ctx, calls, make } = fakeAudio('running')
+    vi.stubGlobal('navigator', {})
+    const s = createSound(make, noWait)
+    s.unlock()
+    ctx.state = 'suspended'
+    calls.length = 0
+    s.offRoute()
+    expect(calls).toContain('resume')
+  })
+
+  it('play nothing, and do not throw, before audio is unlocked or where there is none', () => {
+    vi.stubGlobal('navigator', {})
+    const f = fakeAudio()
+    const early = createSound(f.make, noWait)
+    expect(() => early.offRoute()).not.toThrow()
+    expect(f.log).toHaveLength(0)
+    const never = createSound(() => {
+      throw new Error('no audio here')
+    }, noWait)
+    never.unlock()
+    expect(() => never.offRoute()).not.toThrow()
+  })
+
+  it('are heard again each time', () => {
+    const { log, make } = fakeAudio()
+    vi.stubGlobal('navigator', {})
+    const s = createSound(make, noWait)
+    s.unlock()
+    s.offRoute()
+    s.offRoute()
+    expect(log.map((n) => n.freq)).toHaveLength(4)
+    expect(log.slice(0, 2)).toEqual(log.slice(2))
+  })
+})

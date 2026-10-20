@@ -1700,6 +1700,86 @@ button.row:active:not(:disabled) {
   color: #5ac8fa;
 }
 
+/*
+ * Off the route: an amber banner under the side and the next turn. While waiting to be told what to do after coming back onto the route
+ * somewhere else it has two buttons, which have to take touches, since the banner area itself lets them through to the map.
+ */
+.off-banner {
+  align-self: stretch;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 18px;
+  color: #fff;
+  background: #b45309;
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.3);
+  animation: drop 0.25s ease-out;
+}
+
+.off-banner > svg {
+  flex: none;
+  margin-top: 1px;
+}
+
+.off-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.off-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.off-title {
+  font-size: 18px;
+  font-weight: 800;
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+}
+
+.off-dist {
+  flex: none;
+  font-size: 17px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.off-sub {
+  margin-top: 2px;
+  font-size: 14px;
+  line-height: 1.25;
+  opacity: 0.95;
+}
+
+.off-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.off-btn {
+  flex: 1 1 auto;
+  min-height: 40px;
+  padding: 0 14px;
+  border: 2px solid #fff;
+  border-radius: 12px;
+  color: #fff;
+  font-size: 15px;
+  font-weight: 700;
+  pointer-events: auto;
+}
+
+.off-btn.solid {
+  color: #b45309;
+  background: #fff;
+}
+
 /* The OpenStreetMap credit, along the bottom of the round screen where nothing covers it. */
 .map-credit {
   flex: 0 1 auto;
