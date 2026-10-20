@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { divIcon, type DivIcon, type Marker as LeafletMarker } from 'leaflet'
 import {
   AttributionControl,
@@ -7,13 +7,13 @@ import {
   Marker,
   Polyline,
   TileLayer,
-  Tooltip,
   useMap,
   useMapEvents,
 } from 'react-leaflet'
 import 'leaflet/dist/leaflet.css'
 import { SIDE_COLOR, STOP_COLOR } from './colors'
-import { arrowsAlong, awayFromRoad, haversine, occurrences, pathLength, splitPathAt } from './geo'
+import { arrowsAlong, awayBearing, haversine, occurrences, pathLength, screenPlace, splitPathAt, type Place } from './geo'
+import { headingUpLayout } from './mapHeading'
 import { houseNumber } from './routeEdit'
 import { passViews } from './passes'
 import { AUSTRALIA } from './region'
@@ -33,8 +33,6 @@ const LINE = { lineCap: 'round', lineJoin: 'round' } as const
 
 /** How much of its colour the part of the route already driven keeps. */
 const DRIVEN_FADE = 0.28
-/** Where a house number goes from its marker, by the way it is put: just clear of the marker. */
-const LABEL_OFFSET: Record<'top' | 'bottom' | 'left' | 'right', [number, number]> = { right: [20, 0], left: [-20, 0], top: [0, -20], bottom: [0, 20] }
 /** The driven part is cut at multiples of this many metres, so the line isn't redrawn on every fix. */
 const DRIVEN_STEP_M = 10
 
@@ -50,11 +48,112 @@ function faded(style: { opacity?: number }, keep: number) {
   return { ...style, opacity: (style.opacity ?? 1) * keep }
 }
 
-function Follow({ pos }: { pos: Pt | null }) {
+/** Keeps the map centred on the position. A change of `mode` (north up or heading up) re-centres at once, without gliding. */
+function Follow({ pos, mode }: { pos: Pt | null; mode: string }) {
   const map = useMap()
+  const lastMode = useRef<string | null>(null)
   useEffect(() => {
-    if (pos) map.setView([pos.lat, pos.lng], Math.max(map.getZoom(), 17), { animate: true })
-  }, [pos, map])
+    if (!pos) return
+    const changed = lastMode.current !== mode
+    lastMode.current = mode
+    map.setView([pos.lat, pos.lng], Math.max(map.getZoom(), 17), { animate: !changed })
+  }, [pos, map, mode])
+  return null
+}
+
+/** Sets how a pinch zooms: about the middle of the map, or about the fingers. Leaflet reads it at each touch. Gives back what it was. */
+function setPinchMode(map: ReturnType<typeof useMap>, mode: boolean | 'center' | undefined): boolean | 'center' | undefined {
+  const before = map.options.touchZoom
+  map.options.touchZoom = mode
+  return before
+}
+
+/** Turns the map by `heading` degrees, so that way is up the screen, and turns the labels back so they stay upright. */
+function turnMap(el: HTMLElement, heading: number | null) {
+  if (heading === null) return
+  el.style.transform = `rotate(${-heading}deg)`
+  el.style.setProperty('--unrot', `${heading}deg`)
+}
+
+/**
+ * Makes the way the driver is heading the way up the screen. The map is put in a square bigger than the screen, so its corners
+ * stay covered at any angle, with the driver's dot at the middle of it, and the square is turned about that dot. It is clipped
+ * to the screen by `clip`. One finger can't drag the map (it follows the driver) and two fingers still zoom, about the dot.
+ */
+function HeadingUp({ on, heading, clip }: { on: boolean; heading: number | null; clip: HTMLElement | null }) {
+  const map = useMap()
+  /** Two fingers are down: the turn waits, since it would skew what the pinch measures. */
+  const frozen = useRef(false)
+  const latest = useRef(heading)
+  /** The frame request that will start the glide, if one is waiting. */
+  const gliding = useRef(0)
+  useEffect(() => {
+    latest.current = heading
+  })
+
+  useEffect(() => {
+    if (!on || !clip) return
+    const el = map.getContainer()
+    const fit = () => {
+      const { ax, ay, s } = headingUpLayout(clip.clientWidth, clip.clientHeight)
+      clip.style.setProperty('--s', `${s}px`)
+      clip.style.setProperty('--ax', `${ax}px`)
+      clip.style.setProperty('--ay', `${ay}px`)
+      // The map keeps its centre where it is, which is under the dot, whatever size it is now.
+      map.invalidateSize()
+    }
+    const touch = (e: TouchEvent) => {
+      const two = e.touches.length > 1
+      if (frozen.current && !two) {
+        frozen.current = false
+        turnMap(el, latest.current)
+      } else {
+        frozen.current = two
+      }
+    }
+    el.classList.add('heading-up')
+    map.dragging.disable()
+    const previousZoom = setPinchMode(map, 'center')
+    fit()
+    turnMap(el, latest.current)
+    const watcher = new ResizeObserver(fit)
+    watcher.observe(clip)
+    for (const type of ['touchstart', 'touchend', 'touchcancel'] as const) clip.addEventListener(type, touch, { passive: true })
+    return () => {
+      cancelAnimationFrame(gliding.current)
+      gliding.current = 0
+      watcher.disconnect()
+      for (const type of ['touchstart', 'touchend', 'touchcancel'] as const) clip.removeEventListener(type, touch)
+      el.classList.remove('heading-up', 'turning')
+      el.style.transform = ''
+      el.style.removeProperty('--unrot')
+      for (const name of ['--s', '--ax', '--ay']) clip.style.removeProperty(name)
+      frozen.current = false
+      // When the screen is closing the map has already been taken down, and Leaflet can no longer measure it: that is not an error.
+      try {
+        map.dragging.enable()
+        setPinchMode(map, previousZoom)
+        map.invalidateSize()
+      } catch {
+        // Nothing left to put back.
+      }
+    }
+  }, [on, clip, map])
+
+  useEffect(() => {
+    if (!on) return
+    const el = map.getContainer()
+    if (!frozen.current) turnMap(el, heading)
+    if (heading === null || gliding.current || el.classList.contains('turning')) return
+    // The first heading is put straight in, and the turn glides from two frames later on, so that neither switching on nor the first
+    // heading arriving spins the map round from north. A heading that changes in the meantime doesn't start the wait again.
+    gliding.current = requestAnimationFrame(() => {
+      gliding.current = requestAnimationFrame(() => {
+        gliding.current = 0
+        el.classList.add('turning')
+      })
+    })
+  }, [on, heading, map])
   return null
 }
 
@@ -129,6 +228,29 @@ function arrowIcon(bearing: number): DivIcon {
     arrowIcons.set(deg, icon)
   }
   return icon
+}
+
+const escapeHtml = (text: string) => text.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] ?? c)
+
+const tagIcons = new Map<string, DivIcon>()
+/**
+ * A label beside a point on the map: `place` is which side of the point it sits. It is turned back by however far the map is
+ * turned (see `turnMap`), so it stays upright, and on the same side of its point on the screen, when the map points the way
+ * the driver is heading.
+ */
+function tagIcon(kind: 'pin' | 'house' | 'section', text: string, place: Place, next = false): DivIcon {
+  const key = `${kind}|${place}|${next ? 1 : 0}|${text}`
+  let icon = tagIcons.get(key)
+  if (!icon) {
+    icon = divIcon({ className: `tag ${kind}-tag`, html: `<span class="unrot ${place}${next ? ' next' : ''}">${escapeHtml(text)}</span>`, iconSize: [0, 0] })
+    tagIcons.set(key, icon)
+  }
+  return icon
+}
+
+/** Where a stop's house number goes: the side clear of the road. */
+function HouseTag({ at, text, place, next }: { at: Pt; text: string; place: Place; next: boolean }) {
+  return <Marker position={toLatLng(at)} icon={tagIcon('house', text, place, next)} interactive={false} keyboard={false} zIndexOffset={1000} />
 }
 
 const vertexIcons = new Map<boolean, DivIcon>()
@@ -215,6 +337,12 @@ interface Props {
   drivenM?: number
   /** The stops an alert is showing for, in the order the route reaches them: each has its house number beside it, and the first a ring round it, so it is clear which they are. */
   active?: readonly string[]
+  /** Turn the map so the way the driver is heading is up the screen (while following), instead of north. Only the round uses it. */
+  headingUp?: boolean
+  /** The way the driver is heading, in degrees clockwise from north, unwrapped (it may be past 360 or below 0, so it never turns the long way round). Null when it isn't known: the map stays north up. */
+  heading?: number | null
+  /** The OpenStreetMap credit is shown by the screen itself (as `MapCredit`), not inside the map, where turning it would turn the credit too. */
+  outsideCredit?: boolean
   /** A stretch of the route to emphasise. */
   highlight?: Pt[]
   /** Show draggable handles on the route's points, for editing. Sections are drawn on their true lines. */
@@ -227,7 +355,9 @@ interface Props {
   onMidTap?: (segment: number) => void
   /** Tapping a section's line selects it, and says where on the map, in pixels from its top left corner. */
   selectable?: boolean
-  onSectionTap?: (index: number, at: { x: number; y: number }) => void
+  onSectionTap?: (index: number, at: { x: number; y: number }, pos: Pt) => void
+  /** Labelled marks along the route, such as where each named section starts. `on` is the one picked. */
+  marks?: readonly { pos: Pt; label: string; on?: boolean }[]
   /** The map starts to move: panned, zoomed or fitted. */
   onMoveStart?: () => void
   /** A labelled pin, for example where a stretch being painted starts. It is a ring in `color`, so it reads apart from the route's own markers. */
@@ -246,6 +376,9 @@ export function MapView({
   bottomFrac = 0,
   drivenM,
   active,
+  headingUp = false,
+  heading = null,
+  outsideCredit = false,
   highlight,
   editable,
   selectedPoint = null,
@@ -255,6 +388,7 @@ export function MapView({
   onMidTap,
   selectable,
   onSectionTap,
+  marks,
   onMoveStart,
   pin,
   view,
@@ -292,129 +426,139 @@ export function MapView({
       }),
     [views],
   )
+  const [clip, setClip] = useState<HTMLDivElement | null>(null)
+  // How far the map is turned on the screen: house numbers go on the side of the house away from the road as it looks, not as it is on a map with north up.
+  const turnedBy = headingUp && follow && heading !== null ? heading : 0
   const first = route.points[0]
   const last = route.points[route.points.length - 1]
   // An out-and-back or a loop ends where it began: one label for both avoids one hiding the other.
   const endsWhereItStarts = !!first && !!last && route.points.length > 2 && haversine(first, last) < 25
   return (
-    <MapContainer
-      center={toLatLng(start ?? AUSTRALIA.center)}
-      zoom={start ? 16 : AUSTRALIA.zoom}
-      className="map"
-      zoomControl={false}
-      attributionControl={false}
-      doubleClickZoom={false}
-    >
-      {/* Tiles are a bonus: offline they simply fail and the vector overlay still shows. */}
-      <TileLayer
-        url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
-        attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &middot; <a href="https://www.openstreetmap.org/fixthemap">Fix the map</a>'
-        maxZoom={19}
-      />
-      <AttributionControl position="topleft" prefix={false} />
-      {highlight && highlight.length > 1 && (
-        <Polyline positions={highlight.map(toLatLng)} pathOptions={{ ...LINE, color: '#000', weight: 18, opacity: 0.22, interactive: false }} />
-      )}
-      {/* White casing first so the coloured line stays readable on any map background. */}
-      {drawn.map(({ view: v, before, after }) => (
-        <Fragment key={v.index}>
-          {before.length > 1 && (
-            <>
-              <Polyline positions={before.map(toLatLng)} pathOptions={{ ...LINE, color: '#fff', ...faded(lineStyle(v.side).casing, DRIVEN_FADE), interactive: false }} />
-              <Polyline positions={before.map(toLatLng)} pathOptions={{ ...LINE, color: SIDE_COLOR[v.side], ...faded({ opacity: 1, ...lineStyle(v.side).line }, DRIVEN_FADE), interactive: false }} />
-            </>
-          )}
-          {after.length > 1 && (
-            <>
-              <Polyline positions={after.map(toLatLng)} pathOptions={{ ...LINE, color: '#fff', ...lineStyle(v.side).casing, interactive: false }} />
-              <Polyline positions={after.map(toLatLng)} pathOptions={{ ...LINE, color: SIDE_COLOR[v.side], opacity: 1, ...lineStyle(v.side).line, interactive: false }} />
-            </>
-          )}
-        </Fragment>
-      ))}
-      {selectable &&
-        views.map((v) => (
-          <Polyline
-            key={`h${v.index}`}
-            positions={v.points.map(toLatLng)}
-            pathOptions={{ ...LINE, color: '#000', weight: 30, opacity: 0, bubblingMouseEvents: false }}
-            eventHandlers={{ click: (e) => onSectionTap?.(v.index, { x: e.containerPoint.x, y: e.containerPoint.y }) }}
+    <div className="map-clip" ref={setClip}>
+      <MapContainer
+        center={toLatLng(start ?? AUSTRALIA.center)}
+        zoom={start ? 16 : AUSTRALIA.zoom}
+        className="map"
+        zoomControl={false}
+        attributionControl={false}
+        doubleClickZoom={false}
+      >
+        {/* Tiles are a bonus: offline they simply fail and the vector overlay still shows. */}
+        <TileLayer
+          url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &middot; <a href="https://www.openstreetmap.org/fixthemap">Fix the map</a>'
+          maxZoom={19}
+        />
+        {!outsideCredit && <AttributionControl position="topleft" prefix={false} />}
+        {highlight && highlight.length > 1 && (
+          <Polyline positions={highlight.map(toLatLng)} pathOptions={{ ...LINE, color: '#000', weight: 18, opacity: 0.22, interactive: false }} />
+        )}
+        {/* White casing first so the coloured line stays readable on any map background. */}
+        {drawn.map(({ view: v, before, after }) => (
+          <Fragment key={v.index}>
+            {before.length > 1 && (
+              <>
+                <Polyline positions={before.map(toLatLng)} pathOptions={{ ...LINE, color: '#fff', ...faded(lineStyle(v.side).casing, DRIVEN_FADE), interactive: false }} />
+                <Polyline positions={before.map(toLatLng)} pathOptions={{ ...LINE, color: SIDE_COLOR[v.side], ...faded({ opacity: 1, ...lineStyle(v.side).line }, DRIVEN_FADE), interactive: false }} />
+              </>
+            )}
+            {after.length > 1 && (
+              <>
+                <Polyline positions={after.map(toLatLng)} pathOptions={{ ...LINE, color: '#fff', ...lineStyle(v.side).casing, interactive: false }} />
+                <Polyline positions={after.map(toLatLng)} pathOptions={{ ...LINE, color: SIDE_COLOR[v.side], opacity: 1, ...lineStyle(v.side).line, interactive: false }} />
+              </>
+            )}
+          </Fragment>
+        ))}
+        {selectable &&
+          views.map((v) => (
+            <Polyline
+              key={`h${v.index}`}
+              positions={v.points.map(toLatLng)}
+              pathOptions={{ ...LINE, color: '#000', weight: 30, opacity: 0, bubblingMouseEvents: false }}
+              eventHandlers={{ click: (e) => onSectionTap?.(v.index, { x: e.containerPoint.x, y: e.containerPoint.y }, { lat: e.latlng.lat, lng: e.latlng.lng }) }}
+            />
+          ))}
+        {arrows.map((a, i) => (
+          <Marker
+            key={i}
+            position={toLatLng(a.pos)}
+            icon={arrowIcon(a.bearing)}
+            opacity={cutKey !== undefined && cutKey * DRIVEN_STEP_M > a.routeM ? DRIVEN_FADE : 1}
+            interactive={false}
+            keyboard={false}
           />
         ))}
-      {arrows.map((a, i) => (
-        <Marker
-          key={i}
-          position={toLatLng(a.pos)}
-          icon={arrowIcon(a.bearing)}
-          opacity={cutKey !== undefined && cutKey * DRIVEN_STEP_M > a.routeM ? DRIVEN_FADE : 1}
-          interactive={false}
-          keyboard={false}
-        />
-      ))}
-      {route.points.length > 1 && first && last && (
-        <>
-          <CircleMarker center={toLatLng(first)} radius={8} pathOptions={{ color: '#fff', weight: 3, fillColor: '#34c759', fillOpacity: 1, interactive: false }}>
-            {!endsWhereItStarts && <Tooltip className="pin-label" permanent direction="top" offset={[0, -8]}>Start</Tooltip>}
-          </CircleMarker>
-          <CircleMarker center={toLatLng(last)} radius={endsWhereItStarts ? 5 : 8} pathOptions={{ color: '#fff', weight: 3, fillColor: '#1c1c1e', fillOpacity: 1, interactive: false }}>
-            <Tooltip className="pin-label" permanent direction="top" offset={[0, -8]}>{endsWhereItStarts ? 'Start & End' : 'End'}</Tooltip>
-          </CircleMarker>
-        </>
-      )}
-      {pin && (
-        <CircleMarker center={toLatLng(pin.pos)} radius={9} pathOptions={{ color: pin.color, weight: 5, fillColor: '#fff', fillOpacity: 1, interactive: false }}>
-          {/* Below the pin, because the route's Start and End labels sit above theirs. */}
-          <Tooltip className="pin-label" permanent direction="bottom" offset={[0, 10]}>{pin.label}</Tooltip>
-        </CircleMarker>
-      )}
-      {route.stops.map((s) => {
-        const on = active?.includes(s.id) ?? false
-        const number = on ? houseNumber(s) : null
-        // The number goes on the side of the house away from the road, so it doesn't hide the road or the houses along it.
-        const away = number ? awayFromRoad(route.points, s) : 'right'
-        return (
-          <Fragment key={s.id}>
-            {active?.[0] === s.id && (
-              <CircleMarker center={[s.lat, s.lng]} radius={20} pathOptions={{ color: STOP_COLOR[s.type], weight: 4, fill: false, className: 'stop-ring', interactive: false }} />
+        {route.points.length > 1 && first && last && (
+          <>
+            <CircleMarker center={toLatLng(first)} radius={8} pathOptions={{ color: '#fff', weight: 3, fillColor: '#34c759', fillOpacity: 1, interactive: false }} />
+            <CircleMarker center={toLatLng(last)} radius={endsWhereItStarts ? 5 : 8} pathOptions={{ color: '#fff', weight: 3, fillColor: '#1c1c1e', fillOpacity: 1, interactive: false }} />
+            {!endsWhereItStarts && <Marker position={toLatLng(first)} icon={tagIcon('pin', 'Start', 'top')} interactive={false} keyboard={false} zIndexOffset={1100} />}
+            <Marker position={toLatLng(last)} icon={tagIcon('pin', endsWhereItStarts ? 'Start & End' : 'End', 'top')} interactive={false} keyboard={false} zIndexOffset={1100} />
+          </>
+        )}
+        {marks?.map((m, i) => (
+          <Fragment key={`${i}${m.label}`}>
+            {/* One where the route starts would hide the green dot there: it only has its label. */}
+            {!(first && haversine(first, m.pos) < 12) && (
+              <CircleMarker center={toLatLng(m.pos)} radius={m.on ? 9 : 7} pathOptions={{ color: '#fff', weight: 3, fillColor: '#007aff', fillOpacity: 1, interactive: false }} />
             )}
-            <CircleMarker
-              center={[s.lat, s.lng]}
-              radius={12}
-              pathOptions={{
-                color: '#fff',
-                weight: 3,
-                fillColor: STOP_COLOR[s.type],
-                fillOpacity: finished?.get(s.id) ? 0.3 : 1,
-                opacity: finished?.get(s.id) ? 0.6 : 1,
-                interactive: false,
-              }}
-            >
-              {number && (
-                <Tooltip key={away} permanent direction={away} offset={LABEL_OFFSET[away]} className="house-label">
-                  {number}
-                </Tooltip>
-              )}
-            </CircleMarker>
+            <Marker position={toLatLng(m.pos)} icon={tagIcon('section', m.label, 'right', !!m.on)} interactive={false} keyboard={false} zIndexOffset={900} />
           </Fragment>
-        )
-      })}
-      {position && (
-        <>
-          <CircleMarker center={toLatLng(position)} radius={22} pathOptions={{ stroke: false, fillColor: '#007aff', fillOpacity: 0.16, interactive: false }} />
-          <CircleMarker center={toLatLng(position)} radius={9} pathOptions={{ color: '#fff', weight: 3.5, fillColor: '#007aff', fillOpacity: 1, interactive: false }} />
-        </>
-      )}
-      {editable && (
-        <EditHandles points={route.points} selected={selectedPoint} onTap={onPointTap} onDrag={onPointDrag} onDrop={onPointDrop} onMid={onMidTap} />
-      )}
-      <MapEvents onTap={onTap} onMoveStart={onMoveStart} />
-      {opensOnDefault && <FitRegion bottomFrac={bottomFrac} />}
-      <ViewController view={view} bottomFrac={bottomFrac} />
-      {follow ? (
-        <Follow pos={position} />
-      ) : (
-        fit && <Fit points={fitPosition && position ? [...route.points, position] : route.points} bottomFrac={bottomFrac} />
-      )}
-    </MapContainer>
+        ))}
+        {pin && (
+          <>
+            <CircleMarker center={toLatLng(pin.pos)} radius={9} pathOptions={{ color: pin.color, weight: 5, fillColor: '#fff', fillOpacity: 1, interactive: false }} />
+            {/* Below the pin, because the route's Start and End labels sit above theirs. */}
+            <Marker position={toLatLng(pin.pos)} icon={tagIcon('pin', pin.label, 'bottom')} interactive={false} keyboard={false} zIndexOffset={1100} />
+          </>
+        )}
+        {route.stops.map((s) => {
+          const on = active?.includes(s.id) ?? false
+          const number = on ? houseNumber(s) : null
+          // The number goes on the side of the house away from the road, so it doesn't hide the road or the houses along it.
+          const away = number ? screenPlace(awayBearing(route.points, s), turnedBy) : 'right'
+          return (
+            <Fragment key={s.id}>
+              {active?.[0] === s.id && (
+                <CircleMarker center={[s.lat, s.lng]} radius={20} pathOptions={{ color: STOP_COLOR[s.type], weight: 4, fill: false, className: 'stop-ring', interactive: false }} />
+              )}
+              <CircleMarker
+                center={[s.lat, s.lng]}
+                radius={12}
+                pathOptions={{
+                  color: '#fff',
+                  weight: 3,
+                  fillColor: STOP_COLOR[s.type],
+                  fillOpacity: finished?.get(s.id) ? 0.3 : 1,
+                  opacity: finished?.get(s.id) ? 0.6 : 1,
+                  interactive: false,
+                }}
+              />
+              {number && <HouseTag at={s} text={number} place={away} next={active?.[0] === s.id} />}
+            </Fragment>
+          )
+        })}
+        {position && (
+          <>
+            <CircleMarker center={toLatLng(position)} radius={22} pathOptions={{ stroke: false, fillColor: '#007aff', fillOpacity: 0.16, interactive: false }} />
+            <CircleMarker center={toLatLng(position)} radius={9} pathOptions={{ color: '#fff', weight: 3.5, fillColor: '#007aff', fillOpacity: 1, interactive: false }} />
+          </>
+        )}
+        {editable && (
+          <EditHandles points={route.points} selected={selectedPoint} onTap={onPointTap} onDrag={onPointDrag} onDrop={onPointDrop} onMid={onMidTap} />
+        )}
+        <MapEvents onTap={onTap} onMoveStart={onMoveStart} />
+        {opensOnDefault && <FitRegion bottomFrac={bottomFrac} />}
+        <ViewController view={view} bottomFrac={bottomFrac} />
+        <HeadingUp on={headingUp && !!follow} heading={heading} clip={clip} />
+        {follow ? (
+          <Follow pos={position} mode={headingUp ? 'heading' : 'north'} />
+        ) : (
+          fit && <Fit points={fitPosition && position ? [...route.points, position] : route.points} bottomFrac={bottomFrac} />
+        )}
+      </MapContainer>
+    {headingUp && follow && heading !== null && <div className="heading-chevron" aria-hidden="true" />}
+    </div>
   )
 }

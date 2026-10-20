@@ -4,6 +4,8 @@ interface Props {
   turn: Turn
   /** How far ahead the turn is along the route, in metres. Small or negative once the driver is at it. */
   ahead: number
+  /** The street the turn leads into, when it is known and it is not the one already being driven. */
+  street?: string | null
 }
 
 /**
@@ -11,7 +13,7 @@ interface Props {
  * how far away it is. It is dark so it can't be taken for a stop alert, which are blue and red. It has
  * nothing to tap and goes by itself once the turn is behind.
  */
-export function TurnCard({ turn, ahead }: Props) {
+export function TurnCard({ turn, ahead, street }: Props) {
   const { label } = turnWords(turn.angle)
   const distance = turnAheadText(ahead)
   const { shaft, head } = arrowShape(turn.angle)
@@ -19,7 +21,7 @@ export function TurnCard({ turn, ahead }: Props) {
   const flip = turnKind(turn.angle) === 'uturn' && turn.angle < 0
   const spoken = ahead < 15 ? 'now' : `in ${Math.round(ahead / 10) * 10} metres`
   return (
-    <div className="turn-card" role="img" aria-label={`${label} ${spoken}`}>
+    <div className="turn-card" role="img" aria-label={`${label}${street ? ` onto ${street}` : ''} ${spoken}`}>
       <div className="turn-arrow">
         <svg viewBox="0 0 48 48" width="44" height="44" aria-hidden="true" focusable="false">
           <g
@@ -37,6 +39,7 @@ export function TurnCard({ turn, ahead }: Props) {
       <div className="turn-text">
         <span className="turn-label">{label}</span>
         <span className="turn-dist">{distance}</span>
+        {street && <span className="turn-street">{street}</span>}
       </div>
     </div>
   )

@@ -6,9 +6,13 @@ import {
   extendAlongRoads,
   fetchDrive,
   fetchRoad,
+  getJson,
+  NEAREST,
+  nearestEndpoint,
   rate,
   ROAD_NOTICE,
   ROAD_SIMPLIFY_M,
+  RoadError,
   roadPoints,
   roadSeconds,
   roadUrl,
@@ -301,6 +305,13 @@ describe('fetchRoad', () => {
     expect(f).not.toHaveBeenCalled()
   })
 
+  it('says it was cancelled, not that there is no connection, when it is both', async () => {
+    vi.stubGlobal('navigator', { onLine: false })
+    const ctl = new AbortController()
+    ctl.abort()
+    expect(await failure(getJson('https://example.test/', { signal: ctl.signal }))).toBe('cancelled')
+  })
+
   it('leaves a gap between requests, and stops waiting the moment it is cancelled', async () => {
     // A fresh copy of the module, so the time of the last request left by other tests doesn't matter.
     vi.resetModules()
@@ -525,5 +536,307 @@ describe('undoing a stretch of road', () => {
 
   it('has nothing to take back on a route that has no recorded stretch', () => {
     expect(undoStretch(start, [])).toBeNull()
+  })
+})
+
+describe('where the nearest street is asked', () => {
+  it('is the same server as the routes, with the service swapped', () => {
+    expect(nearestEndpoint('https://routing.openstreetmap.de/routed-car/route/v1/driving')).toBe(
+      'https://routing.openstreetmap.de/routed-car/nearest/v1/driving',
+    )
+    expect(nearestEndpoint('https://osrm.example.com/route/v1/driving')).toBe('https://osrm.example.com/nearest/v1/driving')
+    expect(NEAREST).toBe('https://routing.openstreetmap.de/routed-car/nearest/v1/driving')
+    expect(NEAREST).toBe(nearestEndpoint(ENDPOINT))
+  })
+
+  it('is nowhere when the server given is not a routing address, rather than the route address under another name', () => {
+    expect(nearestEndpoint('https://osrm.example.com/driving')).toBeNull()
+    expect(nearestEndpoint('https://osrm.example.com/route/v1')).toBeNull()
+    expect(nearestEndpoint('')).toBeNull()
+  })
+
+  it('swaps only the service, not a part of the address that happens to say the same', () => {
+    expect(nearestEndpoint('https://host/route/v1/driving')).not.toContain('/route/')
+    expect(nearestEndpoint('https://host/a/route/v1/b/route/v1')).toBe('https://host/a/nearest/v1/b/route/v1')
+  })
+})
+
+describe('the status of a failed request', () => {
+  it('is kept on the error when the service answered', async () => {
+    mockFetch(json({ message: 'slow down' }, 429))
+    try {
+      await fetchRoad(START, TAP)
+      expect.unreachable()
+    } catch (e) {
+      expect(e).toBeInstanceOf(RoadError)
+      expect((e as RoadError).kind).toBe('service')
+      expect((e as RoadError).status).toBe(429)
+    }
+  })
+
+  it('is kept when the answer was not JSON at all', async () => {
+    mockFetch(new Response('<html>Bad gateway</html>', { status: 502 }))
+    try {
+      await fetchRoad(START, TAP)
+      expect.unreachable()
+    } catch (e) {
+      expect((e as RoadError).status).toBe(502)
+    }
+  })
+
+  it('is not there when nothing came back', async () => {
+    mockFetch(new TypeError('Load failed'))
+    try {
+      await fetchRoad(START, TAP)
+      expect.unreachable()
+    } catch (e) {
+      expect((e as RoadError).kind).toBe('offline')
+      expect((e as RoadError).status).toBeUndefined()
+    }
+    expect(new RoadError('timeout').status).toBeUndefined()
+    expect(new RoadError('service', 'odd', 503).status).toBe(503)
+  })
+})
+
+describe('getJson', () => {
+  it('makes one plain request and gives back the status and the body, whatever the status', async () => {
+    const f = mockFetch(json({ code: 'Ok' }), json({ code: 'NoSegment' }, 400), json({ message: 'busy' }, 429))
+    expect(await getJson('https://example.test/a')).toEqual({ ok: true, status: 200, json: { code: 'Ok' } })
+    expect(await getJson('https://example.test/b')).toEqual({ ok: false, status: 400, json: { code: 'NoSegment' } })
+    expect(await getJson('https://example.test/c')).toEqual({ ok: false, status: 429, json: { message: 'busy' } })
+    expect(f.mock.calls.map((c) => c[0])).toEqual(['https://example.test/a', 'https://example.test/b', 'https://example.test/c'])
+    // Custom headers would make the browser ask permission first; a bare GET does not.
+    for (const call of f.mock.calls) expect(Object.keys(call[1] ?? {})).toEqual(['signal'])
+  })
+
+  it('fails the same ways the road lookups do', async () => {
+    mockFetch(new TypeError('Load failed'))
+    expect(await failure(getJson('https://example.test/'))).toBe('offline')
+    mockFetch(new Response('<html>Hotel wifi login</html>', { status: 200 }))
+    expect(await failure(getJson('https://example.test/'))).toBe('service')
+    const ctl = new AbortController()
+    ctl.abort()
+    const f = mockFetch(json({}))
+    expect(await failure(getJson('https://example.test/', { signal: ctl.signal }))).toBe('cancelled')
+    expect(f).not.toHaveBeenCalled()
+    vi.stubGlobal('navigator', { onLine: false })
+    expect(await failure(getJson('https://example.test/'))).toBe('offline')
+    expect(f).not.toHaveBeenCalled()
+  })
+
+  it('gives up on a slow service after the timeout it is given', async () => {
+    vi.useFakeTimers()
+    mockFetch(silent)
+    const outcome = failure(getJson('https://example.test/', { timeoutMs: 800 }))
+    await vi.advanceTimersByTimeAsync(799)
+    expect(vi.getTimerCount()).toBe(1)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(await outcome).toBe('timeout')
+    expect(vi.getTimerCount()).toBe(0)
+  })
+})
+
+describe('the gap between requests, with more than one thing asking', () => {
+  /** A fresh copy of the module with the real gap and a fake clock, so what earlier tests did to the limiter doesn't matter. */
+  async function fresh() {
+    vi.resetModules()
+    const mod = await import('./roads')
+    vi.useFakeTimers()
+    mod.rate.minGapMs = 1100
+    return mod
+  }
+
+  /** Lets everything that can happen without a timer happen. */
+  const flush = async () => {
+    for (let i = 0; i < 10; i++) await Promise.resolve()
+  }
+
+  it('lets the first request go at once, without even a timer', async () => {
+    const { spaced: slot } = await fresh()
+    let went = false
+    void slot().then(() => (went = true))
+    await flush()
+    expect(went).toBe(true)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('keeps requests that are asked for together a gap apart, in the order they asked', async () => {
+    const { spaced: slot } = await fresh()
+    const went: string[] = []
+    for (const name of ['a', 'b', 'c']) void slot().then(() => went.push(name))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(went).toEqual(['a'])
+    await vi.advanceTimersByTimeAsync(1099)
+    expect(went).toEqual(['a'])
+    await vi.advanceTimersByTimeAsync(1)
+    expect(went).toEqual(['a', 'b'])
+    await vi.advanceTimersByTimeAsync(1099)
+    expect(went).toEqual(['a', 'b'])
+    await vi.advanceTimersByTimeAsync(1)
+    expect(went).toEqual(['a', 'b', 'c'])
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('waits only for what is left of the gap', async () => {
+    const { spaced: slot } = await fresh()
+    await slot()
+    await vi.advanceTimersByTimeAsync(600)
+    let went = false
+    void slot().then(() => (went = true))
+    await vi.advanceTimersByTimeAsync(499)
+    expect(went).toBe(false)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(went).toBe(true)
+  })
+
+  it('does not wait at all when the last request was exactly long enough ago, or longer', async () => {
+    const { spaced: slot } = await fresh()
+    await slot()
+    for (const quiet of [1100, 5000]) {
+      await vi.advanceTimersByTimeAsync(quiet)
+      let went = false
+      void slot().then(() => (went = true))
+      await flush()
+      expect(went).toBe(true)
+      expect(vi.getTimerCount()).toBe(0)
+    }
+  })
+
+  it('lets one in the line give up at once, without costing the ones behind it a gap', async () => {
+    const { spaced: slot } = await fresh()
+    const went: string[] = []
+    const ctl = new AbortController()
+    void slot().then(() => went.push('a'))
+    const b = slot(ctl.signal).then(
+      () => went.push('b'),
+      (e) => went.push(`b ${kindOf(e)}`),
+    )
+    void slot().then(() => went.push('c'))
+    await vi.advanceTimersByTimeAsync(500)
+    ctl.abort()
+    await b
+    expect(went).toEqual(['a', 'b cancelled'])
+    await vi.advanceTimersByTimeAsync(599)
+    expect(went).toEqual(['a', 'b cancelled'])
+    // c goes a gap after a, not a gap after the place b had in the line.
+    await vi.advanceTimersByTimeAsync(1)
+    expect(went).toEqual(['a', 'b cancelled', 'c'])
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('lets one that is not yet at the front give up at once, and the others carry on', async () => {
+    const { spaced: slot } = await fresh()
+    const went: string[] = []
+    const ctl = new AbortController()
+    void slot().then(() => went.push('a'))
+    void slot().then(() => went.push('b'))
+    const c = slot(ctl.signal).then(
+      () => went.push('c'),
+      (e) => went.push(`c ${kindOf(e)}`),
+    )
+    void slot().then(() => went.push('d'))
+    await vi.advanceTimersByTimeAsync(500)
+    ctl.abort()
+    await c
+    // c left while b was still waiting for its turn.
+    expect(went).toEqual(['a', 'c cancelled'])
+    await vi.advanceTimersByTimeAsync(600)
+    expect(went).toEqual(['a', 'c cancelled', 'b'])
+    await vi.advanceTimersByTimeAsync(1100)
+    expect(went).toEqual(['a', 'c cancelled', 'b', 'd'])
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('leaves nothing listening to the signal once it has had its turn', async () => {
+    const { spaced: slot } = await fresh()
+    const ctl = new AbortController()
+    // What is listening for the signal to be cancelled right now.
+    const live = new Set<unknown>()
+    const add = ctl.signal.addEventListener.bind(ctl.signal)
+    const remove = ctl.signal.removeEventListener.bind(ctl.signal)
+    ctl.signal.addEventListener = (type: string, fn: never, opts?: never) => (live.add(fn), add(type, fn, opts))
+    ctl.signal.removeEventListener = (type: string, fn: never, opts?: never) => (live.delete(fn), remove(type, fn, opts))
+    await slot(ctl.signal)
+    const second = slot(ctl.signal)
+    await vi.advanceTimersByTimeAsync(1100)
+    await second
+    expect(live.size).toBe(0)
+  })
+
+  it('gives up at once when cancelled while it is the one waiting out the gap', async () => {
+    const { spaced: slot } = await fresh()
+    await slot()
+    const ctl = new AbortController()
+    const waiting = failure(slot(ctl.signal))
+    await vi.advanceTimersByTimeAsync(300)
+    ctl.abort()
+    expect(await waiting).toBe('cancelled')
+    expect(vi.getTimerCount()).toBe(0)
+    // The slot was not taken: the next one waits out the gap from the last real request.
+    let went = false
+    void slot().then(() => (went = true))
+    await vi.advanceTimersByTimeAsync(799)
+    expect(went).toBe(false)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(went).toBe(true)
+  })
+
+  it('does not wait, or take a slot, when it is cancelled already', async () => {
+    const { spaced: slot } = await fresh()
+    const ctl = new AbortController()
+    ctl.abort()
+    expect(await failure(slot(ctl.signal))).toBe('cancelled')
+    let went = false
+    void slot().then(() => (went = true))
+    await flush()
+    expect(went).toBe(true)
+  })
+
+  it('gives up at once, not when its turn comes, when it is cancelled already and others are waiting', async () => {
+    const { spaced: slot } = await fresh()
+    void slot()
+    void slot()
+    const ctl = new AbortController()
+    ctl.abort()
+    let outcome = 'still waiting'
+    void failure(slot(ctl.signal)).then((kind) => (outcome = kind))
+    await flush()
+    expect(outcome).toBe('cancelled')
+  })
+
+  it('keeps a lookup of roads and a lookup of anything else a gap apart when they start together', async () => {
+    const mod = await fresh()
+    const times: number[] = []
+    const f = vi.fn(() => {
+      times.push(Date.now())
+      return Promise.resolve(json(answer()))
+    })
+    vi.stubGlobal('fetch', f)
+    const start = Date.now()
+    const both = Promise.all([mod.fetchRoad(START, TAP), mod.getJson('https://example.test/')])
+    await vi.advanceTimersByTimeAsync(2000)
+    await both
+    expect(times.map((t) => t - start)).toEqual([0, 1100])
+  })
+
+  it('never waits longer than the gap, even when the clock has been set back since the last request', async () => {
+    const { spaced: slot } = await fresh()
+    await slot()
+    vi.setSystemTime(Date.now() - 3_600_000)
+    let went = false
+    void slot().then(() => (went = true))
+    await vi.advanceTimersByTimeAsync(1099)
+    expect(went).toBe(false)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(went).toBe(true)
+  })
+
+  it('still lets a single caller go as often as the gap allows, with the gap taken from the setting', async () => {
+    const mod = await fresh()
+    mod.rate.minGapMs = 0
+    const went: number[] = []
+    for (let i = 0; i < 3; i++) void mod.spaced().then(() => went.push(i))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(went).toEqual([0, 1, 2])
   })
 })

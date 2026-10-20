@@ -1,5 +1,5 @@
 import { plural } from './format'
-import { alongPath, bearing, cumulativeDistances, haversine, sideAt, snapWithin, type Occurrence, type Snap } from './geo'
+import { alongPath, bearing, cumulativeDistances, haversine, sideAt, snapAtDistance, snapWithin, type Occurrence, type Snap } from './geo'
 import { isSide, type Pt, type Route, type Side, type SideChange, type Stop, type StopType } from './types'
 
 /** A tap within this distance of the route counts as being on it, when editing sections. */
@@ -8,6 +8,8 @@ export const ON_ROUTE_M = 40
 const VERTEX_SNAP_M = 3
 /** Taps this close to the previous point are accidental double taps. */
 const DUPLICATE_TAP_M = 2
+/** The least road worth giving a side of its own by distance, in metres: anything shorter is a slip, and would leave a sliver of a section. */
+export const PAINT_MIN_M = 15
 /**
  * How far from the route a stop can be and still count as along it. A stop further off is off the route:
  * it can be placed there all the same, and alerts by where the driver is rather than along the route.
@@ -197,6 +199,24 @@ export function paintRange(route: Route, from: number, to: number, side: Side): 
 }
 
 /**
+ * Paint the stretch of road between two places on the route with a side, the first of them (`early`) before the
+ * second (`late`). Points are added where they fall, unless one is already close. Null when the two come to the
+ * same point. The shared end of painting by taps and by distance.
+ */
+function paintBetween(route: Route, early: Snap, late: Snap, side: Side): { route: Route; from: number; to: number } | null {
+  // The later point goes in first, so the earlier one's position in the route doesn't move.
+  const withLate = ensureVertex(route, late)
+  // When both fall in one segment the later point has cut it short, so the earlier one is found again on what is left of it.
+  const first = snapWithin(early.point, withLate.route.points, early.idx, early.idx + 1) ?? early
+  const withEarly = ensureVertex(withLate.route, first)
+  const addedEarly = withEarly.route.points.length > withLate.route.points.length
+  const from = withEarly.vertex
+  const to = withLate.vertex + (addedEarly ? 1 : 0)
+  if (to <= from) return null
+  return { route: paintRange(withEarly.route, from, to, side), from, to }
+}
+
+/**
  * Paint the stretch of road between two taps with a side. Points are added where the taps fall,
  * unless one is already close. Null when a tap is off the route or the two are the same place.
  * With `range`, only the segments in that range are considered, to choose between passes over the same road.
@@ -214,14 +234,25 @@ export function paintStretch(
   const cum = cumulativeDistances(route.points)
   const along = (s: Snap) => alongPath(cum, s.idx, s.t)
   const [early, late] = along(snapA) <= along(snapB) ? [snapA, snapB] : [snapB, snapA]
-  // The later point goes in first, so the earlier one's position in the route doesn't move.
-  const withLate = ensureVertex(route, late)
-  const withEarly = ensureVertex(withLate.route, early)
-  const addedEarly = withEarly.route.points.length > withLate.route.points.length
-  const from = withEarly.vertex
-  const to = withLate.vertex + (addedEarly ? 1 : 0)
-  if (to <= from) return null
-  return { route: paintRange(withEarly.route, from, to, side), from, to }
+  return paintBetween(route, early, late, side)
+}
+
+/**
+ * Paint the stretch of road from `fromM` to `toM` metres along the route with a side, as painting between two
+ * taps would, but by distance, so that it can be the part being driven. The geometry is left as it was: points
+ * are only added on the line, and a point within a few metres of an end is used instead of another beside it.
+ * Where the route doubles back, the pass that is painted is the one at those distances, and the stretch next
+ * to it on the other pass stays a section of its own. What lies outside the route is left out. Null when
+ * what is left is shorter than `PAINT_MIN_M`, or not a distance, or the side is not one.
+ */
+export function paintMetres(route: Route, fromM: number, toM: number, side: Side): Route | null {
+  const from = Math.max(0, fromM)
+  const to = Math.min(routeLength(route.points), toM)
+  if (!isSide(side) || !(to - from >= PAINT_MIN_M)) return null
+  const early = snapAtDistance(route.points, from)
+  const late = snapAtDistance(route.points, to)
+  if (!early || !late) return null
+  return paintBetween(route, early, late, side)?.route ?? null
 }
 
 export function removeLastPoint(route: Route): Route {

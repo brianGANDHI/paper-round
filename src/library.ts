@@ -1,8 +1,14 @@
+import { occurrences } from './geo'
+import { normalizeSections, tidyText } from './namedSections'
 import { normalizeRoute } from './routeEdit'
-import type { Library, RoundState, Route, SavedRoute } from './types'
+import type { Library, NamedSection, RoundState, Route, SavedRoute, TurnStreet } from './types'
 
 export const MAX_NAME = 40
 export const DEFAULT_NAME = 'My Round'
+/** The most street names kept for one route, so damaged data can't fill the phone. */
+export const MAX_STREETS = 5000
+/** The longest street name kept. */
+export const MAX_STREET_NAME = 60
 
 export function newId(): string {
   const c = globalThis.crypto
@@ -55,8 +61,39 @@ export function editActiveRoute(lib: Library, route: Route, now = Date.now()): L
   return mapRoute(lib, lib.activeId, (r) => ({ ...r, route, round: freshRound(), updatedAt: now }))
 }
 
+/**
+ * The route was changed in a way that leaves its stops where they were, such as a side changed while driving: keep it
+ * and the round's progress (how far it got, where it was started), forgetting only the stops done that are no longer
+ * met on the route. Unlike `editActiveRoute`, the round carries on.
+ */
+export function adjustActiveRoute(lib: Library, route: Route, now = Date.now()): Library {
+  const met = new Set(occurrences(route).map((o) => o.key))
+  return mapRoute(lib, lib.activeId, (r) => ({
+    ...r,
+    route,
+    round: { ...r.round, handledStopIds: r.round.handledStopIds.filter((key) => met.has(key)) },
+    updatedAt: now,
+  }))
+}
+
 export function setActiveRound(lib: Library, round: RoundState): Library {
   return mapRoute(lib, lib.activeId, (r) => ({ ...r, round }))
+}
+
+/** A route with its named sections and street names set; a key is left out when there are none. */
+function withExtras(r: SavedRoute, sections: readonly NamedSection[] | undefined, streets: readonly TurnStreet[] | undefined): SavedRoute {
+  const { sections: _sections, streets: _streets, ...rest } = r
+  return { ...rest, ...(sections?.length ? { sections: [...sections] } : {}), ...(streets?.length ? { streets: [...streets] } : {}) }
+}
+
+/** Give the route in use its named sections. Nothing else about it changes, as naming a part does not alter the route. */
+export function setActiveSections(lib: Library, sections: readonly NamedSection[]): Library {
+  return mapRoute(lib, lib.activeId, (r) => withExtras(r, sections, r.streets))
+}
+
+/** Give the route in use the street names found for its turns. Nothing else about it changes. */
+export function setActiveStreets(lib: Library, streets: readonly TurnStreet[]): Library {
+  return mapRoute(lib, lib.activeId, (r) => withExtras(r, r.sections, streets))
 }
 
 export function selectRoute(lib: Library, id: string): Library {
@@ -74,11 +111,12 @@ export function renameRoute(lib: Library, id: string, name: string): Library {
   return mapRoute(lib, id, (r) => ({ ...r, name: uniqueName(lib, name, id) }))
 }
 
-/** Copy a route under a new name and switch to the copy. Its round starts fresh. */
+/** Copy a route, with its named sections and street names, under a new name and switch to the copy. Its round starts fresh. */
 export function duplicateRoute(lib: Library, id: string, now = Date.now()): Library {
   const source = lib.routes.find((r) => r.id === id)
   if (!source) return lib
-  const copy = makeRoute(uniqueName(lib, `${source.name} copy`), structuredClone(source.route), now)
+  const made = makeRoute(uniqueName(lib, `${source.name} copy`), structuredClone(source.route), now)
+  const copy = withExtras(made, structuredClone(source.sections), structuredClone(source.streets))
   return { routes: [...lib.routes, copy], activeId: copy.id }
 }
 
@@ -114,7 +152,7 @@ export function importClashes(lib: Library, imported: { name: string }[]): strin
  */
 export function addImported(
   lib: Library,
-  imported: { name: string; route: Route }[],
+  imported: { name: string; route: Route; sections?: NamedSection[]; streets?: TurnStreet[] }[],
   now = Date.now(),
   mode: ImportMode = 'keep',
 ): Library {
@@ -124,14 +162,42 @@ export function addImported(
   let next: Library = replaceStarter ? { routes: [], activeId: '' } : lib
   for (const item of imported) {
     const existing = mode === 'replace' ? next.routes.find((r) => sameName(r.name, item.name)) : undefined
+    // A backup made before sections or street names existed has none, so a route it replaces keeps its own.
     next = existing
       ? {
           ...next,
-          routes: next.routes.map((r) => (r.id === existing.id ? { ...r, route: item.route, round: freshRound(), updatedAt: now } : r)),
+          routes: next.routes.map((r) =>
+            r.id === existing.id
+              ? withExtras({ ...r, route: item.route, round: freshRound(), updatedAt: now }, item.sections ?? r.sections, item.streets ?? r.streets)
+              : r,
+          ),
         }
-      : { ...next, routes: [...next.routes, makeRoute(uniqueName(next, item.name || 'Imported route'), item.route, now)] }
+      : {
+          ...next,
+          routes: [...next.routes, withExtras(makeRoute(uniqueName(next, item.name || 'Imported route'), item.route, now), item.sections, item.streets)],
+        }
   }
   return replaceStarter ? { ...next, activeId: next.routes[0].id } : next
+}
+
+/**
+ * Make street names read back from storage or a backup safe to use: junk is dropped (not an object, a place that is not
+ * on Earth, a way out that is not a whole number of degrees from 0 to 359, a name that is not text), names are tidied
+ * and kept to MAX_STREET_NAME (an empty one is fine: the road has no name), and no more than MAX_STREETS are kept.
+ */
+export function normalizeStreets(raw: unknown): TurnStreet[] {
+  if (!Array.isArray(raw)) return []
+  const clean: TurnStreet[] = []
+  for (const item of raw) {
+    if (clean.length >= MAX_STREETS) break
+    if (typeof item !== 'object' || item === null) continue
+    const { lat, lng, out, name } = item as Record<string, unknown>
+    if (typeof lat !== 'number' || typeof lng !== 'number' || typeof out !== 'number' || typeof name !== 'string') continue
+    if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) continue
+    if (!Number.isInteger(out) || out < 0 || out > 359) continue
+    clean.push({ lat, lng, out, name: tidyText(name, MAX_STREET_NAME) })
+  }
+  return clean
 }
 
 /** Make anything read back from storage safe to use. Null when there is nothing usable. */
@@ -150,12 +216,21 @@ export function normalizeLibrary(raw: unknown): Library | null {
       ? r.round.handledStopIds.filter((s): s is string => typeof s === 'string')
       : []
     const furthest = r.round?.furthest
+    const startM = r.round?.startM
+    const sections = normalizeSections(r.sections)
+    const streets = normalizeStreets(r.streets)
     clean.push({
       id,
       name: cleanName(typeof r.name === 'string' ? r.name : '') || DEFAULT_NAME,
       route: normalizeRoute(r.route),
-      round: { handledStopIds: handled, ...(typeof furthest === 'number' && Number.isFinite(furthest) && furthest > 0 ? { furthest } : {}) },
+      round: {
+        handledStopIds: handled,
+        ...(typeof furthest === 'number' && Number.isFinite(furthest) && furthest > 0 ? { furthest } : {}),
+        ...(typeof startM === 'number' && Number.isFinite(startM) && startM >= 0 ? { startM } : {}),
+      },
       updatedAt: typeof r.updatedAt === 'number' && Number.isFinite(r.updatedAt) ? r.updatedAt : 0,
+      ...(sections.length ? { sections } : {}),
+      ...(streets.length ? { streets } : {}),
     })
   }
   if (!clean.length) return null

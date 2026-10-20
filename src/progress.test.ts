@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { haversine } from './geo'
+import { alongPath, haversine } from './geo'
 import { pushTrail, trailHeading, type TrailPoint } from './heading'
-import { advance, makeTrack, startProgress, type Progress, type Track } from './progress'
+import { advance, makeTrack, rebaseProgress, startProgress, type Progress, type Track } from './progress'
+import { paintMetres } from './routeEdit'
 import { routeTurns, TURN_SHOW_M, upcomingTurn } from './turns'
-import type { Pt } from './types'
+import type { Pt, Route } from './types'
 
 // A place in Sydney, so the maths is checked away from the equator and the prime meridian.
 const ORIGIN = { lat: -33.87, lng: 151.2 }
@@ -693,5 +694,298 @@ describe('driving as a phone really does', () => {
       const steps = drive(track, { seed, noise: 6, carry: 0.85, speed: 1.2 })
       for (const x of steps) expect(Math.abs(x.progress.along - x.s), `seed ${seed} at ${x.s}`).toBeLessThan(60)
     }
+  })
+})
+
+describe('a position carried over to a route that has had points added', () => {
+  /** Up 400 m, east 300 m, up 400 m more. */
+  const corner = (): Route => ({ points: through([0, 0], [0, 400], [300, 400], [300, 800]), sideChanges: [{ idx: 0, side: 'both' }], stops: [] })
+  const where = (track: Track, idx: number, t: number): Pt => {
+    const a = track.points[idx]
+    const b = track.points[idx + 1]
+    return { lat: a.lat + (b.lat - a.lat) * t, lng: a.lng + (b.lng - a.lng) * t }
+  }
+  /** A driver on the route `s` metres along, as the tracker would have them on a first fix. */
+  const driverAt = (track: Track, s: number): Progress => advance(track, null, { ...truth(track, s).pos, accuracy: 5, time: 1000, speed: 10 }, truth(track, s).heading)!
+  /** The tracker's position on the new route, and whether it is the same place and the same distance as before. */
+  const samePlace = (before: Track, after: Track, prev: Progress, next: Progress) => {
+    expect(alongPath(after.cum, next.idx, next.t)).toBeCloseTo(prev.along, 1)
+    expect(haversine(where(after, next.idx, next.t), where(before, prev.idx, prev.t))).toBeLessThan(0.01)
+  }
+
+  it('is still the same distance along, and the same place, when points went in before it', () => {
+    const before = makeTrack(corner().points)
+    const prev = driverAt(before, 520)
+    const edited = paintMetres(corner(), 100, 300, 'left')!
+    expect(edited.points).toHaveLength(6)
+    const after = makeTrack(edited.points)
+    const next = rebaseProgress(after, prev)
+    expect(next.idx).toBe(prev.idx + 2)
+    samePlace(before, after, prev, next)
+  })
+
+  it('does not point at the stretch it used to, which is now another one', () => {
+    const before = makeTrack(corner().points)
+    const prev = driverAt(before, 520)
+    const after = makeTrack(paintMetres(corner(), 100, 300, 'left')!.points)
+    // Without it, the old numbers put the driver 200 m back, on the stretch the new points were put into.
+    expect(Math.abs(alongPath(after.cum, prev.idx, prev.t) - prev.along)).toBeGreaterThan(100)
+    expect(Math.abs(alongPath(after.cum, rebaseProgress(after, prev).idx, rebaseProgress(after, prev).t) - prev.along)).toBeLessThan(0.1)
+  })
+
+  it('keeps its stretch and place when points went in after it', () => {
+    const before = makeTrack(corner().points)
+    const prev = driverAt(before, 120)
+    const after = makeTrack(paintMetres(corner(), 600, 760, 'left')!.points)
+    const next = rebaseProgress(after, prev)
+    expect(next.idx).toBe(prev.idx)
+    expect(next.t).toBeCloseTo(prev.t, 6)
+    samePlace(before, after, prev, next)
+  })
+
+  it('finds the right part of the stretch when the points went into that very stretch', () => {
+    const before = makeTrack(corner().points)
+    // The stretch from 400 m to 700 m is cut at 450 m and 600 m.
+    const after = makeTrack(paintMetres(corner(), 450, 600, 'left')!.points)
+    for (const [s, idx, t] of [
+      [430, 1, 0.6],
+      [450, 2, 0],
+      [520, 2, 70 / 150],
+      [650, 3, 0.5],
+    ] as const) {
+      const prev = driverAt(before, s)
+      const next = rebaseProgress(after, prev)
+      expect(next.idx, `at ${s}`).toBe(idx)
+      expect(next.t, `at ${s}`).toBeCloseTo(t, 3)
+      samePlace(before, after, prev, next)
+    }
+  })
+
+  it('keeps everything else about it: how far it has got, how sure it is, when it was and what it saw', () => {
+    const before = makeTrack(corner().points)
+    const steps = drive(before, { to: 520, noise: 6, carry: 0.85, seed: 3 })
+    const prev = steps.at(-1)!.progress
+    const next = rebaseProgress(makeTrack(paintMetres(corner(), 100, 300, 'left')!.points), prev)
+    expect(next).toEqual({ ...prev, idx: next.idx, t: next.t })
+    expect(next.furthest).toBe(prev.furthest)
+    expect(next.along).toBe(prev.along)
+    expect(next.recent).toEqual(prev.recent)
+    expect(next.at).toBe(prev.at)
+    expect(next.time).toBe(prev.time)
+    expect(next.seen).toBe(prev.seen)
+  })
+
+  it('keeps the doubt, the backward and outlier counts and the gap of one that is unsure', () => {
+    const before = makeTrack(corner().points)
+    const prev: Progress = { ...driverAt(before, 520), gap: 31.5, doubt: { along: 700, fixes: 2 }, backward: 2, outliers: 1, accuracy: 18, furthest: 540 }
+    const next = rebaseProgress(makeTrack(paintMetres(corner(), 100, 300, 'left')!.points), prev)
+    expect(next).toMatchObject({ gap: 31.5, doubt: { along: 700, fixes: 2 }, backward: 2, outliers: 1, accuracy: 18, furthest: 540, lost: false })
+  })
+
+  it('keeps a position that is lost where it was, with the fix it came from', () => {
+    const before = makeTrack(corner().points)
+    const prev = startProgress(before, 250)
+    const after = makeTrack(paintMetres(corner(), 100, 300, 'left')!.points)
+    const next = rebaseProgress(after, prev)
+    expect(next).toMatchObject({ along: 250, furthest: 250, lost: true, gap: 0, doubt: null, recent: [] })
+    expect(next.at).toBe(prev.at)
+    // The route is now cut at 100 m and 300 m, so 250 m is three quarters of the way along its second stretch.
+    expect(next.idx).toBe(1)
+    expect(next.t).toBeCloseTo(0.75, 6)
+    samePlace(before, after, prev, next)
+  })
+
+  it('keeps a lost position that is a long way from the route', () => {
+    const before = makeTrack(corner().points)
+    const prev: Progress = { ...driverAt(before, 520), lost: true, gap: 900, at: spot([5000, 5000]) }
+    const after = makeTrack(paintMetres(corner(), 100, 300, 'left')!.points)
+    const next = rebaseProgress(after, prev)
+    expect(next).toEqual({ ...prev, idx: next.idx, t: next.t })
+    samePlace(before, after, prev, next)
+  })
+
+  it('is at the start of the first stretch at the start of the route, and the end of the last at its end', () => {
+    const after = makeTrack(paintMetres(corner(), 100, 300, 'left')!.points)
+    const start = rebaseProgress(after, startProgress(makeTrack(corner().points), 0))
+    expect([start.idx, start.t, start.along]).toEqual([0, 0, 0])
+    const total = after.cum.at(-1)!
+    const end = rebaseProgress(after, startProgress(makeTrack(corner().points), total))
+    expect(end.idx).toBe(after.points.length - 2)
+    expect(end.t).toBe(1)
+    expect(end.along).toBeCloseTo(total, 6)
+  })
+
+  it('stays on the route when the distance is beyond either end of it, without changing the distance', () => {
+    const after = makeTrack(corner().points)
+    const prev = startProgress(after, 400)
+    const past = rebaseProgress(after, { ...prev, along: 5000 })
+    expect([past.idx, past.t, past.along]).toEqual([2, 1, 5000])
+    const back = rebaseProgress(after, { ...prev, along: -30 })
+    expect([back.idx, back.t, back.along]).toEqual([0, 0, -30])
+  })
+
+  it('has nothing to go by on a route with no stretches, and gives the position back', () => {
+    const prev = startProgress(makeTrack(corner().points), 250)
+    expect(rebaseProgress(makeTrack([]), prev)).toBe(prev)
+    expect(rebaseProgress(makeTrack(through([0, 0])), prev)).toBe(prev)
+  })
+
+  it('does not change the position it was given', () => {
+    const before = makeTrack(corner().points)
+    const prev = driverAt(before, 520)
+    const snapshot = JSON.stringify(prev)
+    rebaseProgress(makeTrack(paintMetres(corner(), 100, 300, 'left')!.points), prev)
+    expect(JSON.stringify(prev)).toBe(snapshot)
+  })
+
+  it('gives the same position again if it is done again', () => {
+    const after = makeTrack(paintMetres(corner(), 100, 300, 'left')!.points)
+    const once = rebaseProgress(after, driverAt(makeTrack(corner().points), 520))
+    expect(rebaseProgress(after, once)).toEqual(once)
+  })
+
+  it('changes nothing about a position on the route it was found on', () => {
+    const track = makeTrack(corner().points)
+    for (const x of drive(track, { noise: 6, carry: 0.85, seed: 2 })) {
+      const next = rebaseProgress(track, x.progress)
+      expect({ ...next, idx: 0, t: 0 }).toEqual({ ...x.progress, idx: 0, t: 0 })
+      expect(alongPath(track.cum, next.idx, next.t)).toBeCloseTo(x.progress.along, 6)
+      expect(haversine(where(track, next.idx, next.t), where(track, x.progress.idx, x.progress.t))).toBeLessThan(0.01)
+    }
+  })
+
+  describe('at the joint between two stretches', () => {
+    // The corner is at 400 m.
+    const track = makeTrack(through([0, 0], [0, 400], [300, 400], [300, 800]))
+    const at = (xy: [number, number]): Progress => ({ ...startProgress(track, 400), at: spot(xy) })
+
+    it('is on whichever stretch the fix itself is nearer', () => {
+      const before = rebaseProgress(track, at([0, 395]))
+      expect(before.idx).toBe(0)
+      expect(before.t).toBeCloseTo(1, 9)
+      const past = rebaseProgress(track, at([5, 400]))
+      expect(past.idx).toBe(1)
+      expect(past.t).toBeCloseTo(0, 9)
+    })
+
+    it('is on the later one when the fix is no nearer either', () => {
+      const exact = rebaseProgress(track, at([0, 400]))
+      expect([exact.idx, exact.t]).toEqual([1, 0])
+      const aside = rebaseProgress(track, at([-30, 400]))
+      expect([aside.idx, aside.t]).toEqual([1, 0])
+    })
+
+    it('goes by the fix only for a position that is within a few centimetres of the joint', () => {
+      const near = (m: number): Progress => ({ ...startProgress(track, m), at: spot([5, 400]) })
+      // Just short of the corner, by less than the width of the joint: either stretch, and the fix is on the second.
+      expect(rebaseProgress(track, near(399.99)).idx).toBe(1)
+      expect(rebaseProgress(track, near(399.99)).t).toBe(0)
+      // Further back, it is plainly on the first, whatever the fix says.
+      expect(rebaseProgress(track, near(399.9)).idx).toBe(0)
+      expect(rebaseProgress(track, near(399.9)).t).toBeCloseTo(0.9998, 3)
+      // Just past, the same way round.
+      const past = (m: number): Progress => ({ ...startProgress(track, m), at: spot([0, 395]) })
+      expect(rebaseProgress(track, past(400.01)).idx).toBe(0)
+      expect(rebaseProgress(track, past(400.01)).t).toBe(1)
+      expect(rebaseProgress(track, past(400.1)).idx).toBe(1)
+    })
+
+    it('does not change which stretch a position is on when the fix is not at a joint', () => {
+      // 200 m is half way along the first stretch, and the fix is nearer the second.
+      const mid: Progress = { ...startProgress(track, 200), at: spot([250, 800]) }
+      expect(rebaseProgress(track, mid).idx).toBe(0)
+      expect(rebaseProgress(track, mid).t).toBeCloseTo(0.5, 9)
+      // 600 m is a third of the way along the second, and the fix is nearer the first.
+      const later: Progress = { ...startProgress(track, 600), at: spot([0, 200]) }
+      expect(rebaseProgress(track, later).idx).toBe(1)
+      expect(rebaseProgress(track, later).t).toBeCloseTo(2 / 3, 3)
+    })
+
+    it('never lands on a stretch with no length', () => {
+      const dup = makeTrack(through([0, 0], [0, 100], [0, 100], [0, 200]))
+      for (const m of [0, 50, 99.99, 100, 100.01, 150, 200]) {
+        const next = rebaseProgress(dup, startProgress(dup, m))
+        expect(next.idx, `${m}`).not.toBe(1)
+        expect(next.t).toBeGreaterThanOrEqual(0)
+        expect(next.t).toBeLessThanOrEqual(1)
+        expect(alongPath(dup.cum, next.idx, next.t)).toBeCloseTo(m, 1)
+      }
+      // Even when the fix is right on the doubled point, which is as near that stretch as any.
+      for (const m of [99.99, 100, 100.01]) {
+        const next = rebaseProgress(dup, { ...startProgress(dup, m), at: spot([0, 100]) })
+        expect(next.idx, `${m}`).not.toBe(1)
+      }
+    })
+
+    it('is on the stretch after a doubled point when the position is right at it', () => {
+      const dup = makeTrack(through([0, 0], [0, 100], [0, 100], [0, 200]))
+      const next = rebaseProgress(dup, { ...startProgress(dup, dup.cum[1]), at: spot([0, 100]) })
+      expect([next.idx, next.t]).toEqual([2, 0])
+    })
+
+    it('copes with a stretch with no length at the very end, being at its start', () => {
+      const dup = makeTrack(through([0, 0], [0, 100], [0, 100]))
+      const next = rebaseProgress(dup, startProgress(dup, dup.cum[2]))
+      expect([next.idx, next.t]).toEqual([1, 0])
+      expect(alongPath(dup.cum, next.idx, next.t)).toBeCloseTo(100, 6)
+    })
+  })
+
+  describe('on a street driven out and back along the very same line', () => {
+    const out = (): Route => ({ points: through([0, 0], [0, 300], [0, 0]), sideChanges: [{ idx: 0, side: 'left' }, { idx: 1, side: 'left' }], stops: [] })
+
+    it('is on the pass it was on, whichever pass the points were added to', () => {
+      const before = makeTrack(out().points)
+      const wayOut = startProgress(before, 120)
+      const wayBack = startProgress(before, 480)
+      for (const [from, to] of [[50, 90], [200, 280], [350, 420], [500, 560], [20, 580]] as const) {
+        const edited = paintMetres(out(), from, to, 'right')!
+        const after = makeTrack(edited.points)
+        const a = rebaseProgress(after, wayOut)
+        const b = rebaseProgress(after, wayBack)
+        expect(alongPath(after.cum, a.idx, a.t), `${from}-${to}`).toBeCloseTo(120, 1)
+        expect(alongPath(after.cum, b.idx, b.t), `${from}-${to}`).toBeCloseTo(480, 1)
+        // The way out heads north and the way back south.
+        expect(after.bearings[a.idx], `${from}-${to}`).toBeCloseTo(0, 3)
+        expect(after.bearings[b.idx], `${from}-${to}`).toBeCloseTo(180, 3)
+      }
+    })
+
+    it('is on the pass it was on, with the fix on that pass', () => {
+      const before = makeTrack(out().points)
+      const prev = driverAt(before, 450)
+      expect(prev.along).toBeGreaterThan(400)
+      const after = makeTrack(paintMetres(out(), 100, 200, 'right')!.points)
+      const next = rebaseProgress(after, prev)
+      expect(after.bearings[next.idx]).toBeCloseTo(180, 3)
+      expect(alongPath(after.cum, next.idx, next.t)).toBeCloseTo(prev.along, 1)
+    })
+  })
+
+  describe('wherever the points go', () => {
+    it('is always the same distance along and the same place', () => {
+      const route = corner()
+      const before = makeTrack(route.points)
+      let checked = 0
+      for (let from = 0; from < 1080; from += 53) {
+        for (const length of [15, 70, 333, 900]) {
+          const edited = paintMetres(route, from, from + length, 'right')
+          if (!edited) continue
+          const after = makeTrack(edited.points)
+          for (let s = 0; s <= 1100; s += 37) {
+            const prev = startProgress(before, s)
+            const next = rebaseProgress(after, prev)
+            expect(next.idx).toBeGreaterThanOrEqual(0)
+            expect(next.idx).toBeLessThan(after.points.length - 1)
+            expect(next.t).toBeGreaterThanOrEqual(0)
+            expect(next.t).toBeLessThanOrEqual(1)
+            expect(Math.abs(alongPath(after.cum, next.idx, next.t) - s), `${from} ${length} ${s}`).toBeLessThan(0.05)
+            expect(haversine(where(after, next.idx, next.t), where(before, prev.idx, prev.t)), `${from} ${length} ${s}`).toBeLessThan(0.05)
+            checked++
+          }
+        }
+      }
+      expect(checked).toBeGreaterThan(500)
+    })
   })
 })

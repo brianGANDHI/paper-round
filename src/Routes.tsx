@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { backupFileName, makeBackup, type BackupRoute } from './backup'
+import { backupFileName, makeBackup, toBackupRoute, type BackupRoute } from './backup'
 import { BackupDialog, RestoreDialog } from './BackupDialogs'
 import { useDialogs } from './confirm'
 import { formatDate, plural } from './format'
@@ -83,7 +83,7 @@ export function Routes({ library, update, onGoSetup }: Props) {
   const remove = async () => {
     const ok = await confirm({
       title: `Delete “${active.name}”?`,
-      message: 'This removes the route, its sections and its stops from this phone. Back it up first if you might want it again.',
+      message: 'This removes the route, its sections, its named sections, its street names, its stops and its progress from this phone. Back it up first if you might want it again.',
       confirmLabel: 'Delete',
       destructive: true,
     })
@@ -93,7 +93,7 @@ export function Routes({ library, update, onGoSetup }: Props) {
   }
 
   const backUp = (scope: 'one' | 'all') => {
-    const routes = (scope === 'one' ? [active] : library.routes).map((r) => ({ name: r.name, route: r.route }))
+    const routes = (scope === 'one' ? [active] : library.routes).map(toBackupRoute)
     setSheet({
       kind: 'backup',
       title: scope === 'one' ? `Back Up “${active.name}”` : `Back Up All Routes (${routes.length})`,

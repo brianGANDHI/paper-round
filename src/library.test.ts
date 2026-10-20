@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   activeRoute,
+  adjustActiveRoute,
   addImported,
   addRoute,
   cleanName,
@@ -9,14 +10,19 @@ import {
   duplicateRoute,
   editActiveRoute,
   importClashes,
+  MAX_STREET_NAME,
+  MAX_STREETS,
   normalizeLibrary,
+  normalizeStreets,
   renameRoute,
   sameName,
   selectRoute,
   setActiveRound,
+  setActiveSections,
+  setActiveStreets,
   uniqueName,
 } from './library'
-import type { Library, Route } from './types'
+import type { Library, NamedSection, Route, TurnStreet } from './types'
 
 const drawn = (n = 3): Route => ({
   points: Array.from({ length: n }, (_, i) => ({ lat: -33.87 + i * 0.001, lng: 151.2 })),
@@ -289,5 +295,424 @@ describe('restoring a route that has the name of one already here', () => {
       expect(names(lib)).toEqual(['My Round'])
       expect(activeRoute(lib).route.points).toHaveLength(5)
     }
+  })
+})
+
+// Up the three points and back down two of them, over the same line: the stop in the middle is met twice.
+const doubled = (): Route => ({
+  points: [...drawn(3).points, ...drawn(3).points.slice(0, 2).reverse()],
+  sideChanges: [{ idx: 0, side: 'left' }],
+  stops: [{ id: 'a', type: 'nothrow', lat: -33.869, lng: 151.2, pathIdx: 0, label: 'No. 14' }],
+})
+
+const named = (id: string, extra: Partial<NamedSection> = {}): NamedSection => ({ id, name: `Part ${id}`, lat: -33.869, lng: 151.2, ...extra })
+const street = (name: string, extra: Partial<TurnStreet> = {}): TurnStreet => ({ lat: -33.869, lng: 151.2, out: 90, name, ...extra })
+
+describe('adjusting the route in use', () => {
+  const started = () => {
+    let lib = addRoute(createLibrary(), 'Saturday', doubled())
+    lib = setActiveRound(lib, { handledStopIds: ['a'], furthest: 300, startM: 120 })
+    return lib
+  }
+
+  it('saves the route and keeps the round going, where editing it starts over', () => {
+    const lib = started()
+    const adjusted = adjustActiveRoute(lib, { ...doubled(), sideChanges: [{ idx: 0, side: 'right' }] }, 777)
+    const r = activeRoute(adjusted)
+    expect(r.route.sideChanges).toEqual([{ idx: 0, side: 'right' }])
+    expect(r.round).toEqual({ handledStopIds: ['a'], furthest: 300, startM: 120 })
+    expect(r.updatedAt).toBe(777)
+    expect(activeRoute(editActiveRoute(lib, doubled(), 777)).round).toEqual({ handledStopIds: [] })
+  })
+
+  it('keeps the key of every pass of a stop that is still met, and forgets those that are not', () => {
+    let lib = addRoute(createLibrary(), 'Saturday', doubled())
+    lib = setActiveRound(lib, { handledStopIds: ['a', 'a#2', 'a#3', 'gone', 'gone#2', 'a2'] })
+    expect(activeRoute(adjustActiveRoute(lib, doubled(), 1)).round.handledStopIds).toEqual(['a', 'a#2'])
+  })
+
+  it('forgets the second pass of a stop once the route no longer goes by it twice', () => {
+    let lib = addRoute(createLibrary(), 'Saturday', doubled())
+    lib = setActiveRound(lib, { handledStopIds: ['a', 'a#2'] })
+    expect(activeRoute(adjustActiveRoute(lib, drawn(), 1)).round.handledStopIds).toEqual(['a'])
+  })
+
+  it('forgets a stop that has been taken off the route', () => {
+    let lib = addRoute(createLibrary(), 'Saturday', doubled())
+    lib = setActiveRound(lib, { handledStopIds: ['a', 'a#2'], furthest: 200 })
+    const without = adjustActiveRoute(lib, { ...doubled(), stops: [] }, 1)
+    expect(activeRoute(without).round).toEqual({ handledStopIds: [], furthest: 200 })
+  })
+
+  it('keeps the order of the stops done', () => {
+    const route: Route = {
+      ...doubled(),
+      stops: [
+        { id: 'b', type: 'bundle', lat: -33.8695, lng: 151.2, pathIdx: 0 },
+        { id: 'a', type: 'nothrow', lat: -33.869, lng: 151.2, pathIdx: 0 },
+      ],
+    }
+    let lib = addRoute(createLibrary(), 'Saturday', route)
+    lib = setActiveRound(lib, { handledStopIds: ['a#2', 'b', 'a'] })
+    expect(activeRoute(adjustActiveRoute(lib, route, 1)).round.handledStopIds).toEqual(['a#2', 'b', 'a'])
+  })
+
+  it('forgets every stop done, and keeps the place, for a route with no points left', () => {
+    const lib = started()
+    const empty = adjustActiveRoute(lib, { points: [], sideChanges: [], stops: [] }, 1)
+    expect(activeRoute(empty).round).toEqual({ handledStopIds: [], furthest: 300, startM: 120 })
+  })
+
+  it('leaves the other routes, the name and the sections and street names alone', () => {
+    let lib = addRoute(createLibrary(), 'Saturday', doubled())
+    lib = setActiveSections(setActiveStreets(lib, [street('Oak Road')]), [named('s1')])
+    lib = setActiveRound(lib, { handledStopIds: ['a'] })
+    const before = lib.routes[0]
+    const adjusted = adjustActiveRoute(lib, drawn(5), 9)
+    expect(adjusted.routes[0]).toBe(before)
+    expect(adjusted.activeId).toBe(lib.activeId)
+    const r = activeRoute(adjusted)
+    expect(r.name).toBe('Saturday')
+    expect(r.id).toBe(activeRoute(lib).id)
+    expect(r.sections).toEqual([named('s1')])
+    expect(r.streets).toEqual([street('Oak Road')])
+  })
+
+  it('uses the time now when none is given', () => {
+    const adjusted = adjustActiveRoute(started(), doubled())
+    expect(activeRoute(adjusted).updatedAt).toBeGreaterThan(1_600_000_000_000)
+  })
+
+  it('does not change the library it is given', () => {
+    const lib = started()
+    const copy = structuredClone(lib)
+    adjustActiveRoute(lib, drawn(), 5)
+    expect(lib).toEqual(copy)
+  })
+})
+
+describe('naming parts of the route and its streets', () => {
+  const ready = () => {
+    let lib = addRoute(createLibrary(), 'Saturday', drawn())
+    lib = setActiveRound(lib, { handledStopIds: ['a'], furthest: 50, startM: 10 })
+    return lib
+  }
+
+  it('gives the route in use its named sections, and changes nothing else about it', () => {
+    const lib = ready()
+    const before = activeRoute(lib)
+    const next = setActiveSections(lib, [named('s1'), named('s2', { pass: 2 })])
+    const r = activeRoute(next)
+    expect(r.sections).toEqual([named('s1'), named('s2', { pass: 2 })])
+    expect(r.route).toBe(before.route)
+    expect(r.round).toBe(before.round)
+    expect(r.updatedAt).toBe(before.updatedAt)
+    expect(r.name).toBe(before.name)
+  })
+
+  it('gives the route in use its street names, and changes nothing else about it', () => {
+    const lib = ready()
+    const before = activeRoute(lib)
+    const r = activeRoute(setActiveStreets(lib, [street('Oak Road'), street('')]))
+    expect(r.streets).toEqual([street('Oak Road'), street('')])
+    expect(r.route).toBe(before.route)
+    expect(r.round).toBe(before.round)
+    expect(r.updatedAt).toBe(before.updatedAt)
+  })
+
+  it('takes the key off the route when given none, rather than keeping an empty list', () => {
+    let lib = setActiveStreets(setActiveSections(ready(), [named('s1')]), [street('Oak Road')])
+    lib = setActiveSections(lib, [])
+    expect('sections' in activeRoute(lib)).toBe(false)
+    expect(activeRoute(lib).streets).toHaveLength(1)
+    lib = setActiveStreets(lib, [])
+    expect('streets' in activeRoute(lib)).toBe(false)
+  })
+
+  it('leaves the street names when the sections are set, and the sections when the streets are', () => {
+    let lib = setActiveSections(ready(), [named('s1')])
+    lib = setActiveStreets(lib, [street('Oak Road')])
+    expect(activeRoute(lib).sections).toEqual([named('s1')])
+    lib = setActiveSections(lib, [named('s2')])
+    expect(activeRoute(lib).streets).toEqual([street('Oak Road')])
+  })
+
+  it('only changes the route in use', () => {
+    let lib = addRoute(ready(), 'Sunday', drawn())
+    lib = selectRoute(lib, lib.routes[1].id)
+    const next = setActiveSections(setActiveStreets(lib, [street('Elm')]), [named('s1')])
+    for (const i of [0, 2]) expect(next.routes[i]).toBe(lib.routes[i])
+    expect(next.routes[1].sections).toHaveLength(1)
+  })
+
+  it('keeps its own copy of the list it is given', () => {
+    const list = [named('s1')]
+    const lib = setActiveSections(ready(), list)
+    list.push(named('s2'))
+    expect(activeRoute(lib).sections).toHaveLength(1)
+    const streets = [street('Oak')]
+    const withStreets = setActiveStreets(ready(), streets)
+    streets.pop()
+    expect(activeRoute(withStreets).streets).toHaveLength(1)
+  })
+
+  it('does nothing when the route in use is not there, as for the other changes', () => {
+    const lib = { ...ready(), activeId: 'gone' }
+    expect(setActiveSections(lib, [named('s1')]).routes).toEqual(lib.routes)
+    expect(setActiveStreets(lib, [street('Oak')]).routes).toEqual(lib.routes)
+  })
+
+  it('is kept by the edits that keep the rest of the route in use: renaming and selecting, and by adjusting', () => {
+    let lib = setActiveSections(ready(), [named('s1')])
+    lib = renameRoute(lib, lib.activeId, 'Sunday')
+    lib = setActiveRound(lib, { handledStopIds: [] })
+    expect(activeRoute(lib).sections).toEqual([named('s1')])
+    expect(activeRoute(editActiveRoute(lib, drawn(4), 5)).sections).toEqual([named('s1')])
+  })
+})
+
+describe('copying a route with its sections and street names', () => {
+  it('copies them, independently of the original', () => {
+    let lib = addRoute(createLibrary(), 'Saturday', drawn())
+    lib = setActiveStreets(setActiveSections(lib, [named('s1')]), [street('Oak Road')])
+    const original = activeRoute(lib).id
+    lib = duplicateRoute(lib, original)
+    const copy = activeRoute(lib)
+    expect(copy.id).not.toBe(original)
+    expect(copy.sections).toEqual([named('s1')])
+    expect(copy.streets).toEqual([street('Oak Road')])
+    lib = setActiveSections(lib, [named('other')])
+    expect(lib.routes.find((r) => r.id === original)!.sections).toEqual([named('s1')])
+    const again = lib.routes.find((r) => r.id === original)!
+    expect(again.sections![0]).not.toBe(copy.sections![0])
+    expect(again.streets![0]).not.toBe(copy.streets![0])
+  })
+
+  it('has no keys for a route that has none, and still starts its round fresh', () => {
+    let lib = addRoute(createLibrary(), 'Saturday', drawn())
+    lib = setActiveRound(lib, { handledStopIds: ['a'], furthest: 40, startM: 20 })
+    lib = duplicateRoute(lib, lib.activeId)
+    const copy = activeRoute(lib)
+    expect('sections' in copy).toBe(false)
+    expect('streets' in copy).toBe(false)
+    expect(copy.round).toEqual({ handledStopIds: [] })
+  })
+
+  it('does not copy an empty list', () => {
+    let lib = addRoute(createLibrary(), 'Saturday', drawn())
+    lib = { ...lib, routes: lib.routes.map((r) => (r.id === lib.activeId ? { ...r, sections: [], streets: [] } : r)) }
+    const copy = activeRoute(duplicateRoute(lib, lib.activeId))
+    expect('sections' in copy).toBe(false)
+    expect('streets' in copy).toBe(false)
+  })
+})
+
+describe('adding from a backup with sections and street names', () => {
+  const sections = [named('s1'), named('s2', { pass: 2 })]
+  const streets = [street('Oak Road'), street('')]
+
+  it('adds a route with both, and one without either as before', () => {
+    const lib = addImported(createLibrary(), [
+      { name: 'Monday', route: drawn(), sections, streets },
+      { name: 'Tuesday', route: drawn() },
+      { name: 'Friday', route: drawn(), sections: [], streets: [] },
+    ])
+    const [monday, tuesday, friday] = lib.routes
+    expect(monday.sections).toEqual(sections)
+    expect(monday.streets).toEqual(streets)
+    for (const r of [tuesday, friday]) {
+      expect('sections' in r, r.name).toBe(false)
+      expect('streets' in r, r.name).toBe(false)
+    }
+  })
+
+  it('adds one beside a route already here, and keeps both', () => {
+    const start = addRoute(createLibrary(), 'Mine', drawn())
+    const lib = addImported(start, [{ name: 'Monday', route: drawn(), sections }])
+    expect(lib.routes.at(-1)!.sections).toEqual(sections)
+    expect('sections' in lib.routes[1]).toBe(false)
+  })
+
+  describe('over a route of the same name', () => {
+    const here = () => {
+      let lib = addRoute(createLibrary(), 'Monday', drawn(3))
+      lib = setActiveStreets(setActiveSections(lib, [named('mine')]), [street('My Road')])
+      lib = setActiveRound(lib, { handledStopIds: ['a'], furthest: 100, startM: 50 })
+      return lib
+    }
+    const monday = (lib: Library) => lib.routes.find((r) => r.name === 'Monday')!
+
+    it('takes the ones in the backup, starting the round over', () => {
+      const lib = addImported(here(), [{ name: 'monday', route: drawn(5), sections, streets }], 9, 'replace')
+      expect(monday(lib).sections).toEqual(sections)
+      expect(monday(lib).streets).toEqual(streets)
+      expect(monday(lib).route.points).toHaveLength(5)
+      expect(monday(lib).round).toEqual({ handledStopIds: [] })
+      expect(monday(lib).updatedAt).toBe(9)
+    })
+
+    it('keeps its own when the backup has none, as one made before they existed has none', () => {
+      const lib = addImported(here(), [{ name: 'Monday', route: drawn(5) }], 9, 'replace')
+      expect(monday(lib).sections).toEqual([named('mine')])
+      expect(monday(lib).streets).toEqual([street('My Road')])
+      expect(monday(lib).route.points).toHaveLength(5)
+    })
+
+    it('takes only the one the backup has', () => {
+      const lib = addImported(here(), [{ name: 'Monday', route: drawn(5), sections }], 9, 'replace')
+      expect(monday(lib).sections).toEqual(sections)
+      expect(monday(lib).streets).toEqual([street('My Road')])
+    })
+
+    it('clears the ones here when the backup says it has none', () => {
+      const lib = addImported(here(), [{ name: 'Monday', route: drawn(5), sections: [], streets: [] }], 9, 'replace')
+      expect('sections' in monday(lib)).toBe(false)
+      expect('streets' in monday(lib)).toBe(false)
+    })
+
+    it('adds the backup as a new route in keep mode, leaving the one here with its own', () => {
+      const lib = addImported(here(), [{ name: 'Monday', route: drawn(5), sections }], 9, 'keep')
+      expect(monday(lib).sections).toEqual([named('mine')])
+      expect(lib.routes.find((r) => r.name === 'Monday 2')!.sections).toEqual(sections)
+    })
+  })
+
+  it('replaces the blank starter with a route that has them', () => {
+    const lib = addImported(createLibrary(), [{ name: 'Monday', route: drawn(), sections, streets }])
+    expect(lib.routes).toHaveLength(1)
+    expect(activeRoute(lib).sections).toEqual(sections)
+    expect(activeRoute(lib).streets).toEqual(streets)
+  })
+})
+
+describe('what is kept when saved data is read back', () => {
+  const read = (route: Record<string, unknown>) => normalizeLibrary({ routes: [{ id: 'x', name: 'A', route: drawn(), round: { handledStopIds: [] }, updatedAt: 0, ...route }] })!.routes[0]
+
+  it('keeps the sections and street names that are good', () => {
+    const r = read({ sections: [named('s1'), named('s2', { pass: 3 })], streets: [street('Oak Road'), street('')] })
+    expect(r.sections).toEqual([named('s1'), named('s2', { pass: 3 })])
+    expect(r.streets).toEqual([street('Oak Road'), street('')])
+  })
+
+  it('has no keys when there are none, or only junk, or they are not lists', () => {
+    for (const junk of [undefined, null, [], 'x', 7, {}, [null, 3, 'x'], [{ id: 'a' }]]) {
+      const r = read({ sections: junk, streets: junk })
+      expect('sections' in r, JSON.stringify(junk)).toBe(false)
+      expect('streets' in r, JSON.stringify(junk)).toBe(false)
+    }
+  })
+
+  it('cleans the sections and street names it keeps, and drops the bad ones among them', () => {
+    const r = read({
+      sections: [named('s1', { name: '  Oak   Estate ' }), { id: 's2', name: '   ', lat: 1, lng: 1 }, named('s1')],
+      streets: [street('  Oak   Road '), street('Bad', { out: 360 }), street('Bad', { lat: 99 })],
+    })
+    expect(r.sections).toHaveLength(2)
+    expect(r.sections![0].name).toBe('Oak Estate')
+    expect(r.sections![1].id).not.toBe('s1')
+    expect(r.streets).toEqual([street('Oak Road')])
+  })
+
+  it('keeps where a round was started when that is a number from 0, and drops it otherwise', () => {
+    const startM = (v: unknown) => read({ round: { handledStopIds: [], startM: v } }).round
+    expect(startM(0)).toEqual({ handledStopIds: [], startM: 0 })
+    expect(startM(0.5)).toEqual({ handledStopIds: [], startM: 0.5 })
+    expect(startM(1234.5)).toEqual({ handledStopIds: [], startM: 1234.5 })
+    for (const junk of [-0.001, -10, NaN, Infinity, -Infinity, '300', null, undefined, {}, [], true]) expect(startM(junk), String(junk)).toEqual({ handledStopIds: [] })
+  })
+
+  it('keeps how far it got and where it was started together', () => {
+    const r = read({ round: { handledStopIds: ['a'], furthest: 450, startM: 120 } })
+    expect(r.round).toEqual({ handledStopIds: ['a'], furthest: 450, startM: 120 })
+  })
+
+  it('reads a library saved before sections existed just as it was', () => {
+    const r = read({})
+    expect(Object.keys(r).sort()).toEqual(['id', 'name', 'round', 'route', 'updatedAt'])
+  })
+
+  it('keeps no more than the limit of sections and of street names', () => {
+    const sections = Array.from({ length: 250 }, (_, i) => named(`s${i}`))
+    const streets = Array.from({ length: 5050 }, (_, i) => street(`Road ${i}`))
+    const r = read({ sections, streets })
+    expect(r.sections).toHaveLength(200)
+    expect(r.streets).toHaveLength(5000)
+  })
+
+  it('is the same read twice', () => {
+    const lib = { routes: [{ id: 'x', name: 'A', route: drawn(), round: { handledStopIds: ['a'], furthest: 30, startM: 5 }, updatedAt: 3, sections: [named('s1')], streets: [street('Oak')] }], activeId: 'x' }
+    const once = normalizeLibrary(lib)!
+    expect(normalizeLibrary(JSON.parse(JSON.stringify(once)))).toEqual(once)
+    expect(once).toEqual(lib)
+  })
+})
+
+describe('reading street names', () => {
+  it('is none for anything that is not a list, and for an empty one', () => {
+    for (const junk of [null, undefined, 0, 'x', true, {}, { 0: street('Oak') }, []]) expect(normalizeStreets(junk), String(junk)).toEqual([])
+  })
+
+  it('keeps good ones as they are, including one with no name', () => {
+    const good = [street('Oak Road'), street('', { out: 0 }), street('Elm', { out: 359, lat: -90, lng: 180 }), street('Ash', { lat: 90, lng: -180 })]
+    expect(normalizeStreets(good)).toEqual(good)
+  })
+
+  it('drops what is not an object', () => {
+    for (const junk of [null, undefined, 5, 'x', true, [], [street('Oak')], () => 0]) expect(normalizeStreets([junk]), String(junk)).toEqual([])
+    expect(normalizeStreets([null, street('Oak'), 'x'])).toEqual([street('Oak')])
+  })
+
+  it('drops a place that is missing, not a number, not finite or not on Earth', () => {
+    const bad = [{ lat: undefined }, { lng: undefined }, { lat: '1' }, { lng: '1' }, { lat: NaN }, { lng: NaN }, { lat: Infinity }, { lng: -Infinity }, { lat: null }, { lat: 90.1 }, { lat: -90.1 }, { lng: 180.1 }, { lng: -180.1 }]
+    for (const b of bad) expect(normalizeStreets([street('Oak', b as unknown as Partial<TurnStreet>)]), JSON.stringify(b)).toEqual([])
+  })
+
+  it('drops a way out that is not a whole number of degrees from 0 to 359', () => {
+    for (const out of [-1, 360, 361, 720, 12.5, 0.1, 359.5, NaN, Infinity, -Infinity, '90', null, undefined, {}, [90]]) {
+      expect(normalizeStreets([street('Oak', { out } as Partial<TurnStreet>)]), String(out)).toEqual([])
+    }
+    for (const out of [0, 1, 90, 180, 270, 359]) expect(normalizeStreets([street('Oak', { out })]), String(out)).toHaveLength(1)
+  })
+
+  it('drops a name that is not text, and keeps an empty one', () => {
+    for (const name of [undefined, null, 5, {}, ['Oak'], true]) expect(normalizeStreets([street('x', { name } as unknown as Partial<TurnStreet>)]), String(name)).toEqual([])
+    expect(normalizeStreets([street('')])).toEqual([street('')])
+    expect(normalizeStreets([street('   ')])).toEqual([street('')])
+  })
+
+  it('tidies names and keeps them to 60 characters, without half an emoji', () => {
+    expect(normalizeStreets([street('  Oak \n  Road ')])[0].name).toBe('Oak Road')
+    expect(MAX_STREET_NAME).toBe(60)
+    expect(normalizeStreets([street('x'.repeat(60))])[0].name).toBe('x'.repeat(60))
+    expect(normalizeStreets([street('x'.repeat(61))])[0].name).toBe('x'.repeat(60))
+    expect(normalizeStreets([street(`${'x'.repeat(59)}😀`)])[0].name).toBe('x'.repeat(59))
+    expect(normalizeStreets([street(`${'x'.repeat(59)} y`)])[0].name).toBe('x'.repeat(59))
+  })
+
+  it('treats a name that shows nothing, such as zero-width spaces, as no name, and takes control characters out of one that does', () => {
+    for (const name of ['​', '​​⁠', '﻿', '\0', '\u0007 ‍']) expect(normalizeStreets([street(name)]), JSON.stringify(name)).toEqual([street('')])
+    expect(normalizeStreets([street('Oak\0Road')])[0].name).toBe('Oak Road')
+    expect(normalizeStreets([street('Oak​Road')])[0].name).toBe('Oak​Road')
+  })
+
+  it('keeps no more than 5000, the first good ones, however much junk is mixed in', () => {
+    const lots = Array.from({ length: 5020 }, (_, i) => street(`R${i}`, { out: i % 360 }))
+    const read = normalizeStreets(lots)
+    expect(MAX_STREETS).toBe(5000)
+    expect(read).toHaveLength(5000)
+    expect(read.map((s) => s.name)).toEqual(lots.slice(0, 5000).map((s) => s.name))
+    expect(normalizeStreets([...Array.from({ length: 100 }, () => null), ...lots])).toHaveLength(5000)
+    expect(normalizeStreets(lots.slice(0, 4999))).toHaveLength(4999)
+    expect(normalizeStreets(lots.slice(0, 5000))).toHaveLength(5000)
+    expect(normalizeStreets(lots.slice(0, 5001))).toHaveLength(5000)
+  })
+
+  it('keeps only the parts it knows, as new objects, and does not change what it is given', () => {
+    const stored = { ...street('Oak'), evil: 1 }
+    const copy = structuredClone([stored])
+    const [read] = normalizeStreets([stored])
+    expect(Object.keys(read).sort()).toEqual(['lat', 'lng', 'name', 'out'])
+    expect(read).not.toBe(stored)
+    expect([stored]).toEqual(copy)
   })
 })

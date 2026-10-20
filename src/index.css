@@ -307,6 +307,8 @@ p {
 
 .side-pill {
   flex: none;
+  border: 0;
+  pointer-events: auto;
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -540,6 +542,13 @@ p {
   font-weight: 500;
   letter-spacing: -0.01em;
   transition: background 0.18s, box-shadow 0.18s;
+}
+
+/* With four or more choices each is a little tighter, so a label such as Throw Side stays on one line. */
+.segmented.many button {
+  padding: 0 3px;
+  font-size: 14px;
+  white-space: nowrap;
 }
 
 .segmented button[data-on] {
@@ -1280,6 +1289,7 @@ button.row:active:not(:disabled) {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
   max-width: 100%;
   padding: 5px 14px 5px 5px;
   border-radius: 16px;
@@ -1309,6 +1319,7 @@ button.row:active:not(:disabled) {
   min-width: 0;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .turn-label {
@@ -1317,6 +1328,16 @@ button.row:active:not(:disabled) {
   line-height: 1.15;
   white-space: nowrap;
   opacity: 0.85;
+}
+
+.turn-street {
+  max-width: 190px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.2;
 }
 
 .turn-dist {
@@ -1447,10 +1468,31 @@ button.row:active:not(:disabled) {
   color: var(--label-2) !important;
 }
 
-.pin-label.leaflet-tooltip {
+/*
+ * Labels beside points on the map. Each is a box at its point, turned back by however far the map is turned (--unrot, set by
+ * the map when it points the way the driver is heading) so it stays upright, and then moved to its side of the point. The
+ * move is in the turned frame, so it comes out on that side of the point on the screen too.
+ */
+.tag {
+  width: 0;
+  height: 0;
+}
+
+.tag > span {
+  position: absolute;
+  left: 0;
+  top: 0;
+  white-space: nowrap;
+  pointer-events: none;
+  transform-origin: 0 0;
+  transform: rotate(var(--unrot, 0deg)) translate(calc(-50% + var(--dx, 0px)), calc(-50% + var(--dy, 0px)));
+}
+
+.pin-tag > span {
+  --gap: 14px;
   padding: 3px 9px;
-  border: 0;
   border-radius: 999px;
+  font-family: var(--font);
   font-size: 12px;
   font-weight: 600;
   color: var(--label);
@@ -1458,15 +1500,12 @@ button.row:active:not(:disabled) {
   box-shadow: 0 1px 5px rgba(0, 0, 0, 0.3);
 }
 
-.pin-label.leaflet-tooltip::before {
-  display: none;
-}
-
-/* The number of a house an alert is for, beside its marker on the map. Always light on dark text, whatever the appearance, since the map is. */
-.house-label.leaflet-tooltip {
+/* The number of a house an alert is for, beside its marker on the map. Always dark on light, whatever the appearance, since the map is. */
+.house-tag > span {
+  --gap: 22px;
   padding: 1px 8px;
-  border: 0;
   border-radius: 9px;
+  font-family: var(--font);
   font-size: 18px;
   font-weight: 800;
   line-height: 1.25;
@@ -1475,8 +1514,220 @@ button.row:active:not(:disabled) {
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
 }
 
-.house-label.leaflet-tooltip::before {
-  display: none;
+/* The nearest house of those an alert is for, a little bigger. */
+.house-tag > span.next {
+  font-size: 21px;
+}
+
+/* The name of a named section, beside the spot on the route where it starts. */
+.section-tag > span,
+.pin-tag > span {
+  max-width: 55vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.section-tag > span {
+  --gap: 12px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-family: var(--font);
+  font-size: 12px;
+  font-weight: 700;
+  color: #fff;
+  background: #007aff;
+  box-shadow: 0 1px 5px rgba(0, 0, 0, 0.3);
+}
+
+.section-tag > span.next {
+  outline: 3px solid #fff;
+}
+
+.tag > span.top {
+  --dy: calc(-1 * var(--gap) - 50%);
+}
+
+.tag > span.bottom {
+  --dy: calc(var(--gap) + 50%);
+}
+
+.tag > span.left {
+  --dx: calc(-1 * var(--gap) - 50%);
+}
+
+.tag > span.right {
+  --dx: calc(var(--gap) + 50%);
+}
+
+/* The map is in a box that clips it to the screen, so that on the round it can be turned inside it. */
+.map-clip {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+/*
+ * Heading up: the map is a square bigger than the screen, with its middle (the driver's dot) at the anchor, turned about that
+ * middle by the map. --s, --ax and --ay are set on the clip with the sizes that cover the screen at any angle.
+ */
+.map.heading-up {
+  inset: auto;
+  width: var(--s);
+  height: var(--s);
+  left: calc(var(--ax) - var(--s) / 2);
+  top: calc(var(--ay) - var(--s) / 2);
+  will-change: transform;
+  /* One finger can't drag it, so the browser is not to take the swipe for a scroll either. */
+  touch-action: none;
+}
+
+/* Leaflet's own rule for a container that can pinch-zoom is as specific as the one above, so this one is more. */
+.map.heading-up.leaflet-container {
+  touch-action: none;
+}
+
+/* The turn glides from one fix to the next. It is added a moment after the first heading is known, so neither that nor switching on spins the map. */
+.map.heading-up.turning {
+  transition: transform 1s linear, --unrot 1s linear;
+}
+
+/*
+ * The turn the labels are turned back by is a registered angle, so that it glides in step with the map: every label, including one
+ * that has only just come up or changed side, is upright all the way through a turn and not only at the end of it.
+ */
+@property --unrot {
+  syntax: '<angle>';
+  inherits: true;
+  initial-value: 0deg;
+}
+
+/* A marker just ahead of the driver's dot showing the way they are heading, which is up the screen. */
+.heading-chevron {
+  position: absolute;
+  z-index: 1;
+  left: var(--ax);
+  top: var(--ay);
+  width: 0;
+  height: 0;
+  border-right: 9px solid transparent;
+  border-bottom: 16px solid #007aff;
+  border-left: 9px solid transparent;
+  transform: translate(-50%, calc(-100% - 26px));
+  filter: drop-shadow(0 0 2px #fff) drop-shadow(0 0 1px #fff);
+  pointer-events: none;
+}
+
+/* Choosing where on the route to start, or to skip to: a map and a sheet over the round screen. */
+.picker {
+  position: absolute;
+  inset: 0;
+  z-index: 2500;
+  background: var(--bg);
+}
+
+.picker-close {
+  position: absolute;
+  z-index: 1000;
+  top: calc(var(--safe-top) + 10px);
+  left: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--tint);
+  background: var(--material);
+  box-shadow: var(--shadow);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  backdrop-filter: saturate(180%) blur(20px);
+}
+
+.picker-head {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.picker-head .group {
+  margin: 0;
+}
+
+.picker-title {
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+/* The OpenStreetMap credit, at the top right where neither the Cancel button nor the sheet covers it. */
+.picker > .map-credit {
+  position: absolute;
+  z-index: 1000;
+  top: calc(var(--safe-top) + 16px);
+  right: 12px;
+  max-width: 50%;
+}
+
+.picker-list {
+  margin-top: 12px;
+}
+
+/* A message at the bottom of the map, with a way to take back the change it tells of. */
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 8px 8px 14px;
+  border-radius: 14px;
+  color: #fff;
+  background: rgba(28, 28, 30, 0.94);
+  box-shadow: var(--shadow);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.25;
+  animation: rise 0.2s ease-out;
+}
+
+.toast span {
+  flex: 1;
+  min-width: 0;
+}
+
+.toast .btn {
+  flex: none;
+  color: #5ac8fa;
+}
+
+/* The OpenStreetMap credit, along the bottom of the round screen where nothing covers it. */
+.map-credit {
+  flex: 0 1 auto;
+  min-width: 0;
+  padding: 2px 8px;
+  border-radius: 8px;
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--label-2);
+  background: var(--material);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+}
+
+.map-credit a {
+  color: var(--label-2);
+}
+
+.map-bottom-row {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.map-bottom-row > * {
+  pointer-events: auto;
 }
 
 /* The ring round a house an alert is for. */

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Icon, type IconName } from './Icon'
-import { activeRoute, editActiveRoute, setActiveRound } from './library'
+import { activeRoute, adjustActiveRoute, editActiveRoute, setActiveRound, setActiveSections, setActiveStreets } from './library'
 import { Round } from './Round'
 import { Routes } from './Routes'
 import { Setup } from './Setup'
@@ -8,6 +8,9 @@ import { canSave, loadLibrary, saveLibrary } from './storage'
 import type { Library } from './types'
 
 type Tab = 'round' | 'routes' | 'setup'
+
+/** A route with no named sections or street names, as one stable value so nothing is redone for it on every render. */
+const NONE: never[] = []
 
 const TABS: { id: Tab; label: string; icon: IconName }[] = [
   { id: 'round', label: 'Round', icon: 'navigation' },
@@ -40,6 +43,9 @@ export default function App() {
   }
 
   const current = activeRoute(library)
+  // Names for parts of the route are saved for the route that was in use when they were made. Street names found by a lookup that was
+  // running are kept only if the route is still the one (and has the points) it was asked about.
+  const routeId = current.id
 
   return (
     <div className="app">
@@ -55,7 +61,10 @@ export default function App() {
             route={current.route}
             round={current.round}
             routeName={current.name}
+            sections={current.sections ?? NONE}
+            streets={current.streets ?? NONE}
             onRound={(r) => update((lib) => setActiveRound(lib, r))}
+            onAdjustRoute={(r) => update((lib) => adjustActiveRoute(lib, r))}
             onGoSetup={() => setTab('setup')}
             onGoRoutes={() => setTab('routes')}
           />
@@ -66,6 +75,10 @@ export default function App() {
             route={current.route}
             routeName={current.name}
             onChange={(r) => update((lib) => editActiveRoute(lib, r))}
+            sections={current.sections ?? NONE}
+            onSections={(s) => update((lib) => (lib.activeId === routeId ? setActiveSections(lib, s) : lib))}
+            streets={current.streets ?? NONE}
+            onStreets={(s, points) => update((lib) => (lib.activeId === routeId && (!points || activeRoute(lib).route.points === points) ? setActiveStreets(lib, s) : lib))}
             onGoRoutes={() => setTab('routes')}
           />
         )}

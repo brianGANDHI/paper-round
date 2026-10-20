@@ -135,6 +135,24 @@ export function splitPathAt(points: Pt[], metres: number): { before: Pt[]; after
   return { before: [...points.slice(0, i + 1), cut], after: [cut, ...points.slice(i + 1)] }
 }
 
+/** The point `metres` along the path (kept within it): which segment it is on, how far along that, and where it is. Null for a path with no length. */
+export function snapAtDistance(points: Pt[], metres: number): Snap | null {
+  if (points.length < 2) return null
+  const cum = cumulativeDistances(points)
+  const m = Math.min(Math.max(0, metres), cum[cum.length - 1])
+  let idx = 0
+  while (idx < points.length - 2 && cum[idx + 1] <= m) idx++
+  const span = cum[idx + 1] - cum[idx]
+  const t = span > 0 ? (m - cum[idx]) / span : 0
+  return { idx, t, dist: 0, point: lerp(points[idx], points[idx + 1], t) }
+}
+
+/** The part of the path between two distances along it, as a path: nothing when the second is not past the first. */
+export function pathBetween(points: Pt[], fromM: number, toM: number): Pt[] {
+  if (toM <= fromM) return []
+  return splitPathAt(splitPathAt(points, toM).before, fromM).after
+}
+
 /** Evenly spaced direction markers along the path. */
 export function arrowsAlong(points: Pt[], spacingM: number): { pos: Pt; bearing: number }[] {
   const out: { pos: Pt; bearing: number }[] = []
@@ -292,6 +310,70 @@ const PASS_MIN_M = 30
 const PASS_FACTOR = 1.5
 /** How finely the route is walked to tell one pass of a stop from the next. */
 const WALK_STEP_M = 5
+/** Two segments this close in distance from a stop, in metres, are equally near it: the earlier is taken. */
+const TIE_M = 0.01
+
+/** One time the route goes past a spot: the segment it is on, how far along the route that is, and how near the route comes (the nearest of all its passes). */
+export interface PathPass {
+  idx: number
+  at: number
+  off: number
+}
+
+/** Each time the route goes past a spot, in route order, given the route's points in local metres, how far along each is, and the spot in local metres. */
+function passesOf(xy: [number, number][], cum: number[], p: [number, number]): PathPass[] {
+  const nearest = xy.slice(0, -1).reduce((m, a, i) => Math.min(m, distToSegment(p, a, xy[i + 1]).dist), Infinity)
+  const limit = Math.max(PASS_MIN_M, nearest * PASS_FACTOR)
+
+  // Walk the route in small steps. Each unbroken stretch that stays near the spot is one pass, and the segments it went
+  // along give the pass. Walking (rather than judging whole segments) keeps the two passes apart even when each is a single
+  // long straight segment.
+  const ranges: { from: number; to: number }[] = []
+  let open: { from: number; to: number } | null = null
+  const visit = (seg: number, x: number, y: number) => {
+    const dist = Math.hypot(x - p[0], y - p[1])
+    if (dist <= limit) {
+      if (!open) open = { from: seg, to: seg }
+      else open.to = seg
+    } else if (open) {
+      ranges.push(open)
+      open = null
+    }
+  }
+  for (let i = 0; i < xy.length - 1; i++) {
+    const [ax, ay] = xy[i]
+    const [bx, by] = xy[i + 1]
+    const steps = Math.max(1, Math.ceil(Math.hypot(bx - ax, by - ay) / WALK_STEP_M))
+    for (let k = 0; k < steps; k++) visit(i, ax + ((bx - ax) * k) / steps, ay + ((by - ay) * k) / steps)
+  }
+  visit(xy.length - 2, xy[xy.length - 1][0], xy[xy.length - 1][1])
+  if (open) ranges.push(open)
+
+  // Where a pass comes closest is judged by the exact distance to each segment it went along, not by the step it was sampled on:
+  // near the turn of a road driven out and back the two passes are one stretch and equally near, and which of them a sample
+  // falls on would change with any point added to the route. An exact tie goes to the earlier pass, whatever the rounding. The one
+  // exception is a tie at a point where two segments meet (a house beyond a corner): that point starts the later segment.
+  return ranges.map(({ from, to }) => {
+    let seg = from
+    let best = distToSegment(p, xy[from], xy[from + 1])
+    for (let i = from + 1; i <= to; i++) {
+      const d = distToSegment(p, xy[i], xy[i + 1])
+      const sameFoot = Math.abs(alongPath(cum, i, d.t) - alongPath(cum, seg, best.t)) < TIE_M
+      if (d.dist < best.dist - TIE_M || (sameFoot && d.dist <= best.dist + TIE_M)) {
+        seg = i
+        best = d
+      }
+    }
+    return { idx: seg, at: alongPath(cum, seg, best.t), off: nearest }
+  })
+}
+
+/** Each time the route goes past a position, in route order: none for a route too short to have a length. */
+export function passesNear(points: Pt[], pos: Pt): PathPass[] {
+  if (points.length < 2) return []
+  const refLat = points[0].lat
+  return passesOf(points.map((q) => project(q, refLat)), cumulativeDistances(points), project(pos, refLat))
+}
 
 /**
  * Every time the route goes past each stop, in route order. A street driven twice
@@ -306,52 +388,31 @@ export function occurrences(route: Pick<Route, 'points' | 'stops'>): Occurrence[
   const cum = cumulativeDistances(points)
   const out: Occurrence[] = []
   for (const stop of stops) {
-    const p = project(stop, refLat)
-    const nearest = xy.slice(0, -1).reduce((m, a, i) => Math.min(m, distToSegment(p, a, xy[i + 1]).dist), Infinity)
-    const limit = Math.max(PASS_MIN_M, nearest * PASS_FACTOR)
-
-    // Walk the route in small steps. Each unbroken stretch that stays near the stop is one pass,
-    // and the step where it comes closest gives the occurrence. Walking (rather than judging whole
-    // segments) keeps the two passes apart even when each is a single long straight segment.
-    const passes: number[] = []
-    let best: { seg: number; dist: number } | null = null
-    const visit = (seg: number, x: number, y: number) => {
-      const dist = Math.hypot(x - p[0], y - p[1])
-      if (dist <= limit) {
-        if (!best || dist < best.dist) best = { seg, dist }
-      } else if (best) {
-        passes.push(best.seg)
-        best = null
-      }
-    }
-    for (let i = 0; i < xy.length - 1; i++) {
-      const [ax, ay] = xy[i]
-      const [bx, by] = xy[i + 1]
-      const steps = Math.max(1, Math.ceil(Math.hypot(bx - ax, by - ay) / WALK_STEP_M))
-      for (let k = 0; k < steps; k++) visit(i, ax + ((bx - ax) * k) / steps, ay + ((by - ay) * k) / steps)
-    }
-    visit(xy.length - 2, xy[xy.length - 1][0], xy[xy.length - 1][1])
-    if (best) passes.push((best as { seg: number }).seg)
-
-    passes.forEach((seg, n) => {
-      out.push({
-        key: n === 0 ? stop.id : `${stop.id}#${n + 1}`,
-        stop,
-        idx: seg,
-        at: alongPath(cum, seg, distToSegment(p, xy[seg], xy[seg + 1]).t),
-        off: nearest,
-      })
+    passesOf(xy, cum, project(stop, refLat)).forEach((pass, n) => {
+      out.push({ key: n === 0 ? stop.id : `${stop.id}#${n + 1}`, stop, idx: pass.idx, at: pass.at, off: pass.off })
     })
   }
   return out.sort((a, b) => a.at - b.at)
 }
 
+/** A side of a point on the screen. */
+export type Place = 'top' | 'bottom' | 'left' | 'right'
+
+/** Which of up, right, down and left a compass bearing is closest to, with each diagonal going to the quarter it starts. */
+function quarter(bearing: number): Place {
+  const b = ((bearing % 360) + 360) % 360
+  if (b >= 45 && b < 135) return 'right'
+  if (b >= 135 && b < 225) return 'bottom'
+  if (b >= 225 && b < 315) return 'left'
+  return 'top'
+}
+
 /**
- * Which side of a stop, on the screen of a map with north up, is clear of the road: the way from the nearest point of the
- * route to the stop, as the nearest of up, down, left and right. A label put that way doesn't cover the road.
+ * The compass bearing from the nearest point of the route to a stop: which way the stop lies from the road, in degrees clockwise from
+ * north. East (90) for a route too short to have a road.
  */
-export function awayFromRoad(points: Pt[], stop: Pt): 'top' | 'bottom' | 'left' | 'right' {
-  if (points.length < 2) return 'right'
+export function awayBearing(points: Pt[], stop: Pt): number {
+  if (points.length < 2) return 90
   const refLat = points[0].lat
   const xy = points.map((q) => project(q, refLat))
   const p = project(stop, refLat)
@@ -360,9 +421,19 @@ export function awayFromRoad(points: Pt[], stop: Pt): 'top' | 'bottom' | 'left' 
     const { dist, t } = distToSegment(p, xy[i], xy[i + 1])
     if (dist < best.dist) best = { dist, dx: p[0] - (xy[i][0] + t * (xy[i + 1][0] - xy[i][0])), dy: p[1] - (xy[i][1] + t * (xy[i + 1][1] - xy[i][1])) }
   }
-  if (Math.abs(best.dx) >= Math.abs(best.dy)) return best.dx >= 0 ? 'right' : 'left'
-  return best.dy >= 0 ? 'top' : 'bottom'
+  // A stop right on the line of the road is nowhere in particular: east will do.
+  if (best.dx === 0 && best.dy === 0) return 90
+  return ((Math.atan2(best.dx, best.dy) * 180) / Math.PI + 360) % 360
 }
+
+/**
+ * Which side of a stop, on the screen of a map with north up, is clear of the road: the way from the nearest point of the route to
+ * the stop, as the nearest of up, down, left and right. A label put that way doesn't cover the road.
+ */
+export const awayFromRoad = (points: Pt[], stop: Pt): Place => quarter(awayBearing(points, stop))
+
+/** Which side of a stop, on the screen of a map turned so `heading` is up, a compass bearing from the stop lies. */
+export const screenPlace = (bearing: number, heading: number): Place => quarter(bearing - heading)
 
 /** How far along the route a round has got, going by the stops already done: where one that is carried on picks up. 0 when none is. */
 export const handledUpTo = (occs: Occurrence[], handled: ReadonlySet<string>): number =>

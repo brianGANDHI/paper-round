@@ -48,6 +48,34 @@ export interface RoundState {
   handledStopIds: string[]
   /** The furthest the round has got along the route, in metres, kept so that carrying on later starts from there. */
   furthest?: number
+  /** Where along the route, in metres, the round was started or last skipped to, so that carrying on later starts from there. */
+  startM?: number
+}
+
+/**
+ * A named part of the route, from a spot on it to the next such spot (or the end), such as the name of a street or an estate.
+ * It is held by where the spot is on the map and which pass of that spot it is, not by an index along the route, so it
+ * stays put when the route is edited.
+ */
+export interface NamedSection {
+  id: string
+  name: string
+  lat: number
+  lng: number
+  /** Which time the route goes by this spot, 1 for the first. Left out for the first. */
+  pass?: number
+}
+
+/**
+ * The name of the street a turn leads into, found once from the map data and kept: the turn is held by where it is and
+ * the way it leaves, in whole degrees clockwise from north, so it is still found after the route is edited. An empty
+ * name means it was looked up and the road has none.
+ */
+export interface TurnStreet {
+  lat: number
+  lng: number
+  out: number
+  name: string
 }
 
 /** A route kept on the phone, with its own progress through the current run. */
@@ -58,6 +86,10 @@ export interface SavedRoute {
   round: RoundState
   /** When the route itself was last changed, in ms since 1970. 0 when unknown. */
   updatedAt: number
+  /** The route's named parts, if any have been given names. Kept beside the route so editing the route never drops them. */
+  sections?: NamedSection[]
+  /** The street names of the route's turns, if looked up. Kept beside the route for the same reason. */
+  streets?: TurnStreet[]
 }
 
 /** Everything saved on the phone: every route, and which one is in use. */

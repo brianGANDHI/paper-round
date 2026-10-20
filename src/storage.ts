@@ -9,6 +9,7 @@ const FOLLOW_ROADS_KEY = 'paperround.followRoads'
 const ALERT_DISTANCE_KEY = 'paperround.alertDistance'
 const VOICE_TURNS_KEY = 'paperround.voiceTurns'
 const KEEP_AUDIO_KEY = 'paperround.keepAudioAwake'
+const HEADING_UP_KEY = 'paperround.headingUp'
 
 /** The single route and its progress, as saved by earlier versions of the app. */
 const LEGACY_ROUTE_KEY = 'paperround.route.v1'
@@ -80,6 +81,19 @@ export function saveVoiceTurns(on: boolean): void {
     localStorage.setItem(VOICE_TURNS_KEY, JSON.stringify(on))
   } catch {
     // The phone won't store it; the voice starts off next time.
+  }
+}
+
+/** Whether the round's map points the way the driver is heading rather than north, as last chosen. North up until someone turns it on. */
+export function loadHeadingUp(): boolean {
+  return read(HEADING_UP_KEY) === true
+}
+
+export function saveHeadingUp(on: boolean): void {
+  try {
+    localStorage.setItem(HEADING_UP_KEY, JSON.stringify(on))
+  } catch {
+    // The phone won't store it; the map starts north up next time.
   }
 }
 

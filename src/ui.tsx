@@ -14,7 +14,7 @@ interface SegmentedProps<T extends string> {
 /** iOS-style segmented control: a grey track with a raised thumb under the chosen option. */
 export function Segmented<T extends string>({ value, options, onChange, label, tabs }: SegmentedProps<T>) {
   return (
-    <div className="segmented" role={tabs ? 'tablist' : 'group'} aria-label={label}>
+    <div className={options.length > 3 ? 'segmented many' : 'segmented'} role={tabs ? 'tablist' : 'group'} aria-label={label}>
       {options.map((o) => {
         const on = value === o.value
         return (

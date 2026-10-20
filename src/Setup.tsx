@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { offRouteNote, quietNoThrows, quietNote, sideNote, stopsWithoutSide } from './alerts'
+import { alertable, offRouteNote, quietNoThrows, quietNote, sideNote, stopsWithoutSide } from './alerts'
 import { useDialogs } from './confirm'
 import { useGps } from './device'
 import { SIDE_COLOR, SIDE_LABEL } from './colors'
-import { haversine, sideAt, simplify } from './geo'
+import { alongPath, cumulativeDistances, haversine, occurrences, pathBetween, sideAt, simplify } from './geo'
 import { searchPlaces } from './geocode'
 import { Icon } from './Icon'
 import { MapView, type ViewCmd } from './MapView'
+import { addSection, MAX_SECTIONS, removeSection, renameSection, resolveSections, SECTION_GAP_M, sectionPoint, sectionStatus } from './namedSections'
+import { passesAt, passLabel } from './passChoice'
 import { passNote, passViews } from './passes'
 import type { Spot } from './placement'
 import { RouteTab } from './RouteTab'
@@ -40,6 +42,7 @@ import {
   type RepeatMode,
 } from './routeEdit'
 import { SidePopover } from './SidePopover'
+import { SectionsTab } from './SectionsTab'
 import { SidesTab } from './SidesTab'
 import { StopsTab } from './StopsTab'
 import { loadFollowRoads, saveFollowRoads } from './storage'
@@ -47,16 +50,17 @@ import { transitNotice, type TransitResult } from './transit'
 import { TransitDialog } from './TransitDialog'
 import { Banner, RouteChip, Segmented, Sheet } from './ui'
 import { useRoadFollow } from './useRoadFollow'
-import type { Pt, Route, Side, Stop, StopType } from './types'
+import type { NamedSection, Pt, Route, Side, Stop, StopType, TurnStreet } from './types'
 
-type Tab = 'route' | 'sides' | 'stops'
+type Tab = 'route' | 'sides' | 'stops' | 'sections'
 /** What a tap on the map does. */
-type Tool = 'none' | 'draw' | 'paint' | 'place'
+type Tool = 'none' | 'draw' | 'paint' | 'place' | 'split'
 
 const TAB_OPTIONS: { value: Tab; label: string }[] = [
   { value: 'route', label: 'Route' },
   { value: 'sides', label: 'Throw Side' },
   { value: 'stops', label: 'Stops' },
+  { value: 'sections', label: 'Sections' },
 ]
 
 const MIN_STEP_M = 5
@@ -68,10 +72,16 @@ interface Props {
   /** Name of the route being edited. */
   routeName: string
   onChange: (r: Route) => void
+  /** The route's named sections, and a change to them. Naming parts of the route doesn't touch the route or the round. */
+  sections: readonly NamedSection[]
+  onSections: (next: NamedSection[]) => void
+  /** The street names found for the route's turns, and a change to them. */
+  streets: readonly TurnStreet[]
+  onStreets: (next: TurnStreet[], forPoints?: Pt[]) => void
   onGoRoutes: () => void
 }
 
-export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
+export function Setup({ route, routeName, onChange, sections: named, onSections, streets, onStreets, onGoRoutes }: Props) {
   const [tab, setTab] = useState<Tab>('route')
   const [tool, setTool] = useState<Tool>('none')
   const [expanded, setExpanded] = useState(false)
@@ -99,7 +109,9 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
   /** Where the stretch being painted starts, once its first end is tapped. */
   const [paintStart, setPaintStart] = useState<Pt | null>(null)
   const { fix, error } = useGps(true)
-  const { confirm, choose, dialog } = useDialogs()
+  /** The named section picked, in the list or on the map. */
+  const [sectionFocus, setSectionFocus] = useState<string | null>(null)
+  const { confirm, choose, prompt, dialog } = useDialogs()
   const roads = useRoadFollow({ route, side: brush, active: tool === 'draw' && follow, onRoute: onChange, onNotice: setNotice })
   const lastRef = useRef<Pt | null>(null)
   const viewKey = useRef(0)
@@ -143,6 +155,17 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
 
   const secs = sections(route)
   const views = useMemo(() => passViews(route), [route])
+  // The named sections as they lie along the route now, and how many stops are along each.
+  const resolved = useMemo(() => resolveSections(route.points, named), [route.points, named])
+  const stopCounts = useMemo(() => {
+    const occs = alertable(route, occurrences(route))
+    return new Map(sectionStatus(resolved.list, occs, new Set()).map((s) => [s.id, s.total]))
+  }, [route, resolved])
+  const focused = resolved.list.find((s) => s.id === sectionFocus)
+  const marks = useMemo(
+    () => resolved.list.filter((s) => !s.lead).map((s) => ({ pos: sectionPoint(route.points, s), label: s.name, on: s.id === sectionFocus })),
+    [resolved, route.points, sectionFocus],
+  )
   const hasRoute = route.points.length > 1
   const showing: Route = recording
     ? { ...route, points: trace, sideChanges: [], stops: [] }
@@ -242,7 +265,7 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
     if (hasRoute) {
       const ok = await confirm({
         title: 'Replace Your Route?',
-        message: 'Recording a new route replaces the current route, its sections and its stops.',
+        message: 'Recording a new route replaces the current route, its sections, its named sections, its street names and its stops.',
         confirmLabel: 'Replace',
         destructive: true,
       })
@@ -261,12 +284,15 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
     setTrace([])
     if (points.length < 2) return setNotice('Not enough movement was recorded. Try again, or draw the route on the map.')
     onChange({ points, sideChanges: [{ idx: 0, side: 'both' }], stops: [] })
+    // A new route has none of the old one's named sections or street names.
+    onSections([])
+    onStreets([])
   }
 
   const clearRoute = async () => {
     const ok = await confirm({
       title: 'Clear Route?',
-      message: 'This removes the route, its side settings and all of its stops.',
+      message: 'This removes the route, its side settings, its named sections, its street names and all of its stops.',
       confirmLabel: 'Clear Route',
       destructive: true,
     })
@@ -274,6 +300,9 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
     changeTool('none')
     setFocus(null)
     onChange({ points: [], sideChanges: [], stops: [] })
+    onSections([])
+    onStreets([])
+    setSectionFocus(null)
   }
 
   const find = async (query: string) => {
@@ -300,7 +329,9 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
   }
 
   /** A section's line was tapped on the map: pick it, and open the box for choosing its side where it was tapped. */
-  const tapSection = (index: number, at: Spot) => {
+  const tapSection = (index: number, at: Spot, pos: Pt) => {
+    // Adding a named section: the line tapped says which pass of a road driven twice is meant.
+    if (tool === 'split') return void startSectionAt(pos, secs[index])
     setFocus(index)
     setPick({ index, at, route })
   }
@@ -404,6 +435,84 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
     if (on) setExpanded(false)
   }
 
+  // Sections tab
+  const setAdding = (on: boolean) => {
+    if (on && recording) return setNotice('Finish recording the route first, then add sections.')
+    changeTool(on ? 'split' : 'none')
+    setNotice(null)
+    if (on) setExpanded(false)
+  }
+
+  /** Where a named section starts, tapped on the route: ask what to call it, then add it. */
+  const startSectionAt = async (pos: Pt, within?: { idx: number; endIdx: number }) => {
+    const snap = nearestOnRoute(route, pos, within ? { from: within.idx, to: within.endIdx } : undefined)
+    if (!snap || snap.dist > ON_ROUTE_M) return setNotice('Tap on the route to mark where the section starts.')
+    setNotice(null)
+    let metres = alongPath(cumulativeDistances(route.points), snap.idx, snap.t)
+    // A road driven more than once may lie on one line: which time through it is has to be asked.
+    const passes = passesAt(route.points, snap.point, within)
+    if (passes.length > 1) {
+      const choice = await choose<string>({
+        title: 'Which Time Through?',
+        message: 'The route goes along this road more than once.',
+        choices: passes.map((p, i) => ({ value: String(i), ...passLabel(i, p.at) })),
+      })
+      const pass = passes[Number(choice)]
+      if (choice === null || !pass) return
+      metres = pass.at
+    }
+    await nameSectionAt(metres)
+  }
+
+  const nameSectionAt = async (metres: number) => {
+    // Whether a section can start here is settled before asking what to call it.
+    if (metres > routeLength(route.points) - SECTION_GAP_M) return setNotice('That is too close to the end of the route for a section to start there.')
+    if (!addSection(route.points, named, metres, 'Name')) {
+      return setNotice(
+        named.length >= MAX_SECTIONS
+          ? 'A route can have no more sections than that.'
+          : "A section can't start there: another one starts within 25 m, or it is at the turn of a road that is driven out and back.",
+      )
+    }
+    const name = await prompt({ title: 'Name This Section', message: 'A street or an estate, for example.', confirmLabel: 'Add', placeholder: 'Oak Estate' })
+    if (!name) return
+    const added = addSection(route.points, named, metres, name)
+    if (!added) return setNotice("That name can't be used.")
+    onSections(added.sections)
+    setSectionFocus(added.added.id)
+    setNotice(`Added ${added.added.name}.`)
+  }
+
+  const focusNamed = (id: string) => {
+    setSectionFocus(id)
+    const s = resolved.list.find((x) => x.id === id)
+    if (s) goTo({ bounds: pathBetween(route.points, s.startM, s.endM) })
+  }
+
+  const renameNamed = async (id: string) => {
+    const current = named.find((s) => s.id === id)
+    if (!current) return
+    const name = await prompt({ title: 'Rename Section', confirmLabel: 'Rename', defaultValue: current.name })
+    if (name) onSections(renameSection(named, id, name))
+  }
+
+  const deleteNamed = async (id: string) => {
+    const current = named.find((s) => s.id === id)
+    if (!current) return
+    const placed = resolved.list.some((s) => s.id === id)
+    const ok = await confirm({
+      title: `Delete ${current.name}?`,
+      message: placed
+        ? 'The route stays as it is: the section just loses its name, and the one before it carries on to the next.'
+        : "This section isn't on the route any more, so deleting it changes nothing on the map.",
+      confirmLabel: 'Delete',
+      destructive: true,
+    })
+    if (!ok) return
+    if (sectionFocus === id) setSectionFocus(null)
+    onSections(removeSection(named, id))
+  }
+
   // Stops tab
   const addStops = (stops: Stop[]) => {
     const next = { ...route, stops: [...route.stops, ...stops] }
@@ -466,6 +575,8 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
       paintTap(p)
     } else if (tool === 'place') {
       placeStop(p)
+    } else if (tool === 'split') {
+      void startSectionAt(p)
     } else {
       closePick()
     }
@@ -478,15 +589,16 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
         position={fix}
         follow={recording}
         fit={tool !== 'draw'}
-        bottomFrac={tool === 'draw' || tool === 'paint' ? 0.42 : 0.5}
-        highlight={picking ? views[picking.index]?.points : tab === 'sides' ? highlight : undefined}
+        bottomFrac={tool === 'draw' || tool === 'paint' || tool === 'split' ? 0.42 : 0.5}
+        highlight={picking ? views[picking.index]?.points : tab === 'sides' ? highlight : tab === 'sections' && focused ? pathBetween(route.points, focused.startM, focused.endM) : undefined}
+        marks={tab === 'sections' ? marks : undefined}
         editable={tool === 'draw'}
         selectedPoint={selectedPoint}
         onPointTap={tapPoint}
         onPointDrag={dragPoint}
         onPointDrop={dropPoint}
         onMidTap={addPointInside}
-        selectable={(tab === 'sides' || tab === 'route') && tool === 'none' && !recording}
+        selectable={((tab === 'sides' || tab === 'route') && tool === 'none') || tool === 'split'}
         onSectionTap={tapSection}
         onMoveStart={closePick}
         pin={
@@ -512,10 +624,10 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
           setExpanded(open)
           closePick()
         }}
-        compact={tool === 'draw' || tool === 'paint'}
-        // While drawing or painting, the sheet is just that tool's controls, so the map gets the room.
+        compact={tool === 'draw' || tool === 'paint' || tool === 'split'}
+        // While drawing, painting or adding a section, the sheet is just that tool's controls, so the map gets the room.
         header={
-          tool === 'draw' || tool === 'paint' ? undefined : (
+          tool === 'draw' || tool === 'paint' || tool === 'split' ? undefined : (
             <div className="head-stack">
               <RouteChip name={routeName} onClick={onGoRoutes} />
               <Segmented tabs label="Setup step" value={tab} options={TAB_OPTIONS} onChange={switchTab} />
@@ -547,6 +659,8 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
             onStopRecord={stopRecord}
             onFind={find}
             onNext={() => switchTab('sides')}
+            streets={streets}
+            onStreets={onStreets}
           />
         )}
         {tab === 'sides' && (
@@ -591,6 +705,22 @@ export function Setup({ route, routeName, onChange, onGoRoutes }: Props) {
             onRemove={(id) => onChange({ ...route, stops: route.stops.filter((s) => s.id !== id) })}
             onFocus={(p) => goTo({ center: p, zoom: 18 })}
             onNotice={setNotice}
+            onBack={() => switchTab('route')}
+            onNext={() => switchTab('sections')}
+          />
+        )}
+        {tab === 'sections' && (
+          <SectionsTab
+            route={route}
+            resolved={resolved}
+            stopCounts={stopCounts}
+            focus={sectionFocus}
+            adding={tool === 'split'}
+            onAdding={setAdding}
+            onFocus={focusNamed}
+            onNameStart={() => void nameSectionAt(0)}
+            onRename={(id) => void renameNamed(id)}
+            onDelete={(id) => void deleteNamed(id)}
             onBack={() => switchTab('route')}
           />
         )}

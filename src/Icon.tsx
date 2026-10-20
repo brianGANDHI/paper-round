@@ -3,6 +3,25 @@ import type { ReactNode } from 'react'
 /** Simple line icons on a 24px grid, drawn in the current text colour. */
 const PATHS = {
   navigation: <polygon points="3 11 22 2 13 21 11 13 3 11" />,
+  signpost: (
+    <>
+      <line x1="12" y1="3" x2="12" y2="21" />
+      <path d="M5 5h11l3 3-3 3H5z" />
+      <path d="M19 14H8l-3 3 3 3h11z" />
+    </>
+  ),
+  flag: (
+    <>
+      <path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z" />
+      <line x1="4" y1="22" x2="4" y2="15" />
+    </>
+  ),
+  compass: (
+    <>
+      <circle cx="12" cy="12" r="10" />
+      <polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76" />
+    </>
+  ),
   sliders: (
     <>
       <line x1="4" y1="21" x2="4" y2="14" />

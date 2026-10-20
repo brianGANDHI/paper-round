@@ -1,11 +1,15 @@
-import { cleanName } from './library'
+import { cleanName, normalizeStreets } from './library'
+import { normalizeSections } from './namedSections'
 import { newStopId, normalizeRoute } from './routeEdit'
-import { isSide, type Pt, type Route, type SideChange, type Stop } from './types'
+import { isSide, type NamedSection, type Pt, type Route, type SavedRoute, type SideChange, type Stop, type TurnStreet } from './types'
 
 export const BACKUP_APP = 'paper-round'
 export const BACKUP_VERSION = 1
 
-/** Sanity limits, so a mistaken paste can't fill the phone. */
+/**
+ * Sanity limits, so a mistaken paste can't fill the phone. The text limit is about as much as a phone's storage holds
+ * and a backup is never longer than the routes as they are stored, so a backup made here can be read back.
+ */
 const LIMITS = { chars: 5_000_000, routes: 100, points: 20_000, stops: 5_000 }
 
 /** The most a backup file may hold, which the text length limit already allows for. */
@@ -17,7 +21,19 @@ const NOT_A_BACKUP = "That doesn't look like a Paper Round backup. Paste the who
 export interface BackupRoute {
   name: string
   route: Route
+  /** The route's named parts, if it has any. A backup made before they existed has none. */
+  sections?: NamedSection[]
+  /** The street names found for the route's turns, if it has any. */
+  streets?: TurnStreet[]
 }
+
+/** What a saved route puts in a backup: its name, route, named sections and street names, and not its progress. */
+export const toBackupRoute = (r: Pick<SavedRoute, 'name' | 'route' | 'sections' | 'streets'>): BackupRoute => ({
+  name: r.name,
+  route: r.route,
+  sections: r.sections ?? [],
+  streets: r.streets ?? [],
+})
 
 export type ParseResult = { ok: true; routes: BackupRoute[] } | { ok: false; error: string }
 
@@ -30,13 +46,19 @@ export function makeBackup(routes: BackupRoute[], now = new Date()): string {
     app: BACKUP_APP,
     version: BACKUP_VERSION,
     exportedAt: now.toISOString(),
-    routes: routes.map(({ name, route }) => ({
+    routes: routes.map(({ name, route, sections, streets }) => ({
       name,
       route: {
         points: route.points.map((p) => ({ lat: round6(p.lat), lng: round6(p.lng) })),
         sideChanges: route.sideChanges,
         stops: route.stops.map((s) => ({ ...s, lat: round6(s.lat), lng: round6(s.lng) })),
       },
+      // Written even when there are none, which says the route has none: restoring over a route that has some takes them off. A
+      // backup made before they existed has no such lines, and leaves a route's own alone.
+      ...(sections
+        ? { sections: sections.map(({ id, name: label, lat, lng, pass }) => ({ id, name: label, lat: round6(lat), lng: round6(lng), pass })) }
+        : {}),
+      ...(streets ? { streets: streets.map(({ lat, lng, out, name: label }) => ({ lat: round6(lat), lng: round6(lng), out, name: label })) } : {}),
     })),
   }
   return `${HEADER}\n${JSON.stringify(payload)}`
@@ -120,9 +142,15 @@ function parseRoute(item: unknown, index: number): BackupRoute | string {
   }
   const parsedStops = parseStops(stops, label)
   if (typeof parsedStops === 'string') return parsedStops
+  // Named sections and street names are extras: whatever is wrong with them, the route itself is still restored.
+  const sections = normalizeSections(item.sections)
+  const streets = normalizeStreets(item.streets)
   return {
     name: cleanName(typeof item.name === 'string' ? item.name : ''),
     route: normalizeRoute({ points: valid, sideChanges: parseSideChanges(sideChanges), stops: parsedStops }),
+    // A list that is there and empty says the route has none. One whose every entry was damaged says nothing: the route's own stay.
+    ...(Array.isArray(item.sections) && (sections.length > 0 || item.sections.length === 0) ? { sections } : {}),
+    ...(Array.isArray(item.streets) && (streets.length > 0 || item.streets.length === 0) ? { streets } : {}),
   }
 }
 

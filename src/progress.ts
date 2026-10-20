@@ -141,6 +141,31 @@ export function startProgress(track: Track, along: number): Progress {
   return { idx, t, along: a, furthest: a, gap: 0, at, accuracy: 0, time: null, seen: null, lost: true, doubt: null, backward: 0, outliers: 0, recent: [] }
 }
 
+/** A position this close, in metres, to the joint between two stretches could be on either, as when a point is added in the route. */
+const JOINT_M = 0.05
+
+/**
+ * The same position on a route that has had points added to it, with the same line: the stretch it is on is numbered
+ * differently now, so which one and how far along it are worked out afresh from how far along the route it is, which
+ * the points did not change. Everything else about it is kept, including a position that is lost. At a joint between
+ * two stretches it is on whichever one the fix itself is nearer, and on the later when neither is. A route with no
+ * stretches has nothing to work out against, and gives the position back.
+ */
+export function rebaseProgress(track: Track, prev: Progress): Progress {
+  const { points, cum, xy, refLat } = track
+  const segs = points.length - 1
+  if (segs < 1) return prev
+  const along = prev.along
+  let idx = 0
+  while (idx < segs - 1 && cum[idx + 1] <= along) idx++
+  const fix = project(prev.at, refLat)
+  const near = (i: number) => distToSegment(fix, xy[i], xy[i + 1]).dist
+  const joined = (i: number) => i >= 0 && i < segs && cum[i + 1] > cum[i] && along >= cum[i] - JOINT_M && along <= cum[i + 1] + JOINT_M
+  const on = [idx - 1, idx, idx + 1].filter((i) => i === idx || joined(i)).reduce((a, b) => (near(b) <= near(a) ? b : a))
+  const span = cum[on + 1] - cum[on]
+  return { ...prev, idx: on, t: span > 0 ? Math.min(1, Math.max(0, (along - cum[on]) / span)) : 0 }
+}
+
 /**
  * The driver's progress after a fix. `prev` is the progress before it (from `startProgress` for a round started
  * part way, or null for one with nothing to go by), `heading` the way the phone is going, in degrees clockwise

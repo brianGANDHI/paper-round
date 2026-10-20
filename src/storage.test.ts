@@ -5,10 +5,12 @@ import {
   loadAlertDistance,
   loadFollowRoads,
   loadLibrary,
+  loadHeadingUp,
   loadVoiceTurns,
   saveAlertDistance,
   saveFollowRoads,
   saveLibrary,
+  saveHeadingUp,
   saveVoiceTurns,
 } from './storage'
 import type { Route } from './types'
@@ -259,5 +261,135 @@ describe('the alert distance', () => {
     })
     expect(() => saveAlertDistance(20)).not.toThrow()
     expect(loadAlertDistance()).toBe(40)
+  })
+})
+
+describe('the map direction switch', () => {
+  let store: ReturnType<typeof fakeStorage>
+
+  beforeEach(() => {
+    store = fakeStorage()
+    vi.stubGlobal('localStorage', store)
+  })
+
+  it('starts north up, as the map has always been', () => {
+    expect(loadHeadingUp()).toBe(false)
+  })
+
+  it('stays as it was left', () => {
+    saveHeadingUp(true)
+    expect(loadHeadingUp()).toBe(true)
+    saveHeadingUp(false)
+    expect(loadHeadingUp()).toBe(false)
+  })
+
+  it('is kept apart from the routes and from the other choices', () => {
+    saveHeadingUp(true)
+    expect(store.data.has('paperround.library.v2')).toBe(false)
+    expect(loadVoiceTurns()).toBe(false)
+    expect(loadFollowRoads()).toBe(false)
+  })
+
+  it('reads anything unexpected as north up', () => {
+    for (const junk of ['{not json', '"yes"', '1', 'null', '[]']) {
+      store.data.set('paperround.headingUp', junk)
+      expect(loadHeadingUp()).toBe(false)
+    }
+  })
+
+  it('reads every other kind of junk as north up too, even ones that look like on', () => {
+    for (const junk of ['', ' ', '0', 'false', '"true"', '"on"', '[true]', '{"on":true}', '{"headingUp":true}', 'TRUE', 'True', 'undefined', '{}', '2', '-1', '"\\u0000"']) {
+      store.data.set('paperround.headingUp', junk)
+      expect(loadHeadingUp()).toBe(false)
+    }
+  })
+
+  it('keeps the choice under its own name, as plain true or false', () => {
+    saveHeadingUp(true)
+    expect(store.data.get('paperround.headingUp')).toBe('true')
+    saveHeadingUp(false)
+    expect(store.data.get('paperround.headingUp')).toBe('false')
+  })
+
+  it('reads a choice written as plain true as on, and writes nothing else', () => {
+    store.data.set('paperround.headingUp', 'true')
+    expect(loadHeadingUp()).toBe(true)
+    expect(store.data.size).toBe(1)
+  })
+
+  it('is switched off again by saving off, after being on', () => {
+    saveHeadingUp(true)
+    saveHeadingUp(true)
+    expect(loadHeadingUp()).toBe(true)
+    saveHeadingUp(false)
+    saveHeadingUp(false)
+    expect(loadHeadingUp()).toBe(false)
+  })
+
+  it('does not disturb anything else that is kept, and is not disturbed by it', () => {
+    saveVoiceTurns(true)
+    saveFollowRoads(true)
+    saveAlertDistance(60)
+    saveLibrary(createLibrary())
+    const others = new Map(store.data)
+    saveHeadingUp(true)
+    for (const [key, value] of others) expect(store.data.get(key)).toBe(value)
+    expect(loadVoiceTurns()).toBe(true)
+    saveVoiceTurns(false)
+    saveFollowRoads(false)
+    saveAlertDistance(20)
+    expect(loadHeadingUp()).toBe(true)
+    saveHeadingUp(false)
+    expect(loadVoiceTurns()).toBe(false)
+    expect(loadAlertDistance()).toBe(20)
+  })
+
+  it('is not turned on by the other switches being on', () => {
+    saveVoiceTurns(true)
+    saveFollowRoads(true)
+    expect(loadHeadingUp()).toBe(false)
+  })
+
+  it('still works on a phone that stores nothing, starting north up each time', () => {
+    vi.stubGlobal('localStorage', {
+      getItem: () => {
+        throw new Error('no storage')
+      },
+      setItem: () => {
+        throw new Error('no storage')
+      },
+    })
+    expect(() => saveHeadingUp(true)).not.toThrow()
+    expect(loadHeadingUp()).toBe(false)
+  })
+
+  it('still reads the choice on a phone that will not let it be changed', () => {
+    store.data.set('paperround.headingUp', 'true')
+    vi.stubGlobal('localStorage', {
+      getItem: (k: string) => store.getItem(k),
+      setItem: () => {
+        throw new DOMException('full', 'QuotaExceededError')
+      },
+    })
+    expect(() => saveHeadingUp(false)).not.toThrow()
+    expect(loadHeadingUp()).toBe(true)
+  })
+
+  it('still saves on a phone that will not let anything be read', () => {
+    vi.stubGlobal('localStorage', {
+      getItem: () => {
+        throw new Error('no reading')
+      },
+      setItem: (k: string, v: string) => store.setItem(k, v),
+    })
+    expect(() => saveHeadingUp(true)).not.toThrow()
+    expect(store.data.get('paperround.headingUp')).toBe('true')
+    expect(loadHeadingUp()).toBe(false)
+  })
+
+  it('still works when there is no local storage at all', () => {
+    vi.stubGlobal('localStorage', undefined)
+    expect(() => saveHeadingUp(true)).not.toThrow()
+    expect(loadHeadingUp()).toBe(false)
   })
 })

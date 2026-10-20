@@ -2,8 +2,9 @@ import { useState } from 'react'
 import { Icon } from './Icon'
 import { formatDistance, routeLength } from './routeEdit'
 import { BRUSH_OPTIONS } from './sideOptions'
+import { StreetNames } from './StreetNames'
 import { Banner, Segmented } from './ui'
-import type { Route, Side } from './types'
+import type { Pt, Route, Side, TurnStreet } from './types'
 
 interface Props {
   route: Route
@@ -31,6 +32,9 @@ interface Props {
   onStopRecord: () => void
   onFind: (query: string) => void
   onNext: () => void
+  /** The street names of the route's turns, and a change to them. */
+  streets: readonly TurnStreet[]
+  onStreets: (next: TurnStreet[], forPoints?: Pt[]) => void
 }
 
 const points = (n: number) => `${n} ${n === 1 ? 'point' : 'points'}`
@@ -168,6 +172,7 @@ export function RouteTab(p: Props) {
             </div>
           </div>
           <p className="footnote">Tap a line on the map to change which side it is thrown on.</p>
+          <StreetNames route={p.route} streets={p.streets} onStreets={p.onStreets} />
           <button className="btn primary block" onClick={p.onNext}>
             Next: Choose Throw Side
           </button>

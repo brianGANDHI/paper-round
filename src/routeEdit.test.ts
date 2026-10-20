@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { haversine, occurrences, sideAt } from './geo'
+import { distanceToPath, haversine, occurrences, sideAt } from './geo'
 import {
   appendPoint,
   appendPoints,
@@ -23,6 +23,8 @@ import {
   nearestOnRoute,
   normalizeRoute,
   otherSide,
+  PAINT_MIN_M,
+  paintMetres,
   paintRange,
   paintStretch,
   parseQty,
@@ -1482,5 +1484,459 @@ describe('text with the house number taken off the front', () => {
 
   it('leaves everything when there is no number', () => {
     expect(withoutNumber('12 Oak Road', null)).toBe('12 Oak Road')
+  })
+})
+
+describe('painting a stretch by how far along the route it is', () => {
+  /** Metres between two neighbouring points of `road`. */
+  const M = 111.1949266
+  const flat = (): Route => ({ ...road(11), sideChanges: [{ idx: 0, side: 'both' }] })
+  /** The latitude `m` metres along `road`. */
+  const lat = (m: number) => 51 + m / (M * 1000)
+  const sidesOf = (r: Route) => sections(r).map((s) => s.side)
+  /** The side in force `m` metres along the route. */
+  const sideAtMetre = (r: Route, m: number): Side => (sections(r).find((s) => m < s.endM) ?? sections(r).at(-1)!).side
+  const house = (id: string, m: number, pathIdx: number, type: Stop['type'] = 'nothrow', lng = 0.00003): Stop => ({ id, type, lat: lat(m), lng, pathIdx })
+
+  it('gives the stretch a section of its own, leaving the sides either end of it as they were', () => {
+    const r = paintMetres(flat(), 250, 640, 'left')!
+    expect(r.points).toHaveLength(13)
+    expect(r.sideChanges).toEqual([{ idx: 0, side: 'both' }, { idx: 3, side: 'left' }, { idx: 7, side: 'both' }])
+    const mid = sections(r)[1]
+    expect(mid.startM).toBeCloseTo(250, 1)
+    expect(mid.endM).toBeCloseTo(640, 1)
+  })
+
+  it('leaves the road where it was: the same line and the same length', () => {
+    const before: Route = {
+      points: [{ lat: 51, lng: 0 }, { lat: 51.001, lng: 0.0004 }, { lat: 51.0022, lng: 0.0003 }, { lat: 51.003, lng: 0.0011 }, { lat: 51.0041, lng: 0.0011 }],
+      sideChanges: [{ idx: 0, side: 'both' }],
+      stops: [],
+    }
+    const total = routeLength(before.points)
+    const after = paintMetres(before, 40, total - 55, 'right')!
+    expect(after.points).toHaveLength(before.points.length + 2)
+    expect(Math.abs(routeLength(after.points) - total)).toBeLessThan(0.01)
+    for (const p of after.points) expect(distanceToPath(p, before.points)).toBeLessThan(0.01)
+    // Every point that was there is still there, in the same order.
+    expect(after.points.filter((p) => before.points.some((q) => q.lat === p.lat && q.lng === p.lng))).toEqual(before.points)
+  })
+
+  it('is the same edit as painting between two taps on the same spots', () => {
+    const tap = (m: number) => ({ lat: lat(m), lng: 0 })
+    const byTap = paintStretch(flat(), tap(250), tap(640), 'left')!.route
+    const byMetres = paintMetres(flat(), 250, 640, 'left')!
+    expect(byMetres.sideChanges).toEqual(byTap.sideChanges)
+    expect(byMetres.points).toHaveLength(byTap.points.length)
+    byMetres.points.forEach((p, i) => expect(haversine(p, byTap.points[i])).toBeLessThan(0.01))
+  })
+
+  it('does not change the route it was given', () => {
+    const base = flat()
+    base.stops = [house('a', 300, 2)]
+    const snapshot = JSON.stringify(base)
+    paintMetres(base, 250, 640, 'left')
+    expect(JSON.stringify(base)).toBe(snapshot)
+  })
+
+  describe('where the new points go', () => {
+    it('reuses a point that is within 3 metres instead of adding another beside it', () => {
+      const r = paintMetres(flat(), 2 * M + 2, 5 * M - 2.9, 'left')!
+      expect(r.points).toEqual(flat().points)
+      expect(r.sideChanges).toEqual([{ idx: 0, side: 'both' }, { idx: 2, side: 'left' }, { idx: 5, side: 'both' }])
+    })
+
+    it('adds one when the nearest point is further than that, whichever side of it the end falls', () => {
+      const after = paintMetres(flat(), 2 * M + 3.1, 5 * M, 'left')!
+      expect(after.points).toHaveLength(12)
+      expect(after.sideChanges).toEqual([{ idx: 0, side: 'both' }, { idx: 3, side: 'left' }, { idx: 6, side: 'both' }])
+      const before = paintMetres(flat(), 2 * M, 5 * M - 3.1, 'left')!
+      expect(before.points).toHaveLength(12)
+      expect(before.sideChanges).toEqual([{ idx: 0, side: 'both' }, { idx: 2, side: 'left' }, { idx: 5, side: 'both' }])
+    })
+
+    it('starts the section at the point it reused, which can be a couple of metres from where it was asked for', () => {
+      const r = paintMetres(flat(), 2 * M + 2.5, 6 * M, 'left')!
+      expect(sections(r)[1].startM).toBeCloseTo(2 * M, 3)
+    })
+
+    it('does not add any when the road is dense with points', () => {
+      const dense: Route = {
+        points: Array.from({ length: 300 }, (_, i) => ({ lat: 51 + (i * 2) / (M * 1000), lng: 0 })),
+        sideChanges: [{ idx: 0, side: 'both' }],
+        stops: [],
+      }
+      const r = paintMetres(dense, 100.7, 400.2, 'left')!
+      expect(r.points).toHaveLength(300)
+      const mid = sections(r)[1]
+      expect(Math.abs(mid.startM - 100.7)).toBeLessThanOrEqual(3)
+      expect(Math.abs(mid.endM - 400.2)).toBeLessThanOrEqual(3)
+      expect(sections(r)).toHaveLength(3)
+    })
+
+    it('starts at the very beginning and ends at the very end without adding a point there', () => {
+      const start = paintMetres(flat(), 0, 300, 'left')!
+      expect(start.points).toHaveLength(12)
+      expect(start.sideChanges).toEqual([{ idx: 0, side: 'left' }, { idx: 3, side: 'both' }])
+      const total = routeLength(flat().points)
+      const end = paintMetres(flat(), total - 300, total, 'left')!
+      expect(end.points).toHaveLength(12)
+      expect(end.sideChanges).toEqual([{ idx: 0, side: 'both' }, { idx: 8, side: 'left' }])
+      // Exactly at the ends of the route, the points that are there are the ones used.
+      expect(end.points[11]).toEqual(flat().points[10])
+    })
+
+    it('copes with a pair of points that are the same place', () => {
+      const doubled: Route = { points: [pt(0), pt(1), pt(2), pt(2), pt(3), pt(4)], sideChanges: [{ idx: 0, side: 'both' }], stops: [] }
+      const r = paintMetres(doubled, 1.5 * M, 3.5 * M, 'left')!
+      expect(sidesOf(r)).toEqual(['both', 'left', 'both'])
+      expect(Math.abs(routeLength(r.points) - routeLength(doubled.points))).toBeLessThan(0.01)
+      const mid = sections(r)[1]
+      expect(mid.startM).toBeCloseTo(1.5 * M, 1)
+      expect(mid.endM).toBeCloseTo(3.5 * M, 1)
+      // Starting right at the doubled point reuses one of the two.
+      const at = paintMetres(doubled, 2 * M, 3.5 * M, 'right')!
+      expect(at.points).toHaveLength(7)
+      expect(sections(at)[1].startM).toBeCloseTo(2 * M, 1)
+    })
+  })
+
+  describe('the stops along the road', () => {
+    it('move with the points that are added, each staying with its stretch of road', () => {
+      const base = flat()
+      base.stops = [
+        house('a', 1.5 * M, 1),
+        house('b', 233, 2), // before the first new point, at 250 m
+        house('c', 311, 2), // after it
+        house('d', 500, 4),
+        house('e', 634, 5), // before the second new point, at 640 m
+        house('f', 656, 5), // after it
+        house('g', 945, 8),
+      ]
+      const r = paintMetres(base, 250, 640, 'left')!
+      expect(r.stops.map((s) => s.pathIdx)).toEqual([1, 2, 3, 5, 6, 7, 10])
+      for (const s of r.stops) expect(s.pathIdx, s.id).toBe(nearestOnRoute(r, s)!.idx)
+    })
+
+    it('stay with their stretch when both new points fall in the same segment', () => {
+      // Segment 4 runs from 445 m to 556 m, and the new points go in at 470 m and 530 m.
+      const base = flat()
+      base.stops = [house('before', 466, 4), house('between', 500, 4), house('after', 545, 4)]
+      const r = paintMetres(base, 470, 530, 'left')!
+      expect(r.points).toHaveLength(13)
+      expect(r.stops.map((s) => s.pathIdx)).toEqual([4, 5, 6])
+      for (const s of r.stops) expect(s.pathIdx, s.id).toBe(nearestOnRoute(r, s)!.idx)
+    })
+
+    it('keep their stretch the same way when painting between two taps', () => {
+      const base = flat()
+      base.stops = [house('before', 466, 4), house('between', 500, 4), house('after', 545, 4)]
+      const r = paintStretch(base, { lat: lat(470), lng: 0 }, { lat: lat(530), lng: 0 }, 'left')!.route
+      expect(r.stops.map((s) => s.pathIdx)).toEqual([4, 5, 6])
+    })
+  })
+
+  describe('over a whole section', () => {
+    const three = (): Route => ({ ...road(11), sideChanges: [{ idx: 0, side: 'both' }, { idx: 4, side: 'left' }, { idx: 8, side: 'right' }] })
+
+    it('is what changing the side of that section does, with no point added', () => {
+      const r = three()
+      const secs = sections(r)
+      let tried = 0
+      for (const s of secs) {
+        for (const side of SIDES) {
+          if ([secs[s.index - 1]?.side, secs[s.index + 1]?.side].includes(side)) continue
+          const painted = paintMetres(r, s.startM, s.endM, side)!
+          expect(painted.points, `${s.index} ${side}`).toEqual(r.points)
+          expect(painted.sideChanges, `${s.index} ${side}`).toEqual(setSectionSide(r, s.index, side))
+          tried++
+        }
+      }
+      expect(tried).toBeGreaterThanOrEqual(8)
+    })
+
+    it('joins the sections either side when they are the side it was given', () => {
+      const r: Route = { ...road(11), sideChanges: [{ idx: 0, side: 'left' }, { idx: 3, side: 'right' }, { idx: 7, side: 'left' }] }
+      const mid = sections(r)[1]
+      const painted = paintMetres(r, mid.startM, mid.endM, 'left')!
+      expect(painted.sideChanges).toEqual([{ idx: 0, side: 'left' }])
+      expect(painted.points).toEqual(r.points)
+    })
+
+    it('joins the one before it, from its start to part way', () => {
+      const r: Route = { ...road(11), sideChanges: [{ idx: 0, side: 'left' }, { idx: 3, side: 'right' }, { idx: 7, side: 'left' }] }
+      const painted = paintMetres(r, 3 * M, 5 * M, 'left')!
+      expect(painted.points).toEqual(r.points)
+      expect(painted.sideChanges).toEqual([{ idx: 0, side: 'left' }, { idx: 5, side: 'right' }, { idx: 7, side: 'left' }])
+    })
+
+    it('can cross several sections, taking the place of the ones it covers', () => {
+      const painted = paintMetres(three(), 300, 900, 'transit')!
+      expect(sidesOf(painted)).toEqual(['both', 'transit', 'right'])
+      const mid = sections(painted)[1]
+      expect(mid.startM).toBeCloseTo(300, 1)
+      expect(mid.endM).toBeCloseTo(900, 1)
+    })
+  })
+
+  describe('painting it again', () => {
+    it('is the same route the second time', () => {
+      const once = paintMetres(flat(), 250, 640, 'left')!
+      expect(paintMetres(once, 250, 640, 'left')).toEqual(once)
+    })
+
+    it('puts the sides back with another coat, though the points stay', () => {
+      const once = paintMetres(flat(), 250, 640, 'left')!
+      const back = paintMetres(once, 250, 640, 'both')!
+      expect(back.sideChanges).toEqual([{ idx: 0, side: 'both' }])
+      expect(back.points).toEqual(once.points)
+    })
+
+    it('can be a different stretch in the one before', () => {
+      const once = paintMetres(flat(), 250, 640, 'left')!
+      const more = paintMetres(once, 400, 900, 'right')!
+      expect(sidesOf(more)).toEqual(['both', 'left', 'right', 'both'])
+      expect(sections(more)[1].endM).toBeCloseTo(400, 1)
+    })
+  })
+
+  describe('when there is nothing to paint', () => {
+    it('refuses a stretch shorter than the least worth painting, and takes one of exactly that', () => {
+      expect(PAINT_MIN_M).toBe(15)
+      expect(paintMetres(flat(), 250, 264.9, 'left')).toBeNull()
+      expect(paintMetres(flat(), 250, 265, 'left')).not.toBeNull()
+    })
+
+    it('refuses an empty or backwards stretch', () => {
+      expect(paintMetres(flat(), 300, 300, 'left')).toBeNull()
+      expect(paintMetres(flat(), 640, 250, 'left')).toBeNull()
+    })
+
+    it('refuses numbers that are not distances', () => {
+      expect(paintMetres(flat(), Number.NaN, 640, 'left')).toBeNull()
+      expect(paintMetres(flat(), 250, Number.NaN, 'left')).toBeNull()
+      expect(paintMetres(flat(), Number.NaN, Number.NaN, 'left')).toBeNull()
+    })
+
+    it('refuses a route with no length', () => {
+      const none: Route = { points: [], sideChanges: [], stops: [] }
+      expect(paintMetres(none, 0, 100, 'left')).toBeNull()
+      expect(paintMetres({ ...none, points: [pt(0)] }, 0, 100, 'left')).toBeNull()
+      expect(paintMetres({ points: [pt(0), pt(0)], sideChanges: [{ idx: 0, side: 'both' }], stops: [] }, 0, 100, 'left')).toBeNull()
+    })
+
+    it('refuses a side that is not one', () => {
+      expect(paintMetres(flat(), 250, 640, 'up' as unknown as Side)).toBeNull()
+      expect(paintMetres(flat(), 250, 640, undefined as unknown as Side)).toBeNull()
+    })
+
+    it('counts only the part that is on the route', () => {
+      const total = routeLength(flat().points)
+      expect(paintMetres(flat(), total - 5, total + 100, 'left')).toBeNull()
+      expect(paintMetres(flat(), -100, 5, 'left')).toBeNull()
+      expect(paintMetres(flat(), -500, 100000, 'left')!.sideChanges).toEqual([{ idx: 0, side: 'left' }])
+      expect(paintMetres(flat(), -Infinity, Infinity, 'left')!.sideChanges).toEqual([{ idx: 0, side: 'left' }])
+      const tail = paintMetres(flat(), total - 20, total + 100, 'left')!
+      expect(tail.sideChanges).toEqual([{ idx: 0, side: 'both' }, { idx: 10, side: 'left' }])
+    })
+  })
+
+  describe('on a route with one segment', () => {
+    const one = (): Route => ({ points: [pt(0), pt(1)], sideChanges: [{ idx: 0, side: 'both' }], stops: [] })
+
+    it('splits the segment into three', () => {
+      const r = paintMetres(one(), 30, 80, 'left')!
+      expect(r.points).toHaveLength(4)
+      expect(sidesOf(r)).toEqual(['both', 'left', 'both'])
+      expect(sections(r)[1].startM).toBeCloseTo(30, 1)
+      expect(sections(r)[1].endM).toBeCloseTo(80, 1)
+    })
+
+    it('paints the whole of it without adding a point', () => {
+      const r = paintMetres(one(), 0, M, 'right')!
+      expect(r.points).toEqual(one().points)
+      expect(r.sideChanges).toEqual([{ idx: 0, side: 'right' }])
+    })
+
+    it('paints from the start, or to the end', () => {
+      expect(paintMetres(one(), 0, 50, 'left')!.sideChanges).toEqual([{ idx: 0, side: 'left' }, { idx: 1, side: 'both' }])
+      expect(paintMetres(one(), 50, M, 'left')!.sideChanges).toEqual([{ idx: 0, side: 'both' }, { idx: 1, side: 'left' }])
+    })
+
+    it('refuses what is under the least worth painting, and a segment that is itself too short', () => {
+      expect(paintMetres(one(), 0, 14, 'left')).toBeNull()
+      const stub: Route = { points: [pt(0), { lat: lat(10), lng: 0 }], sideChanges: [{ idx: 0, side: 'both' }], stops: [] }
+      expect(paintMetres(stub, 0, 10, 'left')).toBeNull()
+    })
+  })
+
+  describe('on a street driven twice', () => {
+    /** Up 1.1 km and back down the very same line, both passes on the left. */
+    const twice = (): Route => repeatSection({ ...road(11), sideChanges: [{ idx: 0, side: 'left' }] }, 0, 'back')!
+    const turnAround = routeLength(road(11).points)
+
+    it('has two passes with a section each', () => {
+      expect(twice().sideChanges).toEqual([{ idx: 0, side: 'left' }, { idx: 10, side: 'left' }])
+      expect(twice().points).toHaveLength(21)
+    })
+
+    it('paints the way back and leaves the way out alone', () => {
+      const r = paintMetres(twice(), 1500, 1900, 'right')!
+      expect(sidesOf(r)).toEqual(['left', 'left', 'right', 'left'])
+      expect(r.sideChanges.slice(0, 2)).toEqual([{ idx: 0, side: 'left' }, { idx: 10, side: 'left' }])
+      const secs = sections(r)
+      expect(secs[2].startM).toBeCloseTo(1500, 1)
+      expect(secs[2].endM).toBeCloseTo(1900, 1)
+      for (let m = 0; m < turnAround - 1; m += 20) expect(sideAtMetre(r, m)).toBe('left')
+    })
+
+    it('paints the way out and leaves the way back alone', () => {
+      const r = paintMetres(twice(), 200, 600, 'right')!
+      expect(sidesOf(r)).toEqual(['left', 'right', 'left', 'left'])
+      for (let m = turnAround + 1; m < 2 * turnAround; m += 20) expect(sideAtMetre(r, m)).toBe('left')
+    })
+
+    it('does not run the way back into the way out when the stretch starts at the turn', () => {
+      const r = paintMetres(twice(), turnAround, turnAround + 300, 'left')!
+      expect(r.sideChanges).toEqual([{ idx: 0, side: 'left' }, { idx: 10, side: 'left' }])
+    })
+
+    it('does not run the way out into the way back when the stretch ends at the turn', () => {
+      const r = paintMetres(twice(), turnAround - 300, turnAround, 'left')!
+      // A point went in before the turn, so the turn is one point later.
+      expect(r.sideChanges).toEqual([{ idx: 0, side: 'left' }, { idx: 11, side: 'left' }])
+    })
+
+    it('keeps the turn between them when both passes end up the same side', () => {
+      const r: Route = { ...twice(), sideChanges: [{ idx: 0, side: 'left' }, { idx: 10, side: 'right' }] }
+      const up = paintMetres(r, turnAround - 300, turnAround, 'right')!
+      // The end of the way out is now right, as is the way back: still two sections, split at the turn.
+      expect(up.sideChanges).toEqual([{ idx: 0, side: 'left' }, { idx: 8, side: 'right' }, { idx: 11, side: 'right' }])
+      const down = paintMetres(r, turnAround, turnAround + 300, 'left')!
+      expect(down.sideChanges).toEqual([{ idx: 0, side: 'left' }, { idx: 10, side: 'left' }, { idx: 13, side: 'right' }])
+    })
+
+    it('painting the whole of the way back is what changing that section does', () => {
+      const secs = sections(twice())
+      const r = paintMetres(twice(), secs[1].startM, secs[1].endM, 'right')!
+      expect(r.sideChanges).toEqual(setSectionSide(twice(), 1, 'right'))
+      expect(r.points).toEqual(twice().points)
+    })
+
+    describe('with stops beside it', () => {
+      const houses = (): Stop[] => [51.0023, 51.0055, 51.0077].map((l, i): Stop => ({ id: `h${i}`, type: i === 1 ? 'bundle' : 'nothrow', lat: l, lng: 0.00008, pathIdx: 0 }))
+      const withHouses = (): Route => ({ ...twice(), stops: houses() })
+      const keyed = (r: Route) => occurrences(r).map((o) => [o.key, o.at] as const).sort((a, b) => (a[0] < b[0] ? -1 : 1))
+
+      it('meets every stop at the same places, with the same keys, as before', () => {
+        const before = keyed(withHouses())
+        expect(before.map((x) => x[0])).toEqual(['h0', 'h0#2', 'h1', 'h1#2', 'h2', 'h2#2'])
+        const after = keyed(paintMetres(withHouses(), 1500, 1900, 'right')!)
+        expect(after.map((x) => x[0])).toEqual(before.map((x) => x[0]))
+        after.forEach((x, i) => expect(Math.abs(x[1] - before[i][1]), x[0]).toBeLessThan(0.01))
+      })
+
+      it('keeps the keys, and the places to within the grid the road is walked in, wherever the stretch is', () => {
+        const before = keyed(withHouses())
+        const total = 2 * turnAround
+        for (let from = 0; from < total - 20; from += 137) {
+          for (const length of [16, 60, 400, 1500]) {
+            const r = paintMetres(withHouses(), from, from + length, 'right')
+            if (!r) continue
+            const after = keyed(r)
+            expect(after.map((x) => x[0]), `${from} ${length}`).toEqual(before.map((x) => x[0]))
+            after.forEach((x, i) => expect(Math.abs(x[1] - before[i][1]), `${from} ${length} ${x[0]}`).toBeLessThan(3))
+          }
+        }
+      })
+
+      it('meets a stop that is off the road once, as before', () => {
+        const base = withHouses()
+        base.stops = [...base.stops, { id: 'far', type: 'nothrow', lat: 51.004, lng: 0.0004, pathIdx: 0 }]
+        const before = occurrences(base).map((o) => o.key).sort()
+        const after = occurrences(paintMetres(base, 100, 700, 'transit')!).map((o) => o.key).sort()
+        expect(after).toEqual(before)
+      })
+
+      describe('near the end of a dead end', () => {
+        const total = 2 * turnAround
+        /** A no-throw house a couple of metres off the line, `back` metres short of where the road turns round. */
+        const near = (back: number): Route => ({ ...twice(), stops: [house('end', turnAround - back, 0)] })
+        /** How far up the road a place is, whichever pass it is on. */
+        const upTheRoad = (at: number) => Math.min(at, total - at)
+        const painted = (base: Route, run: (from: number, r: Route) => void) => {
+          for (let from = 0; from < total - 20; from += 53) {
+            const r = paintMetres(base, from, from + 20, 'transit')
+            if (r) run(from, r)
+          }
+        }
+
+        it('is met once within 30 m of the turn, both passes going by it as one', () => {
+          for (const back of [5, 15, 25]) expect(occurrences(near(back)).map((o) => o.key), `${back}`).toEqual(['end'])
+        })
+
+        it('keeps its key and its place on the road, wherever the stretch is, though which pass it is met on can change', () => {
+          // The two passes are the same distance from it, so the one that is nearer on the grid the road is walked in
+          // is the one it is met on, and that grid moves with any point added, here as by adding one by hand.
+          for (const back of [5, 15, 25]) {
+            const base = near(back)
+            const [was] = occurrences(base)
+            painted(base, (from, r) => {
+              const after = occurrences(r)
+              expect(after.map((o) => o.key), `${back} ${from}`).toEqual(['end'])
+              expect(Math.abs(upTheRoad(after[0].at) - upTheRoad(was.at)), `${back} ${from}`).toBeLessThan(3)
+            })
+          }
+        })
+
+        it('keeps the pass it is met on, and the place, when it is a good way short of the turn', () => {
+          for (const back of [60, 100, 300]) {
+            const base = near(back)
+            const was = occurrences(base)
+            expect(was.map((o) => o.key), `${back}`).toEqual(['end', 'end#2'])
+            painted(base, (from, r) => {
+              const after = occurrences(r)
+              expect(after.map((o) => o.key), `${back} ${from}`).toEqual(['end', 'end#2'])
+              after.forEach((o, i) => {
+                expect(Math.abs(o.at - was[i].at), `${back} ${from} ${o.key}`).toBeLessThan(3)
+                expect(o.at < turnAround, `${back} ${from} ${o.key}`).toBe(i === 0)
+              })
+            })
+          }
+        })
+      })
+    })
+  })
+
+  describe('changing only the stretch asked for', () => {
+    it('leaves every part of the route outside it as it was, and paints every part inside', () => {
+      const base: Route = { ...road(11), sideChanges: [{ idx: 0, side: 'both' }, { idx: 4, side: 'left' }, { idx: 8, side: 'right' }] }
+      const total = routeLength(base.points)
+      let painted = 0
+      for (let from = 0; from < total - 30; from += 41) {
+        for (const length of [15, 40, 150, 500, 900]) {
+          for (const side of SIDES) {
+            const r = paintMetres(base, from, from + length, side)
+            if (!r) continue
+            painted++
+            for (let m = 0; m < total; m += 3.7) {
+              if (m < from - 3.5 || m > from + length + 3.5) expect(sideAtMetre(r, m), `${from} ${length} ${side} at ${m}`).toBe(sideAtMetre(base, m))
+              else if (m > from + 3.5 && m < from + length - 3.5) expect(sideAtMetre(r, m), `${from} ${length} ${side} at ${m}`).toBe(side)
+            }
+            expect(Math.abs(routeLength(r.points) - total)).toBeLessThan(0.01)
+          }
+        }
+      }
+      expect(painted).toBeGreaterThan(100)
+    })
+  })
+
+  describe('with sides that mean nothing is thrown', () => {
+    it('paints transit like any other side', () => {
+      const r = paintMetres(flat(), 250, 640, 'transit')!
+      expect(sidesOf(r)).toEqual(['both', 'transit', 'both'])
+      expect(sideAt(r, 3)).toBe('transit')
+      expect(sideAt(r, 2)).toBe('both')
+    })
   })
 })

@@ -1,4 +1,5 @@
 import { angleBetween, bearing, cumulativeDistances } from './geo'
+import { spokenStreet } from './streetName'
 import type { Pt } from './types'
 
 /**
@@ -9,7 +10,12 @@ import type { Pt } from './types'
 
 /** A turn in the route: how far along it is, how far the heading changes there (positive to the right, negative to the left), and the way the route heads as it comes up to it. */
 export interface Turn {
+  /** How far along the route the turn is, in metres: the middle of the swing, halfway between `from` and `to`. */
   at: number
+  /** How far along the route the swing starts, in metres: where the route begins to change heading. */
+  from: number
+  /** How far along the route the swing ends, in metres: the road the turn leads into starts here. The same as `from` for a corner with a point on it. */
+  to: number
   angle: number
   /** The way the route heads just before the turn, in degrees clockwise from north. */
   heading: number
@@ -48,8 +54,8 @@ export const onTheRoute = (gap: number | null, accuracy: number, lost = false): 
 /** A heading change as an angle from -180 (not included) to 180: positive is to the right. */
 const wrap = (deg: number) => 180 - ((((180 - deg) % 360) + 360) % 360)
 
-/** Where the route is after `d` metres along it. */
-function pointAt(points: Pt[], cum: number[], d: number): Pt {
+/** Where the route is after `d` metres along it (kept within the route), given how far along each of its points is. */
+export function pointAt(points: Pt[], cum: number[], d: number): Pt {
   let lo = 0
   let hi = cum.length - 1
   while (hi - lo > 1) {
@@ -94,7 +100,13 @@ export function routeTurns(points: Pt[]): Turn[] {
     }
   }
   return swings
-    .map((s) => ({ at: ((s.first + s.last + 2) / 2) * STEP_M, angle: wrap(s.sum), heading: heading[s.first] }))
+    .map((s) => ({
+      at: ((s.first + s.last + 2) / 2) * STEP_M,
+      from: (s.first + 1) * STEP_M,
+      to: (s.last + 1) * STEP_M,
+      angle: wrap(s.sum),
+      heading: heading[s.first],
+    }))
     .filter((t) => Math.abs(t.angle) >= MIN_TURN_DEG)
 }
 
@@ -175,11 +187,16 @@ export function turnCue(ahead: number, said: TurnCue | null): TurnCue | null {
 /** A distance as it is said: to the nearest 10 m under 100 m, to the nearest 50 m above. */
 export const spokenMetres = (m: number): number => (m < 100 ? Math.round(m / 10) * 10 : Math.round(m / 50) * 50)
 
-/** The words for a cue. */
-export function turnSpeech(turn: Pick<Turn, 'angle'>, ahead: number, cue: TurnCue): string {
+/**
+ * The words for a cue. When the street the turn leads into is known it comes last, "turn left onto Oak Road", said the way
+ * a street is said (see `spokenStreet`). With no street, or an empty one, the turn is said on its own and never "onto" nothing.
+ */
+export function turnSpeech(turn: Pick<Turn, 'angle'> & { street?: string | null }, ahead: number, cue: TurnCue): string {
   const { spoken } = turnWords(turn.angle)
-  if (cue === 'near') return `${spoken[0].toUpperCase()}${spoken.slice(1)}.`
-  return `In ${spokenMetres(ahead)} metres, ${spoken}.`
+  const street = spokenStreet(turn.street ?? '')
+  const words = street ? `${spoken} onto ${street}` : spoken
+  if (cue === 'near') return `${words[0].toUpperCase()}${words.slice(1)}.`
+  return `In ${spokenMetres(ahead)} metres, ${words}.`
 }
 
 /**

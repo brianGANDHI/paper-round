@@ -72,6 +72,8 @@ interface Props {
   onFocus: (p: Pt) => void
   onNotice: (message: string | null) => void
   onBack: () => void
+  /** On to naming parts of the route, the last step. */
+  onNext: () => void
 }
 
 const SIDE_WORD: Record<RoadSide, string> = { left: 'Left', right: 'Right' }
@@ -432,6 +434,12 @@ export function StopsTab(p: Props) {
             })}
           </ul>
         </>
+      )}
+
+      {p.route.points.length > 1 && (
+        <button className="btn primary block" onClick={p.onNext}>
+          Next: Name Sections
+        </button>
       )}
 
       {editingStop && (

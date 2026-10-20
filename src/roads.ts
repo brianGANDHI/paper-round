@@ -11,12 +11,22 @@ import type { Pt, Route, Side } from './types'
  * OpenStreetMap attribution with a link to fix the map, rule out heavy use, and promise no
  * availability. So there is a gap between requests, only one runs at a time, and any failure is
  * answered with a straight line instead. Route by address (transit.ts) asks the same server for the
- * road between two typed addresses, and reports a failure instead.
+ * road between two typed addresses, and reports a failure instead. Street names (streets.ts) ask it which
+ * road is nearest a point. All of them ask through the same gap, one at a time in the order they asked.
  */
 const DEFAULT_ENDPOINT = 'https://routing.openstreetmap.de/routed-car/route/v1/driving'
 
 /** FOSSGIS asks that its URL isn't baked into apps: set VITE_ROUTING_URL when building to use another OSRM server. */
 export const ENDPOINT: string = String(import.meta.env.VITE_ROUTING_URL || DEFAULT_ENDPOINT).replace(/\/+$/, '')
+
+/**
+ * Where the same server answers "which street is nearest this point", for naming the streets turns lead into: the
+ * route address with its service swapped. Null when the address given is not one for routes, so there is no guessing.
+ */
+export const nearestEndpoint = (endpoint: string): string | null =>
+  endpoint.includes('/route/v1/') ? endpoint.replace('/route/v1/', '/nearest/v1/') : null
+
+export const NEAREST: string | null = nearestEndpoint(ENDPOINT)
 
 /** The service allows one request a second; tests set this to 0. */
 export const rate = { minGapMs: 1100 }
@@ -31,10 +41,13 @@ export type RoadFailure = 'offline' | 'timeout' | 'service' | 'no-road' | 'cance
 
 export class RoadError extends Error {
   kind: RoadFailure
-  constructor(kind: RoadFailure, detail?: string) {
+  /** The status the service answered with, when it did. A 429 or a 5xx means it is refusing or struggling, so asking more would only make it worse. */
+  status?: number
+  constructor(kind: RoadFailure, detail?: string, status?: number) {
     super(detail ? `${kind}: ${detail}` : kind)
     this.name = 'RoadError'
     this.kind = kind
+    this.status = status
   }
 }
 
@@ -98,10 +111,16 @@ export interface Drive {
 const offline = () => typeof navigator !== 'undefined' && navigator.onLine === false
 
 let lastCall = 0
+/** The last of those waiting their turn to ask: whoever asks next waits for it. */
+let line: Promise<unknown> = Promise.resolve()
 
-/** Leave a gap after the last request, giving up the moment the lookup is cancelled. */
-function spaced(signal?: AbortSignal): Promise<void> {
-  const wait = lastCall + rate.minGapMs - Date.now()
+const cancelled = () => new RoadError('cancelled')
+
+/** Wait out what is left of the gap since the last request, then take the slot. Gives up the moment the lookup is cancelled, without taking it. */
+function takeSlot(signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(cancelled())
+  // Never longer than the gap itself, so a clock that was set back cannot hold everything up until it catches up.
+  const wait = Math.min(rate.minGapMs, lastCall + rate.minGapMs - Date.now())
   if (wait <= 0) {
     lastCall = Date.now()
     return Promise.resolve()
@@ -114,24 +133,48 @@ function spaced(signal?: AbortSignal): Promise<void> {
     }, wait)
     const cancel = () => {
       clearTimeout(timer)
-      reject(new RoadError('cancelled'))
+      reject(cancelled())
     }
     signal?.addEventListener('abort', cancel, { once: true })
   })
 }
 
 /**
- * The fastest street route from one place to another, thinned, from the snapped start to the snapped end,
- * with how long it takes. One request, never faster than the service allows. Always a RoadError when it
- * fails: offline (no connection, or the request never got through), timeout, service (an error
- * or an answer that makes no sense), no-road (nothing to follow there) or cancelled.
+ * Leave a gap after the last request, giving up the moment the lookup is cancelled. Everything that asks goes through
+ * here, one after another in the order it asked, so two lookups started together (such as following roads while street
+ * names are being found) still keep to one request a second. One that gives up leaves the line without costing the rest a gap.
  */
-export async function fetchDrive(from: Pt, to: Pt, opts: LookupOptions = {}): Promise<Drive> {
-  const { signal, timeoutMs = TIMEOUT_MS, radiusM } = opts
-  if (signal?.aborted) throw new RoadError('cancelled')
+export function spaced(signal?: AbortSignal): Promise<void> {
+  const mine = line.then(() => takeSlot(signal))
+  line = mine.catch(() => undefined)
+  if (!signal) return mine
+  return new Promise((resolve, reject) => {
+    const leave = () => reject(cancelled())
+    signal.addEventListener('abort', leave, { once: true })
+    mine.then(resolve, reject).finally(() => signal.removeEventListener('abort', leave))
+    // Cancelled before it even joined the line.
+    if (signal.aborted) leave()
+  })
+}
+
+/** What a request got back: whether it was a success, its status, and its body read as JSON. */
+export interface Reply {
+  ok: boolean
+  status: number
+  json: unknown
+}
+
+/**
+ * One plain request, never faster than the service allows, read as JSON whatever its status (the body of an error says
+ * more about it). Always a RoadError when it fails: offline (no connection, or the request never got through), timeout,
+ * service (an answer that is not JSON) or cancelled.
+ */
+export async function getJson(url: string, opts: Pick<LookupOptions, 'signal' | 'timeoutMs'> = {}): Promise<Reply> {
+  const { signal, timeoutMs = TIMEOUT_MS } = opts
+  if (signal?.aborted) throw cancelled()
   if (offline()) throw new RoadError('offline')
   await spaced(signal)
-  if (signal?.aborted) throw new RoadError('cancelled')
+  if (signal?.aborted) throw cancelled()
 
   // One controller for both ways of stopping early: the caller cancelling and the time running out.
   const stop = new AbortController()
@@ -148,7 +191,7 @@ export async function fetchDrive(from: Pt, to: Pt, opts: LookupOptions = {}): Pr
     let res: Response
     try {
       // No custom headers, so the browser sends a plain request with no preflight.
-      res = await fetch(roadUrl(from, to, radiusM), { signal: stop.signal })
+      res = await fetch(url, { signal: stop.signal })
     } catch {
       throw stopped() ?? new RoadError('offline')
     }
@@ -156,14 +199,25 @@ export async function fetchDrive(from: Pt, to: Pt, opts: LookupOptions = {}): Pr
     try {
       json = await res.json()
     } catch {
-      throw stopped() ?? new RoadError('service', `unreadable answer (${res.status})`)
+      throw stopped() ?? new RoadError('service', `unreadable answer (${res.status})`, res.status)
     }
-    if (!res.ok) throw new RoadError(isNoRoad((json as RawRoute | null)?.code) ? 'no-road' : 'service', `status ${res.status}`)
-    return { points: roadPoints(json), seconds: roadSeconds(json) }
+    return { ok: res.ok, status: res.status, json }
   } finally {
     clearTimeout(timer)
     signal?.removeEventListener('abort', cancel)
   }
+}
+
+/**
+ * The fastest street route from one place to another, thinned, from the snapped start to the snapped end,
+ * with how long it takes. One request, never faster than the service allows. Always a RoadError when it
+ * fails: offline (no connection, or the request never got through), timeout, service (an error
+ * or an answer that makes no sense), no-road (nothing to follow there) or cancelled.
+ */
+export async function fetchDrive(from: Pt, to: Pt, opts: LookupOptions = {}): Promise<Drive> {
+  const { ok, status, json } = await getJson(roadUrl(from, to, opts.radiusM), opts)
+  if (!ok) throw new RoadError(isNoRoad((json as RawRoute | null)?.code) ? 'no-road' : 'service', `status ${status}`, status)
+  return { points: roadPoints(json), seconds: roadSeconds(json) }
 }
 
 /** The street route from one place to another: `fetchDrive` without the time. */

@@ -4,6 +4,7 @@ import {
   arrowShape,
   MIN_TURN_DEG,
   onTheRoute,
+  pointAt,
   routeTurns,
   spokenMetres,
   TURN_NEAR_M,
@@ -75,6 +76,9 @@ function drive(moves: Move[], step = 5, wobble = 0): Pt[] {
 }
 
 const near = (a: number, b: number, within: number) => Math.abs(a - b) <= within
+
+/** A turn made by hand, `half` metres either side of where it is. */
+const turnAt = (at: number, angle: number, heading: number, half = 0): Turn => ({ at, from: at - half, to: at + half, angle, heading })
 
 describe('finding the turns in a route', () => {
   it('finds none in a straight road, however it is drawn', () => {
@@ -244,11 +248,112 @@ describe('finding the turns in a route', () => {
   })
 })
 
+describe('where a turn starts and ends', () => {
+  it('has the same place for the start, the end and the middle of a corner drawn with a point on it', () => {
+    const [t] = routeTurns(through([0, 0], [0, 200], [200, 200]))
+    expect(t.from).toBe(200)
+    expect(t.to).toBe(200)
+    expect(t.at).toBe(200)
+  })
+
+  it('puts the middle of a turn halfway between its start and its end, exactly', () => {
+    const route = drive([{ straight: 150 }, { turn: 90, radius: 15 }, { straight: 150 }, { turn: -90, radius: 25 }, { straight: 100 }])
+    const turns = routeTurns(route)
+    expect(turns).toHaveLength(2)
+    for (const t of turns) expect(t.at).toBe((t.from + t.to) / 2)
+  })
+
+  it('starts and ends a rounded corner where the road swings round', () => {
+    const [t] = routeTurns(drive([{ straight: 190 }, { turn: 90, radius: 10 }, { straight: 190 }], 2))
+    // The 90 degrees bend is 16 m of arc, from 190 m to about 206 m.
+    expect(near(t.from, 190, 2.5)).toBe(true)
+    expect(near(t.to, 205, 2.5)).toBe(true)
+    expect(t.to).toBeGreaterThan(t.from)
+    expect(t.from).toBeLessThanOrEqual(t.at)
+    expect(t.to).toBeGreaterThanOrEqual(t.at)
+  })
+
+  it('spans the whole of a roundabout, which is one turn', () => {
+    const turns = routeTurns(drive([{ straight: 100 }, { turn: -90, radius: 8 }, { turn: 270, radius: 20 }, { turn: -90, radius: 8 }, { straight: 100 }]))
+    expect(turns).toHaveLength(1)
+    // 12.6 m in, 94 m round and 12.6 m out: from 100 m to about 219 m.
+    expect(near(turns[0].from, 100, 2.5)).toBe(true)
+    expect(near(turns[0].to, 219, 2.5)).toBe(true)
+  })
+
+  it('is on the route in steps of 5 m, the way the route is walked', () => {
+    const turns = routeTurns(drive([{ straight: 150 }, { turn: 90, radius: 15 }, { straight: 150 }, { turn: -90, radius: 25 }, { straight: 100 }], 3))
+    for (const t of turns) {
+      expect(t.from % 5).toBe(0)
+      expect(t.to % 5).toBe(0)
+    }
+  })
+
+  it('keeps the turns of a route apart: one ends before the next starts', () => {
+    const turns = routeTurns(through([0, 0], [0, 200], [-20, 200], [-20, 400], [100, 400], [100, 0]))
+    expect(turns.length).toBeGreaterThanOrEqual(4)
+    for (const [i, t] of turns.entries()) {
+      expect(t.from).toBeLessThanOrEqual(t.to)
+      if (i > 0) expect(turns[i - 1].to).toBeLessThan(t.from)
+    }
+  })
+
+  it('covers a U-turn made of two corners close together', () => {
+    const [t] = routeTurns(through([0, 0], [0, 200], [8, 200], [8, 0]))
+    expect(t.from).toBe(200)
+    expect(t.to).toBe(210)
+    expect(t.at).toBe(205)
+  })
+
+  it('still gives the same middle as before', () => {
+    const route = through([0, 0], [0, 100], [150, 100], [150, 300], [20, 300], [20, 420])
+    const cum = cumulativeDistances(route)
+    for (const [i, t] of routeTurns(route).entries()) expect(near(t.at, cum[i + 1], 3)).toBe(true)
+  })
+})
+
+describe('the point a distance along the route', () => {
+  const route = through([0, 0], [0, 100], [100, 100])
+  const cum = cumulativeDistances(route)
+  const length = cum[cum.length - 1]
+  const metres = (a: Pt, b: Pt) => Math.hypot((b.lat - a.lat) * M_PER_DEG, (b.lng - a.lng) * M_PER_DEG * cos(ORIGIN.lat))
+
+  it('is the start at 0 and the end at the length', () => {
+    expect(pointAt(route, cum, 0)).toEqual(route[0])
+    expect(pointAt(route, cum, length)).toEqual(route[2])
+  })
+
+  it('is on the segment it falls on, in proportion', () => {
+    expect(metres(pointAt(route, cum, 50), spot([0, 50]))).toBeLessThan(0.1)
+    expect(metres(pointAt(route, cum, 150), spot([50, 100]))).toBeLessThan(0.1)
+  })
+
+  it('is the corner at the corner', () => {
+    expect(metres(pointAt(route, cum, cum[1]), route[1])).toBeLessThan(0.001)
+  })
+
+  it('stays on the route past either end', () => {
+    expect(pointAt(route, cum, -20)).toEqual(route[0])
+    expect(pointAt(route, cum, length + 20)).toEqual(route[2])
+  })
+
+  it('copes with a point repeated, and with a single point', () => {
+    const twice = [route[0], route[1], route[1], route[2]]
+    expect(metres(pointAt(twice, cumulativeDistances(twice), 100), route[1])).toBeLessThan(0.1)
+    expect(pointAt([route[0]], [0], 10)).toEqual(route[0])
+  })
+
+  it('copes with the route ending in a point repeated', () => {
+    const doubled = [route[0], route[1], route[1]]
+    const doubledCum = cumulativeDistances(doubled)
+    expect(pointAt(doubled, doubledCum, 150)).toEqual(route[1])
+    expect(pointAt(doubled, doubledCum, doubledCum[2])).toEqual(route[1])
+    expect(pointAt([route[0], route[0]], [0, 0], 5)).toEqual(route[0])
+  })
+})
+
 describe('the turn to show', () => {
-  const turns: Turn[] = [
-    { at: 100, angle: 90, heading: 0 },
-    { at: 400, angle: -90, heading: 90 },
-  ]
+  const turns: Turn[] = [turnAt(100, 90, 0), turnAt(400, -90, 90)]
 
   it('is the next turn, once it is near enough to be worth showing', () => {
     expect(upcomingTurn(turns, 0)).toEqual({ turn: turns[0], ahead: 100 })
@@ -265,16 +370,13 @@ describe('the turn to show', () => {
 
   it('leaves out a turn the route comes up to the other way to the way the phone is heading', () => {
     // A street driven out and back has a turn at the same place for each way along it.
-    const both: Turn[] = [
-      { at: 100, angle: 90, heading: 0 },
-      { at: 160, angle: -90, heading: 180 },
-    ]
+    const both: Turn[] = [turnAt(100, 90, 0), turnAt(160, -90, 180)]
     expect(upcomingTurn(both, 90, { heading: 0 })?.turn).toBe(both[0])
     expect(upcomingTurn(both, 90, { heading: 180 })?.turn).toBe(both[1])
   })
 
   it('goes by the heading within a margin, whichever way round the compass', () => {
-    const north: Turn[] = [{ at: 100, angle: 90, heading: 355 }]
+    const north: Turn[] = [turnAt(100, 90, 355)]
     expect(upcomingTurn(north, 50, { heading: 5 })).not.toBeNull()
     expect(upcomingTurn(north, 50, { heading: 355 - TURN_HEADING_TOLERANCE + 1 })).not.toBeNull()
     expect(upcomingTurn(north, 50, { heading: 355 - TURN_HEADING_TOLERANCE - 1 })).toBeNull()
@@ -283,7 +385,7 @@ describe('the turn to show', () => {
   })
 
   it('does not go by the heading when the phone has none', () => {
-    const turn: Turn[] = [{ at: 100, angle: 90, heading: 0 }]
+    const turn: Turn[] = [turnAt(100, 90, 0)]
     expect(upcomingTurn(turn, 50, { heading: null })).not.toBeNull()
     expect(upcomingTurn(turn, 50)).not.toBeNull()
   })
@@ -448,6 +550,38 @@ describe('when to speak', () => {
     expect(turnSpeech({ angle: 150 }, 30, 'near')).toBe('Turn sharp right.')
     expect(turnSpeech({ angle: 180 }, 150, 'far')).toBe('In 150 metres, make a U-turn.')
     expect(turnSpeech({ angle: 180 }, 20, 'near')).toBe('Make a U-turn.')
+  })
+
+  it('says which street it leads into, at the end, when that is known', () => {
+    const left = { angle: -90, street: 'Oak Road' }
+    expect(turnSpeech(left, 190, 'far')).toBe('In 200 metres, turn left onto Oak Road.')
+    expect(turnSpeech(left, 40, 'near')).toBe('Turn left onto Oak Road.')
+    expect(turnSpeech({ angle: 50, street: 'Elm Street' }, 120, 'far')).toBe('In 100 metres, bear right onto Elm Street.')
+    expect(turnSpeech({ angle: 50, street: 'Elm Street' }, 30, 'near')).toBe('Bear right onto Elm Street.')
+    expect(turnSpeech({ angle: 150, street: 'Elm Street' }, 30, 'near')).toBe('Turn sharp right onto Elm Street.')
+    expect(turnSpeech({ angle: 180, street: 'Elm Street' }, 150, 'far')).toBe('In 150 metres, make a U-turn onto Elm Street.')
+  })
+
+  it('says exactly what it said before when there is no street, however that is given', () => {
+    for (const street of [undefined, null, '', '   ']) {
+      expect(turnSpeech({ angle: -90, street }, 190, 'far')).toBe('In 200 metres, turn left.')
+      expect(turnSpeech({ angle: -90, street }, 40, 'near')).toBe('Turn left.')
+      expect(turnSpeech({ angle: -90, street }, 40, 'near')).not.toMatch(/onto|unnamed/)
+    }
+  })
+
+  it('says a street the way it is said, not the way it is written', () => {
+    expect(turnSpeech({ angle: 90, street: 'Oak Rd' }, 40, 'near')).toBe('Turn right onto Oak Road.')
+    expect(turnSpeech({ angle: 90, street: 'Oak Road / Rue du Chene' }, 190, 'far')).toBe('In 200 metres, turn right onto Oak Road.')
+    expect(turnSpeech({ angle: 90, street: '  Elm   Street ' }, 40, 'near')).toBe('Turn right onto Elm Street.')
+  })
+
+  it('says a street whose last word is a name every object has as it is written', () => {
+    // The name comes from the server: its last word must not be looked up as if it were a plain word in a table.
+    expect(turnSpeech({ angle: 90, street: 'Oak Constructor' }, 40, 'near')).toBe('Turn right onto Oak Constructor.')
+    expect(turnSpeech({ angle: 90, street: 'Oak constructor' }, 190, 'far')).toBe('In 200 metres, turn right onto Oak constructor.')
+    expect(turnSpeech({ angle: -90, street: 'Oak __proto__' }, 40, 'near')).toBe('Turn left onto Oak __proto__.')
+    expect(turnSpeech({ angle: -90, street: 'Oak toString' }, 40, 'near')).toBe('Turn left onto Oak toString.')
   })
 })
 
