@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { alertable, offRouteNote, quietNoThrows, quietNote, sideNote, stopsWithoutSide } from './alerts'
+import { alertable, offRouteNote, sideNote, stopsWithoutSide } from './alerts'
 import { useDialogs } from './confirm'
 import { useGps } from './device'
+import { sideChangeSentence } from './driveEdit'
 import { SIDE_COLOR, SIDE_LABEL } from './colors'
 import { alongPath, cumulativeDistances, haversine, occurrences, pathBetween, sideAt, simplify } from './geo'
 import { searchPlaces } from './geocode'
@@ -322,8 +323,8 @@ export function Setup({ route, routeName, onChange, sections: named, onSections,
   const changeSide = (index: number, side: Side) => {
     const next = { ...route, sideChanges: setSectionSide(route, index, side) }
     onChange(next)
-    // Nothing is thrown on transit, so no-throw houses there stay quiet: say so rather than let it be a surprise.
-    const note = side === 'transit' ? quietNote(quietNoThrows(next)) : ''
+    // A no-throw house only alerts for a side that is thrown: on transit none are, and on Left or Right the ones on the other side of the road stay quiet. Say how many change, rather than let it be a surprise.
+    const note = sideChangeSentence(route, next)
     setNotice(note || null)
     return note
   }
@@ -424,7 +425,7 @@ export function Setup({ route, routeName, onChange, sections: named, onSections,
     // Sections have been renumbered, so no section stays picked.
     setFocus(null)
     const length = routeLength(result.route.points.slice(result.from, result.to + 1))
-    const quiet = brush === 'transit' ? quietNote(quietNoThrows(result.route)) : ''
+    const quiet = sideChangeSentence(route, result.route)
     setNotice(`Painted ${formatDistance(length)} for ${SIDE_LABEL[brush].toLowerCase()}.${quiet ? ` ${quiet}` : ''}`)
   }
 
@@ -541,8 +542,10 @@ export function Setup({ route, routeName, onChange, sections: named, onSections,
       else next.side = picked
       return next
     })
-    onChange({ ...route, stops })
-    setNotice(null)
+    const next = { ...route, stops }
+    onChange(next)
+    // The side a house is on decides whether it alerts on a stretch thrown to one side: say if this pick makes it quiet, or wakes it.
+    setNotice(sideChangeSentence(route, next) || null)
   }
 
   const placeStop = (p: Pt) => {
@@ -647,6 +650,9 @@ export function Setup({ route, routeName, onChange, sections: named, onSections,
             follow={follow}
             onFollow={changeFollow}
             finding={roads.finding !== null}
+            canUturn={roads.canUturn}
+            uturn={roads.uturn}
+            onUturn={roads.setUturn}
             onAddress={openAddress}
             selectedPoint={selectedPoint}
             onDeletePoint={removePoint}

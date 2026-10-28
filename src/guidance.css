@@ -1,0 +1,142 @@
+/*
+ * Guidance on a stretch of transit: the straight variant of the turn card ("Continue 3.2 km", then the turn) and the heading badge
+ * (an arrow turned to the heading and the compass point). The turn card's own rules are in index.css; these add to them.
+ */
+
+/* ------------------------------------------------------------------ *
+ * The straight card: the same dark card as a turn, with an arrow straight up whose tile is the transit colour of the line on the map.
+ * ------------------------------------------------------------------ */
+.turn-card.straight .turn-arrow {
+  background: rgba(214, 51, 138, 0.4);
+  background: color-mix(in srgb, var(--transit, #d6338a) 45%, transparent);
+}
+
+/* The turn that comes after the straight: a small arrow bent the way it goes, and the street (or what the turn is). */
+.turn-then {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  max-width: 190px;
+}
+
+.turn-then-arrow {
+  flex: none;
+  width: 20px;
+  height: 20px;
+}
+
+/* The street takes what room is left and is cut short with an ellipsis; its arrow always shows. */
+.turn-then .turn-street {
+  min-width: 0;
+}
+
+/* ------------------------------------------------------------------ *
+ * The heading badge: a small compass puck at the top right, on the same line as the side and the next turn. It has nothing to
+ * tap, so touches go through it to the map. The line of the side and the next turn leaves room for it, whether it is there or
+ * not, so the turn card never moves when the heading comes and goes.
+ * ------------------------------------------------------------------ */
+.heading-badge {
+  position: absolute;
+  z-index: 1000;
+  top: calc(var(--safe-top) + 10px);
+  right: max(12px, env(safe-area-inset-right, 0px));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  width: 44px;
+  height: 44px;
+  border-radius: 14px;
+  color: var(--label);
+  background: var(--material);
+  box-shadow: var(--shadow);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  backdrop-filter: saturate(180%) blur(20px);
+  pointer-events: none;
+}
+
+/* Over the menu's dimming, like the side and the next turn. */
+.screen:has(.round-menu-scrim) .heading-badge {
+  z-index: 1100;
+}
+
+/* The dial: a ring with a red mark at north, and the arrow, each turned on its own. */
+.heading-dial {
+  position: relative;
+  width: 26px;
+  height: 26px;
+}
+
+.heading-ring,
+.heading-needle {
+  position: absolute;
+  inset: 0;
+  transition: transform 0.45s ease-out;
+  will-change: transform;
+}
+
+.heading-dial svg {
+  display: block;
+  width: 26px;
+  height: 26px;
+}
+
+.heading-ring circle:first-child {
+  fill: none;
+  stroke: var(--label-3);
+  stroke-width: 1.5;
+}
+
+.heading-north {
+  fill: var(--red);
+}
+
+.heading-needle polygon {
+  fill: var(--tint);
+}
+
+.heading-abbr {
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -0.01em;
+}
+
+/* The line of the side and the next turn leaves room for the badge: its width and the gap to the card. */
+.map-top .hud-row {
+  padding-right: 54px;
+}
+
+/* A phone on its side: the top line keeps to the left part of the screen and the badge to the right edge, so there is nothing to make room for. */
+@media (orientation: landscape) and (max-height: 600px) {
+  .map-top .hud-row {
+    padding-right: 0;
+  }
+}
+
+/* The narrowest phones: a smaller badge, and a little less room kept for it. */
+@media (max-width: 350px) {
+  .heading-badge {
+    width: 40px;
+    height: 42px;
+    border-radius: 12px;
+  }
+
+  .heading-abbr {
+    font-size: 12px;
+  }
+
+  .map-top .hud-row {
+    padding-right: 50px;
+    /* On a screen this narrow the side and the next turn may not fit side by side, so the turn goes on a line of its own under the side when they don't, and is not cut short. */
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+
+  .turn-then-arrow {
+    width: 18px;
+    height: 18px;
+  }
+}

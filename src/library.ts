@@ -1,3 +1,4 @@
+import { reconcile } from './bundles'
 import { occurrences } from './geo'
 import { normalizeSections, tidyText } from './namedSections'
 import { normalizeRoute } from './routeEdit'
@@ -63,21 +64,22 @@ export function editActiveRoute(lib: Library, route: Route, now = Date.now()): L
 
 /**
  * The route was changed in a way that leaves its stops where they were, such as a side changed while driving: keep it
- * and the round's progress (how far it got, where it was started), forgetting only the stops done that are no longer
- * met on the route. Unlike `editActiveRoute`, the round carries on.
+ * and the round's progress (how far it got, where it was started, which bundles were dropped or missed), forgetting only the
+ * stops done that are no longer met on the route. Unlike `editActiveRoute`, the round carries on.
  */
 export function adjustActiveRoute(lib: Library, route: Route, now = Date.now()): Library {
   const met = new Set(occurrences(route).map((o) => o.key))
   return mapRoute(lib, lib.activeId, (r) => ({
     ...r,
     route,
-    round: { ...r.round, handledStopIds: r.round.handledStopIds.filter((key) => met.has(key)) },
+    round: reconcile({ ...r.round, handledStopIds: r.round.handledStopIds.filter((key) => met.has(key)) }),
     updatedAt: now,
   }))
 }
 
+/** Keep the round's progress. The bundles dropped or missed are kept only while they are among the stops done: see `reconcile`. */
 export function setActiveRound(lib: Library, round: RoundState): Library {
-  return mapRoute(lib, lib.activeId, (r) => ({ ...r, round }))
+  return mapRoute(lib, lib.activeId, (r) => ({ ...r, round: reconcile(round) }))
 }
 
 /** A route with its named sections and street names set; a key is left out when there are none. */
@@ -223,11 +225,14 @@ export function normalizeLibrary(raw: unknown): Library | null {
       id,
       name: cleanName(typeof r.name === 'string' ? r.name : '') || DEFAULT_NAME,
       route: normalizeRoute(r.route),
-      round: {
+      // The bundles dropped or missed are read like the stops done, and kept only while they are among them.
+      round: reconcile({
         handledStopIds: handled,
         ...(typeof furthest === 'number' && Number.isFinite(furthest) && furthest > 0 ? { furthest } : {}),
         ...(typeof startM === 'number' && Number.isFinite(startM) && startM >= 0 ? { startM } : {}),
-      },
+        dropped: r.round?.dropped,
+        missed: r.round?.missed,
+      }),
       updatedAt: typeof r.updatedAt === 'number' && Number.isFinite(r.updatedAt) ? r.updatedAt : 0,
       ...(sections.length ? { sections } : {}),
       ...(streets.length ? { streets } : {}),

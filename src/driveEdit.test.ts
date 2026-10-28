@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { alertable } from './alerts'
-import { EXTENT_MERGE_M, EXTENT_MIN_M, sideChangeNote, sideExtents, type ExtentKey } from './driveEdit'
+import { EXTENT_MERGE_M, EXTENT_MIN_M, sideChangeNote, sideChangeSentence, sideExtents, type ExtentKey } from './driveEdit'
 import { occurrences } from './geo'
 import { paintMetres, sections, setSectionSide } from './routeEdit'
 import type { Pt, Route, Side, Stop } from './types'
@@ -19,7 +19,11 @@ const built = (at: number[], sides: Side[], stops: Stop[] = []): Route => ({
   sideChanges: sides.map((side, idx) => ({ idx, side })),
   stops,
 })
-const house = (id: string, m: number, type: Stop['type'] = 'nothrow', offsetM = 10): Stop => ({ id, type, ...onRoad(m, offsetM), pathIdx: 0 })
+/**
+ * A house `m` metres up the road. By default 10 m west of it, so on the LEFT of a route driven north and on the right of one driven
+ * back south: a no-throw house only alerts for a side that is thrown. Give a positive `offsetM` for one on the east, the right going north.
+ */
+const house = (id: string, m: number, type: Stop['type'] = 'nothrow', offsetM = -10): Stop => ({ id, type, ...onRoad(m, offsetM), pathIdx: 0 })
 const turns = (...at: number[]) => at.map((x) => ({ at: x }))
 
 type Found = ReturnType<typeof sideExtents>
@@ -518,13 +522,88 @@ describe('what a change of side does to the no-throw houses', () => {
     expect(sideChangeNote(before, before)).toBeNull()
     // A stretch with no house beside it.
     expect(sideChangeNote(before, paintMetres(before, 3000, 3500, 'transit')!)).toBeNull()
-    // Another side that is still thrown.
-    expect(sideChangeNote(before, paintMetres(before, 1200, 2800, 'right')!)).toBeNull()
     // Houses that were quiet already.
     const quiet = paintMetres(before, 1200, 2800, 'transit')!
     expect(sideChangeNote(quiet, paintMetres(quiet, 1300, 2700, 'transit')!)).toBeNull()
-    // Left to right does not wake the houses either.
+    // Left to both sides: the houses are on the left, so they alerted before and still do.
     expect(sideChangeNote(before, paintMetres(before, 1200, 2800, 'both')!)).toBeNull()
+    // The side they are on is thrown still, with the same side painted over it.
+    expect(sideChangeNote(before, paintMetres(before, 1200, 2800, 'left')!)).toBeNull()
+  })
+
+  it('says how many will stay quiet once the stretch is thrown to the other side', () => {
+    // The houses are on the left of the road, so throwing the right means nothing to them.
+    const before = two()
+    expect(sideChangeNote(before, paintMetres(before, 1200, 2800, 'right')!)).toBe('2 no-throw houses will now stay quiet')
+    expect(sideChangeNote(before, paintMetres(before, 1400, 1600, 'right')!)).toBe('1 no-throw house will now stay quiet')
+    // Changing the whole section does the same as painting all of it.
+    expect(sideChangeNote(before, { ...before, sideChanges: setSectionSide(before, 1, 'right') })).toBe('2 no-throw houses will now stay quiet')
+  })
+
+  it('says how many will alert again once the stretch is thrown to their side, or to both', () => {
+    const before = two()
+    const right = paintMetres(before, 1200, 2800, 'right')!
+    expect(sideChangeNote(right, paintMetres(right, 1200, 2800, 'left')!)).toBe('2 no-throw houses will now alert')
+    expect(sideChangeNote(right, paintMetres(right, 1200, 2800, 'both')!)).toBe('2 no-throw houses will now alert')
+    expect(sideChangeNote(right, paintMetres(right, 2200, 2800, 'both')!)).toBe('1 no-throw house will now alert')
+    // And undoing is the same as going back.
+    expect(sideChangeNote(right, before)).toBe('2 no-throw houses will now alert')
+  })
+
+  it('says both when a change quiets the houses on one side and wakes the ones on the other', () => {
+    // Along a stretch on the left: two houses on its left (they alert), one on its right (it is quiet).
+    const mixed = withHouses(house('a', 1500), house('b', 2500), house('r', 2000, 'nothrow', 10))
+    expect(alertable(mixed, occurrences(mixed)).map((o) => o.key)).toEqual(['a', 'b'])
+    // Thrown to the right instead, the left houses go quiet and the right one alerts: a net count of one, but three houses change.
+    const flipped = paintMetres(mixed, 1200, 2800, 'right')!
+    expect(alertable(flipped, occurrences(flipped)).map((o) => o.key)).toEqual(['r'])
+    expect(sideChangeNote(mixed, flipped)).toBe('2 no-throw houses will now stay quiet; 1 no-throw house will now alert')
+    expect(sideChangeNote(flipped, mixed)).toBe('1 no-throw house will now stay quiet; 2 no-throw houses will now alert')
+    // As many woken as quieted is still not nothing.
+    const swap = withHouses(house('a', 1500), house('r', 2500, 'nothrow', 10))
+    expect(sideChangeNote(swap, paintMetres(swap, 1200, 2800, 'right')!)).toBe('1 no-throw house will now stay quiet; 1 no-throw house will now alert')
+  })
+
+  it('does not count a house that is quiet before and after, though for another reason', () => {
+    // Along a stretch of transit, a house on the left and one on the right are both quiet. Thrown to the right, only the one on its right wakes.
+    const road = withHouses(house('l', 1500), house('r', 2500, 'nothrow', 10))
+    const transit = paintMetres(road, 1200, 2800, 'transit')!
+    expect(sideChangeNote(transit, paintMetres(transit, 1200, 2800, 'right')!)).toBe('1 no-throw house will now alert')
+    // And from the left side thrown to transit: the one on the left goes quiet, and the one on the right was quiet already, so is not counted.
+    expect(sideChangeNote(road, transit)).toBe('1 no-throw house will now stay quiet')
+  })
+
+  it('judges a house by the side it was picked on, not where it sits', () => {
+    // On the left of the road, but picked as on the right: so it is quiet on a stretch thrown to the left, and alerts on one thrown to the right.
+    const picked = withHouses({ ...house('a', 1500), side: 'right' })
+    expect(alertable(picked, occurrences(picked))).toEqual([])
+    expect(sideChangeNote(picked, paintMetres(picked, 1200, 2800, 'right')!)).toBe('1 no-throw house will now alert')
+    // And picking a side is a change of the route's stops, which the note tells of too.
+    const sat = withHouses(house('a', 1500))
+    expect(sideChangeNote(sat, picked)).toBe('1 no-throw house will now stay quiet')
+    expect(sideChangeNote(picked, sat)).toBe('1 no-throw house will now alert')
+  })
+
+  it('writes the note as a sentence for a notice, with the reason when houses go quiet, and nothing when nothing changes', () => {
+    const before = two()
+    const reason = 'A no-throw house only alerts on a side you throw.'
+    expect(sideChangeSentence(before, paintMetres(before, 1200, 2800, 'right')!)).toBe(`2 no-throw houses will now stay quiet. ${reason}`)
+    expect(sideChangeSentence(before, paintMetres(before, 1400, 1600, 'transit')!)).toBe(`1 no-throw house will now stay quiet. ${reason}`)
+    // Houses waking need no reason.
+    const quiet = paintMetres(before, 1200, 2800, 'transit')!
+    expect(sideChangeSentence(quiet, before)).toBe('2 no-throw houses will now alert.')
+    // Some of each: the reason is there for the ones that go quiet.
+    const mixed = withHouses(house('a', 1500), house('r', 2500, 'nothrow', 10))
+    expect(sideChangeSentence(mixed, paintMetres(mixed, 1200, 2800, 'right')!)).toBe(`1 no-throw house will now stay quiet; 1 no-throw house will now alert. ${reason}`)
+    expect(sideChangeSentence(before, paintMetres(before, 3000, 3500, 'transit')!)).toBe('')
+    expect(sideChangeSentence(before, before)).toBe('')
+  })
+
+  it('gives the reason for a house that goes quiet on some passes only', () => {
+    const there: Route = { points: [0, 1000, 0].map((m) => onRoad(m)), sideChanges: [{ idx: 0, side: 'left' }, { idx: 1, side: 'right' }], stops: [house('a', 500)] }
+    expect(sideChangeSentence(there, paintMetres(there, 100, 900, 'transit')!)).toBe('1 no-throw house will now stay quiet on one pass. A no-throw house only alerts on a side you throw.')
+    const quiet = paintMetres(there, 100, 900, 'transit')!
+    expect(sideChangeSentence(quiet, there)).toBe('1 no-throw house will now alert on one more pass.')
   })
 
   it('does not count a bundle drop or a special request, which alert on transit as anywhere', () => {
@@ -538,8 +617,8 @@ describe('what a change of side does to the no-throw houses', () => {
   })
 
   it('does not call a house quiet while it is passed on a stretch that is thrown as well', () => {
-    // Up the road on the left and back down it, the house is passed twice.
-    const there = built([0, 1000, 0], ['left', 'left'], [house('a', 500)])
+    // Up the road throwing left and back down it throwing right: the house is on the west, so on the left going out and on the right coming back, and alerts both times.
+    const there = built([0, 1000, 0], ['left', 'right'], [house('a', 500)])
     const outOnly = paintMetres(there, 100, 900, 'transit')!
     // Quiet on the way out, not quiet: it alerts on the way back, and the driver is told that is all that changed.
     expect(sideChangeNote(there, outOnly)).toBe('1 no-throw house will now stay quiet on one pass')
@@ -744,10 +823,13 @@ describe('a route with a point that is not a place', () => {
 })
 
 describe('a house passed more than once', () => {
-  /** Up the road 1 km and back down the same line, all on the left, with a no-throw house 10 m off it halfway. */
-  const back = (): Route => ({ points: [0, 1000, 0].map((m) => onRoad(m)), sideChanges: [{ idx: 0, side: 'left' }, { idx: 1, side: 'left' }], stops: [house('a', 500)] })
-  /** The same, and up it a third time. */
-  const third = (): Route => ({ points: [0, 1000, 0, 1000].map((m) => onRoad(m)), sideChanges: [0, 1, 2].map((idx) => ({ idx, side: 'left' as const })), stops: [house('a', 500)] })
+  /**
+   * Up the road 1 km and back down the same line, with a no-throw house 10 m west of it halfway. It is on the left going up and on the
+   * right coming down, so the way out throws left and the way back right, and the house alerts on both passes.
+   */
+  const back = (): Route => ({ points: [0, 1000, 0].map((m) => onRoad(m)), sideChanges: [{ idx: 0, side: 'left' }, { idx: 1, side: 'right' }], stops: [house('a', 500)] })
+  /** The same, and up it a third time, throwing left again. */
+  const third = (): Route => ({ points: [0, 1000, 0, 1000].map((m) => onRoad(m)), sideChanges: [{ idx: 0, side: 'left' }, { idx: 1, side: 'right' }, { idx: 2, side: 'left' }], stops: [house('a', 500)] })
   const alerting = (r: Route) => alertable(r, occurrences(r)).map((o) => o.key)
 
   it('is told to the driver when it stops alerting on one pass, though it alerts on another', () => {
@@ -778,19 +860,53 @@ describe('a house passed more than once', () => {
   })
 
   it('says nothing when the change leaves the passes of every house as they were', () => {
-    // Left to right on the way out, a pass that still alerts.
+    // Left to both sides on the way out: the house is on the left going out, so that pass still alerts.
     const before = back()
-    expect(sideChangeNote(before, paintMetres(before, 100, 900, 'right')!)).toBeNull()
+    expect(sideChangeNote(before, paintMetres(before, 100, 900, 'both')!)).toBeNull()
+    // Right to both sides on the way back, the same.
+    expect(sideChangeNote(before, paintMetres(before, 1100, 1900, 'both')!)).toBeNull()
     // Transit on a part of the road that has no house.
     expect(sideChangeNote(before, paintMetres(before, 100, 300, 'transit')!)).toBeNull()
     expect(sideChangeNote(before, paintMetres(before, 700, 800, 'transit')!)).toBeNull()
   })
 
+  it('tells of a pass that goes quiet when the way out is thrown to the other side', () => {
+    // The house is on the left going out, so throwing right there means nothing to it; it alerts on the way back still.
+    const before = back()
+    const after = paintMetres(before, 100, 900, 'right')!
+    expect(alerting(after)).toEqual(['a#2'])
+    expect(sideChangeNote(before, after)).toBe('1 no-throw house will now stay quiet on one pass')
+    expect(sideChangeNote(after, before)).toBe('1 no-throw house will now alert on one more pass')
+  })
+
+  it('tells of a house that goes quiet on both passes when both are thrown to the other side', () => {
+    // Out throwing right and back throwing left, where the house is on the left going out and on the right coming back.
+    const before = back()
+    const out = paintMetres(before, 100, 900, 'right')!
+    const after = paintMetres(out, 1100, 1900, 'left')!
+    expect(alerting(after)).toEqual([])
+    expect(sideChangeNote(before, after)).toBe('1 no-throw house will now stay quiet')
+    expect(sideChangeNote(after, before)).toBe('1 no-throw house will now alert')
+  })
+
+  it('counts a pass as the house sits on that pass: left both ways quiets it going out or coming back, never both', () => {
+    // Left thrown both ways: going out the house is on the left and alerts; coming back it is on the right and is quiet.
+    const left: Route = { ...back(), sideChanges: [{ idx: 0, side: 'left' }, { idx: 1, side: 'left' }] }
+    expect(alerting(left)).toEqual(['a'])
+    // Throwing right both ways is the other pass.
+    const right: Route = { ...back(), sideChanges: [{ idx: 0, side: 'right' }, { idx: 1, side: 'right' }] }
+    expect(alerting(right)).toEqual(['a#2'])
+    // Changing the way back to the left, from right, takes its alert away: the house is on its right.
+    expect(sideChangeNote(back(), left)).toBe('1 no-throw house will now stay quiet on one pass')
+    // A house that alerts once before and once after, only on the other pass, neither goes quiet nor alerts again: the note counts houses and their passes, so it has nothing to say.
+    expect(sideChangeNote(left, right)).toBeNull()
+  })
+
   it('counts the houses that lose a pass, and the ones that lose all of them, apart', () => {
-    // The same road up and down, then 500 m east along a road of its own, with a house beside each.
+    // The same road up and down, then 500 m east along a road of its own (a house 10 m north of it is on its left), with a house beside each.
     const road: Route = {
       points: [onRoad(0), onRoad(1000), onRoad(0), onRoad(0, 500)],
-      sideChanges: [0, 1, 2].map((idx) => ({ idx, side: 'left' as const })),
+      sideChanges: [{ idx: 0, side: 'left' }, { idx: 1, side: 'right' }, { idx: 2, side: 'left' }],
       stops: [house('a', 500), { id: 'b', type: 'nothrow', ...onRoad(10, 300), pathIdx: 2 }],
     }
     expect(alerting(road)).toEqual(['a', 'a#2', 'b'])

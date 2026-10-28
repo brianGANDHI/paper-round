@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { offRouteNote, onlyInTransit, stopOffRoute, stopRoadSides, type RoadSide } from './alerts'
+import { offRouteNote, onlyInTransit, quietHouseIds, quietNote, quietText, stopOffRoute, stopQuietReasons, stopRoadSides, type RoadSide } from './alerts'
 import { STOP_COLOR } from './colors'
 import { occurrences } from './geo'
 import { lookupAddress, shortPlaceName, type Match } from './geocode'
@@ -121,6 +121,28 @@ export function StopsTab(p: Props) {
   const isRequest = p.type === 'request'
   // A stop on a road driven twice is passed on more than one side, so the list shows each.
   const occs = useMemo(() => occurrences(p.route), [p.route])
+  // What the list says of each stop, worked out once per route and not on every keystroke in the boxes above it: the side
+  // on each pass, whether a no-throw house alerts on each, and whether it is off the route.
+  const listed = useMemo(
+    () =>
+      new Map(
+        p.route.stops.map((s) => [
+          s.id,
+          {
+            sides: stopRoadSides(p.route, occs, s.id),
+            reasons: stopQuietReasons(p.route, occs, s.id),
+            // Nothing is thrown where it is only transit, so a no-throw house there never alerts and needs no side.
+            transitOnly: s.type === 'nothrow' && onlyInTransit(p.route, occs, s.id),
+            // A stop off the route has no side of the route's to be on: its alert comes up when you are near it.
+            off: stopOffRoute(occs, s.id),
+            offM: occs.find((o) => o.stop.id === s.id)?.off ?? 0,
+          },
+        ]),
+      ),
+    [p.route, occs],
+  )
+  // The no-throw houses that never alert, as they are in transit or on the side that isn't thrown.
+  const quietCount = useMemo(() => quietHouseIds(p.route, occs).size, [p.route, occs])
   const noun = NOUN[p.type]
 
   // Leaving the tab mid-lookup must not keep calling the address service.
@@ -393,13 +415,11 @@ export function StopsTab(p: Props) {
           <div className="section-label">On your route</div>
           <ul className="group">
             {p.route.stops.map((s) => {
-              const sides = stopRoadSides(p.route, occs, s.id)
-              // Nothing is thrown where it is only transit, so a no-throw house there never alerts and needs no side.
-              const quiet = s.type === 'nothrow' && onlyInTransit(p.route, occs, s.id)
+              const { sides, reasons, transitOnly, off, offM } = listed.get(s.id)!
               const unknown = sides.every((x) => x === null)
-              // A stop off the route has no side of the route's to be on: its alert comes up when you are near it.
-              const off = stopOffRoute(occs, s.id)
-              const offM = occs.find((o) => o.stop.id === s.id)?.off ?? 0
+              // Why a no-throw house won't alert, on every pass or on some: in transit, or on the side that isn't thrown.
+              const why = quietText(reasons)
+              const quietAll = reasons.length > 0 && reasons.every((r) => r !== null)
               return (
                 <li className="row stop-row" key={s.id}>
                   <span className="dot" style={{ background: STOP_COLOR[s.type] }} />
@@ -410,13 +430,13 @@ export function StopsTab(p: Props) {
                     <div className="sub">
                       {/* A bundle drop with no amount, or a request with no note, says so, since its alert can't say what to do. */}
                       <span className={stopIncomplete(s) ? 'warn-text' : undefined}>{stopDetail(s)}</span> ·{' '}
-                      {off ? `off the route (${formatDistance(offM)})` : quiet ? 'in transit, so no alert' : sidesText(sides)}
+                      {off ? `off the route (${formatDistance(offM)})` : quietAll ? why : why ? `${sidesText(sides)}, ${why}` : sidesText(sides)}
                     </div>
                   </button>
                   {!off && (
                     <button
                       className="chip-btn"
-                      data-warn={(unknown && !quiet) || undefined}
+                      data-warn={(unknown && !transitOnly) || undefined}
                       aria-label={`Side of the road: ${sidesText(sides)}. Tap to change.`}
                       onClick={() => p.onPickSide(s.id)}
                     >
@@ -433,6 +453,7 @@ export function StopsTab(p: Props) {
               )
             })}
           </ul>
+          {quietCount > 0 && <p className="footnote">{quietNote(quietCount)}</p>}
         </>
       )}
 

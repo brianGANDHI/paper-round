@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { activeRoute, addRoute, createLibrary } from './library'
+import { activeRoute, addRoute, createLibrary, setActiveRound } from './library'
 import {
   canSave,
   loadAlertDistance,
@@ -64,6 +64,15 @@ describe('opening the app', () => {
     expect(r.round.handledStopIds).toEqual(['z'])
   })
 
+  it('carries over the stops done by an earlier version and nothing about bundles, which it never kept', () => {
+    store.data.set('paperround.route.v1', JSON.stringify(oldRoute))
+    store.data.set('paperround.round.v1', JSON.stringify({ handledStopIds: ['z'], dropped: ['z'], missed: ['q'] }))
+    const round = activeRoute(loadLibrary()).round
+    expect(round).toEqual({ handledStopIds: ['z'] })
+    expect('dropped' in round).toBe(false)
+    expect('missed' in round).toBe(false)
+  })
+
   it('keeps the old saved copy in place after carrying it over', () => {
     store.data.set('paperround.route.v1', JSON.stringify(oldRoute))
     loadLibrary()
@@ -84,6 +93,30 @@ describe('opening the app', () => {
     const lib = addRoute(createLibrary(), 'Saturday', oldRoute)
     expect(saveLibrary(lib)).toBe(true)
     expect(loadLibrary()).toEqual(lib)
+  })
+
+  it('brings back the bundles dropped and missed, with the rest of the round', () => {
+    const round = { handledStopIds: ['z', 'z#2', 'y'], dropped: ['z'], missed: ['z#2'], furthest: 220, startM: 40 }
+    const lib = setActiveRound(addRoute(createLibrary(), 'Saturday', oldRoute), round)
+    expect(saveLibrary(lib)).toBe(true)
+    expect(activeRoute(loadLibrary()).round).toEqual(round)
+    expect(loadLibrary()).toEqual(lib)
+  })
+
+  it('opens a library saved before bundles were confirmed just as it was', () => {
+    const lib = setActiveRound(addRoute(createLibrary(), 'Saturday', oldRoute), { handledStopIds: ['z'], furthest: 220 })
+    store.data.set('paperround.library.v2', JSON.stringify(lib))
+    const round = activeRoute(loadLibrary()).round
+    expect(round).toEqual({ handledStopIds: ['z'], furthest: 220 })
+    expect('dropped' in round).toBe(false)
+    expect('missed' in round).toBe(false)
+  })
+
+  it('repairs a saved round whose bundles are not among the stops done', () => {
+    const lib = addRoute(createLibrary(), 'Saturday', oldRoute)
+    const damaged = { ...lib, routes: lib.routes.map((r) => ({ ...r, round: { handledStopIds: ['z'], dropped: ['z', 'gone', 5], missed: ['z', 'also gone'] } })) }
+    store.data.set('paperround.library.v2', JSON.stringify(damaged))
+    expect(activeRoute(loadLibrary()).round).toEqual({ handledStopIds: ['z'], dropped: ['z'] })
   })
 
   it('falls back to the old route if the new data is damaged', () => {

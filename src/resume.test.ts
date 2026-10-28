@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { markDropped, otherPasses } from './bundles'
 import { approachingOccurrences, handledUpTo, occurrences, type Occurrence } from './geo'
 import { advance, makeTrack, startProgress } from './progress'
 import { continueFrom, handledForResume, RESUME_SLACK_M, skippedBy, slackFor } from './resume'
@@ -191,6 +192,67 @@ describe('where a round that is carried on picks up', () => {
     const copy = structuredClone(occs)
     continueFrom(round({ startM: 3 }), occs, new Set(['a']))
     expect(occs).toEqual(copy)
+  })
+})
+
+describe('where a round that is carried on picks up, when bundle drops were marked dropped', () => {
+  const bundleOcc = (key: string, at: number): Occurrence => ({
+    key,
+    stop: { id: key.split('#')[0], type: 'bundle', pathIdx: 0, lat: 0, lng: 0, qty: 10 },
+    idx: 0,
+    at,
+    off: 0,
+  })
+  const house = (key: string, at: number): Occurrence => occ(key, at)
+  // A route of 5 km. The driver has got to about 700 m. The garage is 4 km further on, and the shop is passed at 1000 m and again at 4000 m.
+  const occs = [house('h1', 300), bundleOcc('shop', 1000), bundleOcc('shop#2', 4000), bundleOcc('garage', 4500)]
+  const doneNow = (r: RoundState) => new Set(r.handledStopIds)
+  const at700: RoundState = { handledStopIds: ['h1'], furthest: 700 }
+
+  it('does not jump to a bundle marked dropped from the list 4 km ahead', () => {
+    const marked = markDropped(at700, 'garage')
+    expect(continueFrom(marked, occs, doneNow(marked))).toBe(700)
+  })
+
+  it('does not jump to the other pass of a stop dropped on one pass, which the drop marks done', () => {
+    const marked = markDropped({ handledStopIds: ['h1'], furthest: 1100 }, 'shop', otherPasses(occs, 'shop'))
+    expect(marked.handledStopIds).toContain('shop#2')
+    expect(continueFrom(marked, occs, doneNow(marked))).toBe(1100)
+    // The same from the second pass: the first, behind, is done too and says nothing more.
+    const second = markDropped({ handledStopIds: ['h1'], furthest: 700 }, 'shop#2', otherPasses(occs, 'shop#2'))
+    expect(continueFrom(second, occs, doneNow(second))).toBe(700)
+  })
+
+  it('goes by how far the round got for a bundle dropped on the spot, which is kept every hundred metres', () => {
+    const marked = markDropped({ handledStopIds: ['h1'], furthest: 4500 }, 'garage')
+    expect(continueFrom(marked, occs, doneNow(marked))).toBe(4500)
+  })
+
+  it('still goes by a bundle that was driven past without being dropped, and by a house', () => {
+    expect(continueFrom({ handledStopIds: ['garage'], missed: ['garage'], furthest: 700 }, occs, new Set(['garage']))).toBe(4500)
+    expect(continueFrom({ handledStopIds: ['h1', 'garage'], dropped: ['shop'], furthest: 0 }, occs, new Set(['h1', 'garage']))).toBe(4500)
+  })
+
+  it('still goes by the last stop done when the bundles dropped are further back', () => {
+    const r: RoundState = { handledStopIds: ['shop', 'h1'], dropped: ['shop'] }
+    expect(continueFrom(r, occs, doneNow(r))).toBe(300)
+  })
+
+  it('ignores a drop of another stop, and a stop with no drop', () => {
+    const r: RoundState = { handledStopIds: ['h1', 'shop#2'], dropped: ['garage'] }
+    expect(continueFrom(r, occs, doneNow(r))).toBe(4000)
+  })
+
+  it('keeps the tracker where the driver is: the turns and the faded road after the drop are not 4 km out', () => {
+    const points = [spot(0, 0), spot(0, 5000)]
+    const track = makeTrack(points)
+    const marked = markDropped(at700, 'garage')
+    const start = startProgress(track, continueFrom(marked, occs, doneNow(marked)))
+    expect(start.furthest).toBe(700)
+    let progress = start
+    for (const [i, y] of [800, 830].entries()) progress = advance(track, progress, { ...spot(0, y), accuracy: 8, time: 5000 * (i + 1), speed: 6 }, null)!
+    expect(progress.along).toBeGreaterThan(820)
+    expect(progress.furthest).toBeLessThan(900)
   })
 })
 

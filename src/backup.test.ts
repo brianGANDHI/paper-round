@@ -500,6 +500,50 @@ describe('backing up saved routes', () => {
     expect(makeBackup([toBackupRoute(plain)], when)).toBe(makeBackup([{ name: 'Monday', route, sections: [], streets: [] }], when))
   })
 
+  describe('with bundles dropped and missed', () => {
+    const progress = () => {
+      let lib = addRoute(createLibrary(), 'Monday', route)
+      lib = setActiveStreets(setActiveSections(lib, sections), streets)
+      return setActiveRound(lib, { handledStopIds: ['s1', 's2'], dropped: ['s2'], missed: ['s1'], furthest: 300, startM: 120 })
+    }
+
+    it('leaves them out, as they are progress like the stops done', () => {
+      const r = activeRoute(progress())
+      expect(r.round).toEqual({ handledStopIds: ['s1', 's2'], dropped: ['s2'], missed: ['s1'], furthest: 300, startM: 120 })
+      expect(Object.keys(toBackupRoute(r)).sort()).toEqual(['name', 'route', 'sections', 'streets'])
+      const text = makeBackup([toBackupRoute(r)])
+      for (const word of ['dropped', 'missed', 'handledStopIds', 'furthest', 'startM']) expect(text, word).not.toContain(word)
+    })
+
+    it('restores a route with a fresh round, with neither list', () => {
+      const result = parseBackup(makeBackup(progress().routes.map(toBackupRoute)))
+      expect(result.ok).toBe(true)
+      if (!result.ok) return
+      const restored = addImported(createLibrary(), result.routes)
+      expect(restored.routes.find((x) => x.name === 'Monday')!.round).toEqual({ handledStopIds: [] })
+    })
+
+    it('starts the round over when it replaces a route that had some', () => {
+      const result = parseBackup(makeBackup(progress().routes.map(toBackupRoute)))
+      expect(result.ok).toBe(true)
+      if (!result.ok) return
+      const restored = addImported(progress(), result.routes, 5, 'replace')
+      const r = restored.routes.find((x) => x.name === 'Monday')!
+      expect(r.round).toEqual({ handledStopIds: [] })
+      expect('dropped' in r.round).toBe(false)
+      expect('missed' in r.round).toBe(false)
+    })
+
+    it('ignores a round, or lists of bundles, written into a backup by hand', () => {
+      const text = makeBackup([{ name: 'Monday', route }])
+      const doctored = text.replace('"name":"Monday"', '"name":"Monday","round":{"handledStopIds":["s1"],"dropped":["s1"],"missed":["s2"]},"dropped":["s1"],"missed":["s2"]')
+      expect(doctored).toContain('"dropped":["s1"]')
+      const back = ok(doctored)
+      expect(Object.keys(back[0]).sort()).toEqual(['name', 'route'])
+      expect(addImported(createLibrary(), back).routes[0].round).toEqual({ handledStopIds: [] })
+    })
+  })
+
   it('carries the sections and street names all the way: saved, backed up, read back and restored', () => {
     const text = makeBackup(saved().routes.map(toBackupRoute))
     const result = parseBackup(text)

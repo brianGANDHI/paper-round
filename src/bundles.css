@@ -1,0 +1,469 @@
+/*
+ * Bundle drops on the round screen: the big Dropped button on a bundle's alert, and the sheet that lists every bundle drop. The
+ * alert's own rules are in index.css; these add to them for a bundle drop that has the button.
+ */
+
+/* ------------------------------------------------------------------ *
+ * The Dropped button. An alert lets touches through to the map; this button is the one part of it that takes a tap, so it is big, white
+ * on the blue of a bundle drop, and the width of the banner but for the papers beside it. The stop's details are across the top, in
+ * bigger type than an alert without a button has, with room for a long name and an address of two lines.
+ * ------------------------------------------------------------------ */
+.stop-alert.ask {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  padding: 8px 12px 10px;
+}
+
+.stop-alert-body {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.stop-alert.ask .stop-alert-side {
+  width: 58px;
+  height: 54px;
+}
+
+.stop-alert.ask .stop-alert-dist {
+  font-size: 19px;
+}
+
+.stop-alert.ask .stop-alert-name,
+.stop-alert.ask .stop-alert-name.one {
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  font-size: 19px;
+  font-weight: 800;
+  line-height: 1.15;
+  letter-spacing: -0.01em;
+}
+
+/* The address can take two lines as well, rather than being cut off after the first. */
+.stop-alert.ask .stop-alert-address {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  font-size: 14px;
+  line-height: 1.25;
+}
+
+/*
+ * How many papers: beside the button, not beside the name, so the name and the address have the whole width of the banner but for the
+ * house number's plate. It is the height of the button and big, since the count is what the driver is checking before the tap, but
+ * a pale panel like the side's rather than a white one, so it isn't taken for a second button.
+ */
+.stop-alert-act {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.stop-alert.ask .stop-alert-qty {
+  display: grid;
+  place-items: center;
+  padding: 0 14px;
+  border-radius: 14px;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.2);
+  font-size: 19px;
+  letter-spacing: -0.01em;
+}
+
+.stop-alert-drop {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+  min-height: 58px;
+  padding: 0 16px;
+  border-radius: 14px;
+  color: #0a63d6;
+  background: #fff;
+  font-size: 26px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  box-shadow: 0 3px 0 rgba(0, 0, 0, 0.22), 0 6px 14px rgba(0, 0, 0, 0.18);
+}
+
+.stop-alert-drop:active {
+  transform: translateY(2px);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.22);
+}
+
+/* On the narrowest phones the type is a size down, and the button stays at least 56 px tall. */
+@media (max-width: 350px) {
+  .stop-alert.ask {
+    padding: 8px 10px 10px;
+  }
+
+  .stop-alert.ask .stop-alert-side {
+    width: 52px;
+    height: 50px;
+  }
+
+  .stop-alert.ask .stop-alert-dist {
+    font-size: 17px;
+  }
+
+  .stop-alert.ask .stop-alert-name,
+  .stop-alert.ask .stop-alert-name.one {
+    font-size: 16px;
+  }
+
+  .stop-alert.ask .stop-alert-address {
+    font-size: 12px;
+  }
+
+  .stop-alert.ask .stop-alert-qty {
+    padding: 0 10px;
+    font-size: 16px;
+  }
+
+  .stop-alert-drop {
+    min-height: 56px;
+    font-size: 23px;
+  }
+}
+
+/* A phone on its side has little height: the banner is a little tighter, the button still at least 56 px. */
+@media (orientation: landscape) and (max-height: 600px) {
+  .stop-alert.ask {
+    gap: 6px;
+    padding: 6px 10px 8px;
+  }
+
+  .stop-alert.ask .stop-alert-name,
+  .stop-alert.ask .stop-alert-name.one {
+    font-size: 17px;
+  }
+
+  .stop-alert-drop {
+    min-height: 56px;
+    font-size: 23px;
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * The list of bundle drops: a sheet that comes up from the bottom of the round screen, over a dimmed map, like the menu. The side,
+ * the next turn and any alert stay above the dimming, so the sheet leaves room for them at the top and an alert's Dropped button
+ * still works while it is open.
+ * ------------------------------------------------------------------ */
+.bundles-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 1050;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.35);
+  animation: fade 0.15s ease-out;
+}
+
+.screen:has(.bundles-scrim) .map-top,
+.screen:has(.bundles-scrim) .heading-badge {
+  z-index: 1100;
+}
+
+.bundles-sheet {
+  --bundle-green: #1d8a3a;
+  --bundle-amber: var(--warn-text);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(100%, 460px);
+  max-height: calc(100% - 150px);
+  padding: 6px 12px 12px;
+  border-radius: 18px 18px 0 0;
+  background: var(--material);
+  box-shadow: 0 -6px 30px rgba(0, 0, 0, 0.18);
+  -webkit-backdrop-filter: saturate(180%) blur(30px);
+  backdrop-filter: saturate(180%) blur(30px);
+  animation: rise 0.22s ease-out;
+}
+
+/* Opened while a Dropped alert is up, the sheet stays below it, so its header and Done are not under the Dropped button. That is anywhere but a phone on its side, where the alert is at the left and the sheet at the right. */
+@media not all and (orientation: landscape) and (max-height: 600px) {
+  .screen:has(.stop-alert.ask) .bundles-sheet {
+    max-height: calc(100% - 330px);
+  }
+}
+
+/* On a short portrait screen that leaves little room for the list, so the three figures give way to it (the header still says how many are dropped). */
+@media (orientation: portrait) and (max-height: 720px) {
+  .screen:has(.stop-alert.ask) .bundles-summary {
+    display: none;
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  .bundles-sheet {
+    --bundle-green: #30d158;
+  }
+}
+
+.bundles-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 44px;
+}
+
+.bundles-head h2 {
+  padding-left: 4px;
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.bundles-count {
+  padding-left: 4px;
+  font-size: 13px;
+  color: var(--label-2);
+}
+
+/* What has been dropped, what is left to drop, and what was missed: three figures across the top. */
+.bundles-summary {
+  flex: none;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.bundles-stat {
+  padding: 8px 6px 7px;
+  border-radius: 12px;
+  text-align: center;
+  background: var(--card);
+}
+
+.bundles-stat b {
+  display: block;
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+
+.bundles-stat span {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.15;
+  color: var(--label-2);
+}
+
+/* Some missed: the figure is amber on a wash of it, so it is not missed at a glance. */
+.bundles-stat.warn {
+  background: rgba(255, 149, 0, 0.18);
+  background: color-mix(in srgb, var(--orange) 20%, var(--card));
+}
+
+.bundles-stat.warn b {
+  color: var(--bundle-amber);
+}
+
+.bundles-scroll {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.bundles-scroll > * {
+  flex: none;
+}
+
+.bundles-empty {
+  padding: 18px 8px 10px;
+  text-align: center;
+  font-size: 15px;
+  color: var(--label-2);
+}
+
+/* ------------------------------------------------------------------ *
+ * A bundle in the list: a strip down its left edge in the colour of what became of it, the venue and papers, and the button that fits.
+ * ------------------------------------------------------------------ */
+.bundle-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 64px;
+  padding: 10px 10px 10px 18px;
+  --bundle-accent: var(--label-3);
+  --bundle-accent-text: var(--label-2);
+}
+
+.bundle-row + .bundle-row {
+  border-top: 0.5px solid var(--sep);
+}
+
+.bundle-row::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 5px;
+  border-radius: 0 3px 3px 0;
+  background: var(--bundle-accent);
+}
+
+.bundle-row.dropped {
+  --bundle-accent: var(--green);
+  --bundle-accent-text: var(--bundle-green);
+}
+
+.bundle-row.missed {
+  --bundle-accent: var(--orange);
+  --bundle-accent-text: var(--bundle-amber);
+}
+
+.bundle-row.next {
+  --bundle-accent: var(--tint);
+  --bundle-accent-text: var(--tint);
+}
+
+.bundle-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.bundle-top {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  column-gap: 8px;
+  font-size: 13px;
+  line-height: 1.25;
+}
+
+.bundle-status {
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--bundle-accent-text);
+}
+
+.bundle-where {
+  font-weight: 500;
+  color: var(--label-2);
+}
+
+.bundle-name {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+}
+
+.bundle-address {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  font-size: 14px;
+  line-height: 1.25;
+  color: var(--label-2);
+}
+
+.bundle-meta {
+  font-size: 14px;
+  line-height: 1.25;
+  color: var(--label-2);
+}
+
+.bundle-meta b {
+  font-weight: 700;
+  color: var(--label);
+}
+
+/* Mark dropped, or Undo: at least 44 px tall, and the label can take two lines so the button stays narrow. */
+.bundle-action {
+  flex: none;
+  min-width: 76px;
+  max-width: 108px;
+  min-height: 48px;
+  padding: 0 12px;
+  border-radius: 12px;
+  text-align: center;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.15;
+  color: var(--tint);
+  background: rgba(0, 122, 255, 0.14);
+  background: color-mix(in srgb, var(--tint) 14%, transparent);
+}
+
+.bundle-action.undo {
+  color: var(--label-2);
+  background: var(--fill);
+}
+
+.bundle-action:active {
+  opacity: 0.6;
+}
+
+/* A phone on its side: the sheet stands at the right, clear of the side, the turn and the alerts at the top left. */
+@media (orientation: landscape) and (max-height: 600px) {
+  .bundles-scrim {
+    justify-content: flex-end;
+  }
+
+  .bundles-sheet {
+    width: clamp(300px, calc(100% - 410px), 480px);
+    max-height: 100%;
+    padding-right: max(12px, env(safe-area-inset-right, 0px));
+  }
+}
+
+@media (max-width: 350px) {
+  .bundle-row {
+    gap: 8px;
+    padding-left: 16px;
+  }
+
+  .bundle-name {
+    font-size: 16px;
+  }
+
+  .bundle-action {
+    min-width: 68px;
+    padding: 0 8px;
+    font-size: 14px;
+  }
+
+  .bundles-stat b {
+    font-size: 23px;
+  }
+}

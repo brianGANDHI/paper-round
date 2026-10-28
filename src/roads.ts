@@ -1,4 +1,4 @@
-import { simplify } from './geo'
+import { bearing, haversine, simplify } from './geo'
 import { appendPoint, appendPoints, isDuplicateTap, removeLastPoint } from './routeEdit'
 import type { Pt, Route, Side } from './types'
 
@@ -34,6 +34,19 @@ export const rate = { minGapMs: 1100 }
 export const TIMEOUT_MS = 5000
 /** A tap farther than this from any street has nothing to follow. */
 const SNAP_RADIUS_M = 50
+/**
+ * How far either side of the way back, in degrees, the road leaving a U-turn may point. Wide enough that a road drawn a
+ * little off its true line still counts as the way back, narrow enough that a side street does not. OSRM allows up to 180.
+ */
+export const UTURN_RANGE_DEG = 60
+/**
+ * How far from the route's last point a U-turn may start. The first place of that request is held to a road leaving the
+ * way back, and the router will look the whole snap radius around it for one: on a one-way street that is another street,
+ * up to 50 m away, and the road would then start there, joined to the route by a straight piece across the blocks. So it
+ * looks a good deal less far: still the other carriageway of a dual carriageway (turns.ts joins one drawn up to 30 m to
+ * the side), but not the next street.
+ */
+export const UTURN_SNAP_M = 30
 /** The streets come back exact, so only points that hardly change the line are thinned away. */
 export const ROAD_SIMPLIFY_M = 2
 
@@ -59,11 +72,64 @@ export const ROAD_NOTICE: Record<Exclude<RoadFailure, 'cancelled'>, string> = {
   'no-road': 'No road route found there, so that stretch is a straight line.',
 }
 
+/**
+ * What to tell the user when a request for a U-turn found no road, so that stretch is a straight line. The service gives
+ * one answer for several causes: no road to leave the last point by the way back (a one-way street), a point with no road
+ * near it (the last point, or the tap), and no way between the two. So it names what is most likely, and doesn't claim which.
+ */
+export const UTURN_NOTICE =
+  'No road route found there for a U-turn (it may be a one-way street, or a point too far from a road), so that stretch is a straight line.'
+
 const lngLat = (p: Pt) => `${p.lng.toFixed(6)},${p.lat.toFixed(6)}`
 
-/** The request for the way from one place to another. OSRM wants longitude first. */
-export const roadUrl = (from: Pt, to: Pt, radiusM = SNAP_RADIUS_M) =>
-  `${ENDPOINT}/${lngLat(from)};${lngLat(to)}?overview=full&geometries=geojson&radiuses=${radiusM};${radiusM}`
+const isBearing = (b: unknown): b is number => typeof b === 'number' && Number.isFinite(b)
+
+/** The compass bearing opposite the one given, as the whole number of degrees from 0 to 359 that OSRM takes. */
+export const reverseBearing = (deg: number) => Math.round((((deg + 180) % 360) + 360) % 360) % 360
+
+/**
+ * The request for the way from one place to another. OSRM wants longitude first. With `uturnFrom`, the bearing the route
+ * arrived at `from` on, the road is held to leaving `from` the way it came (`bearings=<reverse>,60;`): one entry for each
+ * place, the first held to that bearing and the second, left empty, free. So a U-turn is made there instead of the router
+ * going round the block. The first place is also looked for within `UTURN_SNAP_M` only (or `radiusM`, if that is less), so
+ * that a one-way street has no road found on the next street instead; the second keeps `radiusM`. A bearing that is not a
+ * number is ignored.
+ */
+export const roadUrl = (from: Pt, to: Pt, radiusM = SNAP_RADIUS_M, uturnFrom?: number) => {
+  const turning = isBearing(uturnFrom)
+  const back = turning ? `&bearings=${reverseBearing(uturnFrom)},${UTURN_RANGE_DEG};` : ''
+  const startM = turning ? Math.min(radiusM, UTURN_SNAP_M) : radiusM
+  return `${ENDPOINT}/${lngLat(from)};${lngLat(to)}?overview=full&geometries=geojson&radiuses=${startM};${radiusM}${back}`
+}
+
+/** A last piece of road shorter than this is the same place as the end, and says nothing about the way the route arrived. */
+const SAME_PLACE_M = 1
+
+/**
+ * The compass bearing the route arrives at its last point on: from the nearest earlier point that is not the same place
+ * as the end (usually the one before it), to the end. Null when the route has no such point, so no way it arrived.
+ */
+export function arrivalBearing(points: readonly Pt[]): number | null {
+  const last = points[points.length - 1]
+  if (!last) return null
+  for (let i = points.length - 2; i >= 0; i--) {
+    if (haversine(points[i], last) >= SAME_PLACE_M) return bearing(points[i], last)
+  }
+  return null
+}
+
+/** Whether a U-turn can be asked for: while following roads, and once the route has a way it arrived at its end to turn back along. */
+export const uturnAvailable = (points: readonly Pt[], following: boolean) => following && arrivalBearing(points) !== null
+
+/**
+ * Whether the U-turn switch is on, given the end of the route it was switched on at (null when it was not). It means that
+ * end and no other: it is off as soon as the route ends anywhere else (the tap it was for has been added, an undo or a deleted
+ * or moved point, a cleared route) and whenever a U-turn is not available (Follow roads is off, or the route has no direction).
+ */
+export function uturnIsOn(armedAt: Pt | null, points: readonly Pt[], following: boolean): boolean {
+  const last = points[points.length - 1]
+  return !!armedAt && !!last && last.lat === armedAt.lat && last.lng === armedAt.lng && uturnAvailable(points, following)
+}
 
 interface RawRoute {
   code?: unknown
@@ -99,6 +165,12 @@ export interface LookupOptions {
   timeoutMs?: number
   /** How far from each end to look for a street, in metres. */
   radiusM?: number
+  /**
+   * The compass bearing the route arrived at the start on. When given, the road leaves the start heading back the way
+   * it came (a U-turn) instead of going round the block. Only the start is held to it, and it is looked for within
+   * `UTURN_SNAP_M` of the start only. See `roadUrl`.
+   */
+  uturnFrom?: number
 }
 
 /** A drive from one place to another. */
@@ -212,10 +284,11 @@ export async function getJson(url: string, opts: Pick<LookupOptions, 'signal' | 
  * The fastest street route from one place to another, thinned, from the snapped start to the snapped end,
  * with how long it takes. One request, never faster than the service allows. Always a RoadError when it
  * fails: offline (no connection, or the request never got through), timeout, service (an error
- * or an answer that makes no sense), no-road (nothing to follow there) or cancelled.
+ * or an answer that makes no sense), no-road (nothing to follow there) or cancelled. `uturnFrom` makes the road leave
+ * the start heading back (see `LookupOptions`), which finds no road where the start can't be left that way.
  */
 export async function fetchDrive(from: Pt, to: Pt, opts: LookupOptions = {}): Promise<Drive> {
-  const { ok, status, json } = await getJson(roadUrl(from, to, opts.radiusM), opts)
+  const { ok, status, json } = await getJson(roadUrl(from, to, opts.radiusM, opts.uturnFrom), opts)
   if (!ok) throw new RoadError(isNoRoad((json as RawRoute | null)?.code) ? 'no-road' : 'service', `status ${status}`, status)
   return { points: roadPoints(json), seconds: roadSeconds(json) }
 }
@@ -251,6 +324,8 @@ function straight(route: Route, tap: Pt, side: Side, notice: string | null): Ext
  * The route with a stretch added from its end to `tap`, thrown on `side`. It follows streets when
  * they can be found and is a straight line otherwise, with a notice saying why. The first point of a
  * route and a tap on the last point need no lookup. Rejects with a 'cancelled' RoadError, and only that, when cancelled.
+ * With `uturnFrom` (see `LookupOptions`) the road turns back from the end of the route; when there is no road to do that
+ * along, the straight line's notice says so.
  */
 export async function extendAlongRoads(route: Route, tap: Pt, side: Side, opts: LookupOptions = {}): Promise<Extension> {
   const from = route.points[route.points.length - 1]
@@ -261,7 +336,7 @@ export async function extendAlongRoads(route: Route, tap: Pt, side: Side, opts: 
   } catch (e) {
     const kind = e instanceof RoadError ? e.kind : 'service'
     if (kind === 'cancelled') throw e
-    return straight(route, tap, side, ROAD_NOTICE[kind])
+    return straight(route, tap, side, kind === 'no-road' && isBearing(opts.uturnFrom) ? UTURN_NOTICE : ROAD_NOTICE[kind])
   }
   // A route that is just one loose point starts on the street instead, rather than with a short link to it.
   const lone = route.points.length === 1

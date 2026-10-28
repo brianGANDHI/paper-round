@@ -27,9 +27,17 @@ const metres = (n: number | undefined): number => (typeof n === 'number' && Numb
 /**
  * How far along the route a round that is carried on picks up: from where it was started or last skipped to, from the
  * furthest it got, or from the last stop done, whichever is furthest.
+ *
+ * A bundle stop that was dropped says nothing of where the driver is. It can be marked dropped from the list while it is
+ * a long way ahead, and a drop on one pass of a street driven twice marks the other passes done too, so neither the stop dropped
+ * nor any other pass of it counts as the last stop done. (The furthest got is kept with the round every hundred metres, and that
+ * already covers a bundle dropped at the spot.)
  */
 export function continueFrom(round: RoundState, allOccs: readonly Occurrence[], handled: ReadonlySet<string>): number {
-  return Math.max(metres(round.startM), metres(round.furthest), handledUpTo([...allOccs], handled))
+  const dropped = new Set(round.dropped ?? [])
+  const droppedStops = new Set(allOccs.filter((o) => dropped.has(o.key)).map((o) => o.stop.id))
+  const evidence = allOccs.filter((o) => !droppedStops.has(o.stop.id))
+  return Math.max(metres(round.startM), metres(round.furthest), handledUpTo(evidence, handled))
 }
 
 /** How many stops not yet done would count as done by carrying on from `m` metres along the route: what skipping ahead to it gives up. */

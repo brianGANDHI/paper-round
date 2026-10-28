@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ALERT_SECONDS, createSound, TICK_SECONDS } from './sound'
+import { ALERT_SECONDS, createSound, DROPPED_SECONDS, TICK_SECONDS } from './sound'
 
 /** A stand-in for the phone's audio: what was played, and what state it is in. */
 function fakeAudio(startState = 'running') {
@@ -359,6 +359,130 @@ describe('the beeps for being off the route', () => {
     s.offRoute()
     s.offRoute()
     expect(log.map((n) => n.freq)).toHaveLength(4)
+    expect(log.slice(0, 2)).toEqual(log.slice(2))
+  })
+})
+
+describe('the tone that confirms a bundle drop', () => {
+  it('is two notes going up, so it is a tick of success and not a warning', () => {
+    const { log, make } = fakeAudio()
+    vi.stubGlobal('navigator', {})
+    const s = createSound(make, noWait)
+    s.unlock()
+    s.dropped()
+    expect(log).toHaveLength(2)
+    expect(log[0].freq).toBeLessThan(log[1].freq)
+  })
+
+  it('is quieter than every alert, which all play at the same level', () => {
+    const { log, make } = fakeAudio()
+    vi.stubGlobal('navigator', {})
+    const s = createSound(make, noWait)
+    s.unlock()
+    s.bundle()
+    s.request()
+    s.noThrow()
+    s.offRoute()
+    const alert = Math.min(...log.map((n) => n.gain))
+    log.length = 0
+    s.dropped()
+    for (const n of log) {
+      expect(n.gain).toBeGreaterThan(0)
+      expect(n.gain).toBeLessThan(alert / 2)
+    }
+  })
+
+  it('is not a tone an alert already has: not the bundle drop beep, and not the special request notes', () => {
+    const { log, make } = fakeAudio()
+    vi.stubGlobal('navigator', {})
+    const s = createSound(make, noWait)
+    s.unlock()
+    s.request()
+    const request = log.map((n) => n.freq)
+    s.bundle()
+    const bundle = log[2].freq
+    log.length = 0
+    s.dropped()
+    const dropped = log.map((n) => n.freq)
+    expect(dropped).not.toContain(bundle)
+    for (const f of dropped) expect(request).not.toContain(f)
+  })
+
+  it('is in the range a phone speaker can play and a driver can hear', () => {
+    const { log, make } = fakeAudio()
+    vi.stubGlobal('navigator', {})
+    const s = createSound(make, noWait)
+    s.unlock()
+    s.dropped()
+    for (const n of log) {
+      expect(n.freq).toBeGreaterThanOrEqual(300)
+      expect(n.freq).toBeLessThanOrEqual(2000)
+    }
+  })
+
+  it('says how long it takes, and takes that long: the second note starts after the first ends', () => {
+    const { ctx, log, make } = fakeAudio()
+    vi.stubGlobal('navigator', {})
+    const s = createSound(make, noWait)
+    s.unlock()
+    expect(s.dropped()).toBe(DROPPED_SECONDS)
+    expect(log[0].start).toBe(ctx.currentTime)
+    expect(log[1].start).toBeGreaterThanOrEqual(log[0].stop)
+    expect(Math.max(...log.map((n) => n.stop)) - ctx.currentTime).toBeCloseTo(DROPPED_SECONDS, 5)
+  })
+
+  it('is short: quicker than any alert, so a voice that follows it is not kept waiting', () => {
+    expect(DROPPED_SECONDS).toBeGreaterThan(0)
+    expect(DROPPED_SECONDS).toBeLessThan(Math.min(ALERT_SECONDS.request, ALERT_SECONDS.offRoute, ALERT_SECONDS.nothrow))
+  })
+
+  it('buzzes the phone briefly where it can, less than a bundle alert does', () => {
+    const { make } = fakeAudio()
+    const vibrate = vi.fn()
+    vi.stubGlobal('navigator', { vibrate })
+    const s = createSound(make, noWait)
+    s.unlock()
+    s.bundle()
+    const alertBuzz = vibrate.mock.calls[0][0] as number
+    vibrate.mockClear()
+    s.dropped()
+    expect(vibrate).toHaveBeenCalledTimes(1)
+    expect(vibrate.mock.calls[0][0]).toBeGreaterThan(0)
+    expect(vibrate.mock.calls[0][0]).toBeLessThan(alertBuzz)
+  })
+
+  it('wakes the audio up as it goes, in case it fell asleep', () => {
+    const { ctx, calls, make } = fakeAudio('running')
+    vi.stubGlobal('navigator', {})
+    const s = createSound(make, noWait)
+    s.unlock()
+    ctx.state = 'suspended'
+    calls.length = 0
+    s.dropped()
+    expect(calls).toContain('resume')
+  })
+
+  it('plays nothing, and does not throw, before audio is unlocked or where there is none', () => {
+    vi.stubGlobal('navigator', {})
+    const f = fakeAudio()
+    const early = createSound(f.make, noWait)
+    expect(() => early.dropped()).not.toThrow()
+    expect(f.log).toHaveLength(0)
+    const never = createSound(() => {
+      throw new Error('no audio here')
+    }, noWait)
+    never.unlock()
+    expect(() => never.dropped()).not.toThrow()
+  })
+
+  it('is heard again each time', () => {
+    const { log, make } = fakeAudio()
+    vi.stubGlobal('navigator', {})
+    const s = createSound(make, noWait)
+    s.unlock()
+    s.dropped()
+    s.dropped()
+    expect(log).toHaveLength(4)
     expect(log.slice(0, 2)).toEqual(log.slice(2))
   })
 })

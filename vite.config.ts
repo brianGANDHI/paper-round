@@ -7,6 +7,8 @@ const base = process.env.BASE_PATH ?? '/'
 
 export default defineConfig({
   base,
+  // Keep the CSS in the older spelling of media queries ((max-width: 350px), not (width<=350px)), so a phone before iOS 16.4 still gets them.
+  build: { cssTarget: 'safari14' },
   plugins: [
     react(),
     VitePWA({

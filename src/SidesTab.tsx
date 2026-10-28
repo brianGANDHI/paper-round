@@ -159,8 +159,9 @@ export function SidesTab({
 
       {!painting && (
         <p className="footnote">
-          To change just part of a road, use Paint a Stretch. A section that is picked can be deleted. Transit, shown dotted, is for a stretch
-          where you only drive, between places you deliver: nothing is thrown there, and no-throw houses on it stay quiet.
+          To change just part of a road, use Paint a Stretch. A section that is picked can be deleted. A no-throw house only alerts on a side
+          you throw, so a Left or Right stretch keeps quiet the no-throw houses on the other side of the road. Transit, the pink line, is for a
+          stretch where you only drive, between places you deliver: nothing is thrown there, and no-throw houses on it stay quiet.
         </p>
       )}
       {repeated && <p className="footnote">Passes over the same road are drawn side by side on the map, so you can tell them apart.</p>}

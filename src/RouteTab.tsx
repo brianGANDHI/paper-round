@@ -19,6 +19,13 @@ interface Props {
   follow: boolean
   onFollow: (on: boolean) => void
   finding: boolean
+  /**
+   * U-turn: the road for the next tap leaves the last point heading back the way the route came. Offered while following roads,
+   * once the route has a direction; whether it is on, and a change to that. It goes off by itself after that tap.
+   */
+  canUturn: boolean
+  uturn: boolean
+  onUturn: (on: boolean) => void
   /** Opens the dialog that routes between two typed addresses. Offered while Transit is the side being drawn. */
   onAddress: () => void
   /** The point picked on the map, if any. */
@@ -39,6 +46,28 @@ interface Props {
 }
 
 const points = (n: number) => `${n} ${n === 1 ? 'point' : 'points'}`
+
+/** A road up, over and back down: a U-turn. Drawn like the other icons, on the same 24px grid. */
+function UTurnIcon({ size = 18 }: { size?: number }) {
+  return (
+    <svg
+      className="icon"
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="M7 21V9a5 5 0 0 1 10 0v8" />
+      <polyline points="13 13 17 17 21 13" />
+    </svg>
+  )
+}
 
 export function RouteTab(p: Props) {
   const [query, setQuery] = useState('')
@@ -122,6 +151,22 @@ export function RouteTab(p: Props) {
             Done
           </button>
         </div>
+        {p.canUturn && (
+          <>
+            <button
+              className="btn secondary block"
+              data-on={p.uturn || undefined}
+              aria-pressed={p.uturn}
+              disabled={p.finding}
+              title="Makes the road for your next tap turn round at your last point and head back the way you came. It switches off after that tap."
+              onClick={() => p.onUturn(!p.uturn)}
+            >
+              <UTurnIcon />
+              U-turn
+            </button>
+            <p className="footnote">For the next tap only: the road turns round and heads back the way you came.</p>
+          </>
+        )}
         {p.selectedPoint !== null ? (
           <div className="group">
             <div className="row">

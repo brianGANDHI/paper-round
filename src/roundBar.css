@@ -1,0 +1,336 @@
+/*
+ * The bottom of the round screen: one slim bar (the stops left, the next bundle drop, the menu) with the few map buttons used while
+ * driving above it on the right and the OpenStreetMap credit above it on the left. A notice takes the bar's own line, and a problem
+ * with the GPS takes its middle, so nothing floats over the map down here. The tab bar under the screen already carries the bottom
+ * safe area, so the bar sits just above it; the sides keep clear of a notch when the phone is on its side.
+ */
+.round-bottom {
+  position: absolute;
+  z-index: 1000;
+  left: max(8px, env(safe-area-inset-left, 0px));
+  right: max(8px, env(safe-area-inset-right, 0px));
+  bottom: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+
+/* The credit at the left and the buttons at the right, on the bar, so the credit adds no row of its own. */
+.round-aside {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.round-aside .map-credit,
+.round-bar,
+.round-btn {
+  pointer-events: auto;
+}
+
+/* ------------------------------------------------------------------ *
+ * The buttons: 48 px, with a gap between them, in two groups. The zoom buttons are at the bottom, nearest the thumb.
+ * ------------------------------------------------------------------ */
+.round-buttons {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 14px;
+  pointer-events: none;
+}
+
+.round-group {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+  pointer-events: none;
+}
+
+.round-btn {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 14px;
+  color: var(--tint);
+  background: var(--material);
+  box-shadow: var(--shadow);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  backdrop-filter: saturate(180%) blur(20px);
+}
+
+.round-btn:active {
+  opacity: 0.6;
+}
+
+/* A switched-on button has a ring in the tint, so which are on can be told at a glance without colouring in the whole button. */
+.round-btn[data-on] {
+  box-shadow: var(--shadow), inset 0 0 0 2px var(--tint);
+}
+
+/* The way back to following: big, filled and named, since it is the button wanted when the map has been left behind. */
+.round-btn.recentre {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: auto;
+  padding: 0 18px 0 14px;
+  color: #fff;
+  background: var(--tint);
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  animation: pop 0.18s ease-out;
+}
+
+/* ------------------------------------------------------------------ *
+ * The bar
+ * ------------------------------------------------------------------ */
+.round-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 56px;
+  padding: 4px 4px 4px 14px;
+  border-radius: 18px;
+  background: var(--material);
+  box-shadow: var(--shadow);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  backdrop-filter: saturate(180%) blur(20px);
+}
+
+/* A notice is dark, in light mode as well as dark, so it is seen to have changed. */
+.round-bar.notice {
+  color: #fff;
+  background: rgba(28, 28, 30, 0.94);
+  box-shadow: var(--shadow), inset 0 0 0 1px rgba(255, 255, 255, 0.14);
+}
+
+/* The stops left: the number, and what it counts under it. */
+.round-count {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 46px;
+}
+
+.round-count-num {
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+}
+
+.round-count-label {
+  margin-top: 2px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.1;
+  white-space: nowrap;
+  color: var(--label-2);
+}
+
+.round-count.done {
+  flex-direction: row;
+  gap: 6px;
+}
+
+.round-count.done .round-count-label {
+  margin-top: 0;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--label);
+}
+
+.round-check {
+  display: grid;
+  place-items: center;
+  color: var(--green);
+}
+
+/* The next bundle drop: how far and the papers above, the venue under. It is one button that opens the list. */
+.round-bundle {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1px;
+  min-height: 44px;
+  padding: 2px 8px;
+  border-radius: 12px;
+  text-align: left;
+}
+
+button.round-bundle:active {
+  background: var(--fill);
+}
+
+/*
+ * One row, never two: the box is one line high and clips, and the row-gap pushes a second line out of it, so whatever does not fit
+ * wraps out of sight whole, the last first (the papers, after the pill for what was missed), instead of being squeezed or cut in
+ * half. It never takes room from the venue's name under it. Nothing in it breaks within itself, or it would wrap in half.
+ */
+.round-bundle-top {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 12px 6px;
+  height: 16px;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--label-2);
+}
+
+.round-bundle-top .dist {
+  color: var(--label);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Bundles driven past without being dropped: amber. */
+.round-missed {
+  flex: none;
+  padding: 0 7px;
+  border-radius: 999px;
+  color: var(--warn-text);
+  background: rgba(255, 149, 0, 0.2);
+  background: color-mix(in srgb, var(--orange) 22%, transparent);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.round-bundle-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+/* When there is nothing else for the middle to say: the wait for the first fix, or else the alert distance. */
+.round-plain {
+  flex: 1;
+  min-width: 0;
+  padding: 0 4px;
+  font-size: 14px;
+  color: var(--label-2);
+}
+
+.round-menu-btn:active,
+.round-caution:active {
+  opacity: 0.6;
+}
+
+.round-menu-btn {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 14px;
+  color: var(--tint);
+}
+
+/* A problem with the GPS takes the middle of the bar. The count and the menu stay. */
+.round-warn {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.25;
+  color: var(--warn-text);
+}
+
+/* A caution that stays (the screen may sleep): a small amber button beside the menu, 44 px for a thumb. Tapping it says it as a notice. */
+.round-caution {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 14px;
+  color: var(--warn-text);
+  background: rgba(255, 149, 0, 0.2);
+  background: color-mix(in srgb, var(--orange) 22%, transparent);
+}
+
+/* A notice takes all of it but the menu, and grows the bar a line at a time if it is long. */
+.round-notice {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 2px;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.round-undo {
+  flex: none;
+  min-height: 44px;
+  padding: 0 14px;
+  color: #5ac8fa;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.round-undo:active {
+  opacity: 0.6;
+}
+
+.round-bar.notice .round-menu-btn {
+  color: #fff;
+}
+
+/* A narrow phone: the bar's parts squeeze up a little so the next bundle keeps some room. */
+@media (max-width: 350px) {
+  .round-bar {
+    gap: 6px;
+    padding-left: 10px;
+  }
+
+  .round-count {
+    min-width: 40px;
+  }
+
+  .round-count-num {
+    font-size: 24px;
+  }
+}
+
+/* A wide screen, or a phone on its side: the bar is a panel at the left, not the whole width. */
+@media (min-width: 600px) {
+  .round-bar {
+    align-self: flex-start;
+    width: min(100%, 440px);
+  }
+}
+
+/* A short screen (a phone on its side, a small one): the buttons stand in two columns so they take little of the height. */
+@media (max-height: 600px) {
+  .round-buttons {
+    flex-direction: row;
+    align-items: flex-end;
+    gap: 10px;
+  }
+}

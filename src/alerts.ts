@@ -1,5 +1,5 @@
 import { plural } from './format'
-import { bearing, byPosition, haversine, occurrences, sideAt, stopSide, type Occurrence } from './geo'
+import { bearing, byPosition, haversine, LATERAL_SLACK_M, occurrences, sideAt, stopSide, type Occurrence } from './geo'
 import { houseNumber, MAX_STOP_OFFSET_M, withoutNumber } from './routeEdit'
 import type { Pt, Route, Stop } from './types'
 
@@ -195,18 +195,98 @@ export const inTransit = (route: Pick<Route, 'sideChanges'>, o: Occurrence): boo
 /** Whether a stop is off the route: too far from it to be along it, as stops placed on the map used to have to be. */
 export const isOffRoute = (o: Pick<Occurrence, 'off'>): boolean => o.off > MAX_STOP_OFFSET_M
 
-/**
- * The stops worth an alert. A no-throw house means nothing on a stretch where nothing is thrown at all,
- * so it stays quiet there. A bundle drop still alerts, as it has nothing to do with throwing. A stop off
- * the route is on no stretch of it, so it is never quiet for that.
- */
-export const alertable = (route: Pick<Route, 'sideChanges'>, occs: Occurrence[]): Occurrence[] =>
-  occs.filter((o) => !(o.stop.type === 'nothrow' && !isOffRoute(o) && inTransit(route, o)))
+/** Why a no-throw house stays quiet on a pass of the route: nothing is thrown there at all, or it is on the side of the road that isn't thrown. */
+export type QuietReason = 'transit' | 'otherSide'
 
-/** Whether every time the route passes this stop is on a stretch where nothing is thrown. A stop off the route never is. */
+/**
+ * How far from the route, in metres, a no-throw house can be and still be kept quiet. A house further than this alerts whatever is
+ * thrown, since at the shortest alert distance (`ALERT_DISTANCES[0]`) it already alerts by where the driver is (see `byPosition`),
+ * and that has nothing to do with a stretch of the route or a side of its road. So a house is never silenced that would have alerted
+ * by position, at any alert distance the driver can choose.
+ */
+export const QUIET_REACH_M = ALERT_DISTANCES[0] + LATERAL_SLACK_M
+
+/** Whether a stop is too far from the route to be kept quiet for what is thrown along it: see `QUIET_REACH_M`. */
+const beyondQuietReach = (o: Pick<Occurrence, 'off'>): boolean => o.off > QUIET_REACH_M
+
+/**
+ * Why a no-throw house stays quiet on this pass of the route, or null when it alerts. It stays quiet where nothing is
+ * thrown at all (a transit stretch), and where only one side is thrown when the house is on the other side of the road:
+ * a house on the left means nothing on a stretch thrown to the right. Where both sides are thrown it alerts. So it does
+ * when its side can't be told (better an alert that wasn't needed than a missed house), and when it is further from the
+ * route than `QUIET_REACH_M`, where it is on no stretch of the route to speak of and may alert by where the driver is. The
+ * side is the one the alert shows (see `alertSide`): as the route passes the house this time, a side picked by hand
+ * included, so on a street driven twice the same house can be quiet on one pass and alert on the other. A bundle drop and a
+ * special request are never quiet, as they have nothing to do with throwing.
+ *
+ * `occs` are all the occurrences of the route, not just those that alert, since a side picked by hand is told from the
+ * first pass of the stop.
+ */
+export function quietReason(route: Pick<Route, 'points' | 'sideChanges'>, occs: Occurrence[], o: Occurrence): QuietReason | null {
+  if (o.stop.type !== 'nothrow' || beyondQuietReach(o)) return null
+  const thrown = sideAt(route, o.idx)
+  if (thrown === 'transit') return 'transit'
+  if (thrown === 'both') return null
+  const side = alertSide(route, occs, o)
+  return side && side !== thrown ? 'otherSide' : null
+}
+
+/**
+ * The stops worth an alert: those that are not quiet (see `quietReason`). A no-throw house means nothing on a stretch
+ * where nothing is thrown at all, nor on the side of the road that isn't thrown, so it stays quiet there, if it is near enough
+ * the route for that to be said (`QUIET_REACH_M`). A bundle drop and a special request still alert. Each
+ * time the route passes a house is judged on its own, so a house can have some passes that alert and some that don't;
+ * the keys are those of `occurrences`, and don't change with which of them alert. `occs` are all the occurrences of the
+ * route, and the result keeps their order.
+ */
+export const alertable = (route: Pick<Route, 'points' | 'sideChanges'>, occs: Occurrence[]): Occurrence[] =>
+  occs.filter((o) => quietReason(route, occs, o) === null)
+
+/**
+ * How the round stands, counted over the passes that alert (the result of `alertable`) against the keys of the passes done: how many
+ * there are, how many are done, how many are left, and whether the round is finished (there is something to do and all of it is done).
+ * A pass that stays quiet is not a stop to do, so a house that is quiet on one pass of a street and alerts on the other counts once.
+ */
+export function roundCounts(occs: readonly Pick<Occurrence, 'key'>[], handled: ReadonlySet<string>): { total: number; done: number; remaining: number; finished: boolean } {
+  const total = occs.length
+  const remaining = occs.filter((o) => !handled.has(o.key)).length
+  return { total, done: total - remaining, remaining, finished: total > 0 && remaining === 0 }
+}
+
+/** Whether every time the route passes this stop is on a stretch where nothing is thrown. A stop further from the route than `QUIET_REACH_M` never is, as what is thrown along the route says nothing of it. */
 export function onlyInTransit(route: Pick<Route, 'sideChanges'>, occs: Occurrence[], stopId: string): boolean {
   const passes = occs.filter((o) => o.stop.id === stopId)
-  return passes.length > 0 && passes.every((o) => !isOffRoute(o) && inTransit(route, o))
+  return passes.length > 0 && passes.every((o) => !beyondQuietReach(o) && inTransit(route, o))
+}
+
+/** For each time the route passes a stop, in route order: why a no-throw house is quiet there, or null where it alerts. */
+export function stopQuietReasons(route: Pick<Route, 'points' | 'sideChanges'>, occs: Occurrence[], stopId: string): (QuietReason | null)[] {
+  return occs.filter((o) => o.stop.id === stopId).map((o) => quietReason(route, occs, o))
+}
+
+/** The passes in words, "2", "1 and 3", "1, 2 and 3". */
+const passList = (passes: number[]): string => (passes.length < 2 ? passes.join('') : `${passes.slice(0, -1).join(', ')} and ${passes[passes.length - 1]}`)
+
+/**
+ * What the Stops list says of a no-throw house's alerts, given why it is quiet on each pass of the route (see
+ * `stopQuietReasons`). Empty when it alerts on every pass. Quiet on all of them, it says why; quiet on some, it says on which.
+ */
+export function quietText(reasons: (QuietReason | null)[]): string {
+  const quiet = reasons.flatMap((reason, i) => (reason ? [{ reason, pass: i + 1 }] : []))
+  if (quiet.length === 0) return ''
+  const has = (reason: QuietReason) => quiet.some((q) => q.reason === reason)
+  if (quiet.length === reasons.length) {
+    if (!has('otherSide')) return 'in transit, so no alert'
+    return has('transit') ? 'quiet here: in transit or you throw the other side' : 'quiet here: you throw the other side'
+  }
+  const why: Record<QuietReason, string> = { transit: 'in transit', otherSide: 'you throw the other side' }
+  const parts = (['transit', 'otherSide'] as const)
+    .filter(has)
+    .map((reason) => {
+      const passes = quiet.filter((q) => q.reason === reason).map((q) => q.pass)
+      return `${passes.length === 1 ? 'pass' : 'passes'} ${passList(passes)}: ${why[reason]}`
+    })
+  return `quiet on ${parts.join('; on ')}`
 }
 
 /** Whether a stop is off the route, going by every time the route passes it. */
@@ -284,17 +364,30 @@ export function aheadOf(o: Occurrence, along: number, pos: Pt | null, radius: Re
 export const HEAD_PASSED_M = 10
 
 /**
- * The alert to show among those queued: the nearest no-throw house still ahead, or else the nearest of the others, and
- * when everything is behind, the one least far behind. `driven` is the furthest the driver has got along the route,
- * which doesn't go back, so a stop the driver has gone by isn't brought back by a wobble in their position.
+ * The alert to show among those queued: among those still ahead (or only just gone by), the nearest no-throw house, or else the
+ * nearest of the others; and when everything is gone by, the no-throw house least far behind, or else the other least far behind. A stop
+ * the driver has gone by does not outrank one that is still live, whatever it is: a no-throw house just behind must not hide a bundle drop
+ * at the wheels, whose Dropped button is the only way to confirm it. `driven` is the furthest the driver has got along the route, which
+ * doesn't go back, so a stop the driver has gone by isn't brought back by a wobble in their position.
+ *
+ * What still waits: a no-throw house that is live is the alert, so a bundle drop shows only while no house is live. One with a house
+ * before it shows once that house is gone by (and again once the house's zone is over). One with a house at the same spot or after it
+ * is gone by no later than the house is, and from then a house outranks it again, so it shows only until the house comes into range,
+ * and not at all for a house at the same spot.
  */
 export function pickCurrent(queue: Occurrence[], driven: number, along: number, pos: Pt | null, radius: Record<Stop['type'], number>): Occurrence | undefined {
-  const nothrow = queue.filter((o) => o.stop.type === 'nothrow')
-  const pool = nothrow.length ? nothrow : queue
   const ahead = (o: Occurrence) => aheadOf(o, Math.max(along, driven), pos, radius)
-  const live = pool.filter((o) => ahead(o) > -HEAD_PASSED_M)
-  if (live.length) return live.reduce((a, b) => (ahead(b) < ahead(a) ? b : a))
-  return pool.length ? pool.reduce((a, b) => (ahead(b) > ahead(a) ? b : a)) : undefined
+  const nearest = (pool: Occurrence[]) => pool.reduce((a, b) => (ahead(b) < ahead(a) ? b : a))
+  const leastBehind = (pool: Occurrence[]) => pool.reduce((a, b) => (ahead(b) > ahead(a) ? b : a))
+  const isNoThrow = (o: Occurrence) => o.stop.type === 'nothrow'
+  const live = queue.filter((o) => ahead(o) > -HEAD_PASSED_M)
+  if (live.length) {
+    const houses = live.filter(isNoThrow)
+    return nearest(houses.length ? houses : live)
+  }
+  if (!queue.length) return undefined
+  const houses = queue.filter(isNoThrow)
+  return leastBehind(houses.length ? houses : queue)
 }
 
 /** Whether a stop in the queue has been gone by, for counting those that are waiting. */
@@ -321,18 +414,26 @@ export function plateText(stop: Stop): { text: string; named: boolean } {
   return { text: name.length > 5 ? `${name.slice(0, 4).trimEnd()}\u2026` : name, named: true }
 }
 
-/** How many no-throw houses sit on transit stretches, where they won't alert. */
-export function quietNoThrows(route: Pick<Route, 'points' | 'sideChanges' | 'stops'>): number {
-  const occs = occurrences(route)
-  return route.stops.filter((s) => s.type === 'nothrow' && onlyInTransit(route, occs, s.id)).length
+/**
+ * The ids of the no-throw houses that stay quiet on every time the route passes them (and are passed at least once): on a
+ * stretch where nothing is thrown, or on the side of the road that isn't thrown. A house that alerts on any pass isn't one.
+ * `occs` are all the occurrences of the route.
+ */
+export function quietHouseIds(route: Pick<Route, 'points' | 'sideChanges'>, occs: Occurrence[]): Set<string> {
+  const allQuiet = new Map<string, boolean>()
+  for (const o of occs) allQuiet.set(o.stop.id, (allQuiet.get(o.stop.id) ?? true) && quietReason(route, occs, o) !== null)
+  return new Set([...allQuiet].filter(([, quiet]) => quiet).map(([id]) => id))
 }
+
+/** How many no-throw houses won't alert at all, as they are on transit stretches or on the side of the road that isn't thrown. */
+export const quietNoThrows = (route: Pick<Route, 'points' | 'sideChanges' | 'stops'>): number => quietHouseIds(route, occurrences(route)).size
 
 /** What to tell the driver about no-throw houses that will stay quiet. Empty when there are none. */
 export function quietNote(count: number): string {
   if (count === 0) return ''
   return count === 1
-    ? "1 no-throw house is on a transit stretch, so it won't alert."
-    : `${count} no-throw houses are on transit stretches, so they won't alert.`
+    ? "1 no-throw house won't alert: it is on a transit stretch, or on the side you don't throw."
+    : `${count} no-throw houses won't alert: they are on transit stretches, or on the side you don't throw.`
 }
 
 /** The side a stop is on for each time the route passes it, in route order. */
@@ -340,7 +441,11 @@ export function stopRoadSides(route: Pick<Route, 'points' | 'sideChanges'>, occs
   return occs.filter((o) => o.stop.id === stopId).map((o) => alertSide(route, occs, o))
 }
 
-/** The no-throw houses among `added` whose side of the road can't be told, in a route that includes them. */
+/**
+ * The no-throw houses among `added` whose side of the road can't be told, in a route that includes them. A house that is
+ * quiet on a transit stretch is not asked about, as it never alerts. One whose side can't be told alerts wherever it is
+ * thrown (see `quietReason`), so the side is only for what the alert shows.
+ */
 export function stopsWithoutSide(route: Pick<Route, 'points' | 'sideChanges' | 'stops'>, added: Stop[]): Stop[] {
   const occs = occurrences(route)
   return added.filter(

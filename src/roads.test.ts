@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { distanceToPath } from './geo'
+import { angleBetween, distanceToPath, haversine } from './geo'
 import {
+  arrivalBearing,
   canFollow,
   ENDPOINT,
   extendAlongRoads,
@@ -12,12 +13,18 @@ import {
   rate,
   ROAD_NOTICE,
   ROAD_SIMPLIFY_M,
+  reverseBearing,
   RoadError,
   roadPoints,
   roadSeconds,
   roadUrl,
   TIMEOUT_MS,
   undoStretch,
+  UTURN_NOTICE,
+  UTURN_RANGE_DEG,
+  UTURN_SNAP_M,
+  uturnAvailable,
+  uturnIsOn,
   type Stretch,
 } from './roads'
 import { removeLastPoint } from './routeEdit'
@@ -126,6 +133,106 @@ describe('the request', () => {
   })
 })
 
+describe('the request for a U-turn', () => {
+  const query = (url: string) => new URLSearchParams(url.split('?')[1])
+  /** How many places the request names. */
+  const places = (url: string) => url.split('?')[0].split('/').pop()!.split(';').length
+
+  it('holds the road at the first place to leaving the way the route came, give or take 60 degrees', () => {
+    // Arrived heading east, so the road has to leave heading west.
+    const url = roadUrl(START, END, undefined, 90)
+    expect(query(url).get('bearings')).toBe('270,60;')
+    expect(UTURN_RANGE_DEG).toBe(60)
+  })
+
+  it('is well formed for two places: one entry each, only the first filled in, whole numbers', () => {
+    for (const arrival of [0, 17.4, 89.6, 90, 179.5, 179.6, 180, 270.4, 359.4, 359.9, 360, -45, -200, 725, 1e-9]) {
+      const url = roadUrl(START, END, undefined, arrival)
+      const bearings = query(url).get('bearings')!
+      expect(bearings, String(arrival)).toMatch(/^\d{1,3},60;$/)
+      const entries = bearings.split(';')
+      expect(entries).toHaveLength(places(url))
+      expect(entries[1]).toBe('')
+      const back = Number(entries[0].split(',')[0])
+      expect(back).toBeGreaterThanOrEqual(0)
+      expect(back).toBeLessThan(360)
+    }
+  })
+
+  it('names the same number of places in the radiuses and the bearings', () => {
+    const q = query(roadUrl(START, END, 250, 10))
+    expect(q.get('radiuses')!.split(';')).toHaveLength(2)
+    expect(q.get('bearings')!.split(';')).toHaveLength(2)
+  })
+
+  it('changes only the bearings and the first radius in the request, so everything else about it is as before', () => {
+    const plain = roadUrl(START, END, 250)
+    const turning = roadUrl(START, END, 250, 90)
+    expect(turning).toBe(plain.replace('radiuses=250;250', 'radiuses=30;250') + '&bearings=270,60;')
+    expect(query(turning).get('overview')).toBe('full')
+    expect(query(turning).get('geometries')).toBe('geojson')
+  })
+
+  it('looks for the road to leave by only 30 m round the last point, and for the tap as far as any other tap', () => {
+    expect(UTURN_SNAP_M).toBe(30)
+    expect(query(roadUrl(START, END, undefined, 90)).get('radiuses')).toBe('30;50')
+    expect(query(roadUrl(START, END, 250, 90)).get('radiuses')).toBe('30;250')
+    expect(query(roadUrl(START, END, 1000, 90)).get('radiuses')).toBe('30;1000')
+  })
+
+  it('does not look farther for the road to leave by than it was told to look for anything', () => {
+    expect(query(roadUrl(START, END, 20, 90)).get('radiuses')).toBe('20;20')
+    expect(query(roadUrl(START, END, 30, 90)).get('radiuses')).toBe('30;30')
+    expect(query(roadUrl(START, END, 31, 90)).get('radiuses')).toBe('30;31')
+  })
+
+  it('looks as far as ever for both places when no U-turn is asked for, or what is given is not a bearing', () => {
+    expect(query(roadUrl(START, END)).get('radiuses')).toBe('50;50')
+    expect(query(roadUrl(START, END, 250)).get('radiuses')).toBe('250;250')
+    expect(query(roadUrl(START, END, 250, undefined)).get('radiuses')).toBe('250;250')
+    expect(query(roadUrl(START, END, 250, Number.NaN)).get('radiuses')).toBe('250;250')
+    expect(query(roadUrl(START, END, 250, Infinity)).get('radiuses')).toBe('250;250')
+  })
+
+  it('has no bearings unless a U-turn is asked for, or when what is given is not a bearing', () => {
+    expect(roadUrl(START, END)).not.toContain('bearings')
+    expect(roadUrl(START, END, 250, undefined)).not.toContain('bearings')
+    expect(roadUrl(START, END, 250, Number.NaN)).not.toContain('bearings')
+    expect(roadUrl(START, END, 250, Infinity)).not.toContain('bearings')
+    expect(roadUrl(START, END, 250, Number('north'))).toBe(roadUrl(START, END, 250))
+  })
+
+  it('takes a bearing of 0, north, as a bearing', () => {
+    expect(query(roadUrl(START, END, undefined, 0)).get('bearings')).toBe('180,60;')
+  })
+
+  it('turns a bearing round to the opposite direction, in whole degrees from 0 to 359', () => {
+    const cases: [number, number][] = [
+      [0, 180],
+      [1, 181],
+      [90, 270],
+      [179, 359],
+      [180, 0],
+      [181, 1],
+      [270, 90],
+      [359, 179],
+      [17.4, 197],
+      [89.6, 270],
+      // Rounding up to 360 comes back round to 0, which is what OSRM expects for north.
+      [179.6, 0],
+      [179.5, 0],
+      [359.5, 180],
+      [360, 180],
+      [-90, 90],
+      [-181, 359],
+      [-270, 270],
+      [450, 270],
+      [725, 185],
+    ]
+    for (const [from, to] of cases) expect(reverseBearing(from), String(from)).toBe(to)
+  })
+})
+
 describe('roadPoints', () => {
   it('turns longitude, latitude pairs into points, keeping the ends exactly', () => {
     const pts = roadPoints(answer())
@@ -210,6 +317,15 @@ describe('fetchDrive', () => {
     mockFetch(json({ code: 'NoRoute' }, 400))
     expect(await failure(fetchDrive(START, TAP))).toBe('no-road')
   })
+
+  it('leaves the start the way it was told to, looking only 30 m round the start and as far as it is told round the end', async () => {
+    const f = mockFetch(json(answer()))
+    const drive = await fetchDrive(START, TAP, { radiusM: 250, uturnFrom: 45 })
+    expect(f).toHaveBeenCalledTimes(1)
+    expect(f.mock.calls[0][0]).toBe(roadUrl(START, TAP, 250, 45))
+    expect(f.mock.calls[0][0]).toContain('radiuses=30;250&bearings=225,60;')
+    expect(drive.points).toEqual(roadPoints(answer()))
+  })
 })
 
 describe('fetchRoad', () => {
@@ -229,6 +345,80 @@ describe('fetchRoad', () => {
     mockFetch(json(answer()))
     await fetchRoad(START, TAP)
     expect(vi.getTimerCount()).toBe(0)
+  })
+
+  describe('for a U-turn', () => {
+    it('makes the same one plain request, with the road held to leaving the way back', async () => {
+      const f = mockFetch(json(answer()))
+      const pts = await fetchRoad(START, TAP, { uturnFrom: 100 })
+      expect(f).toHaveBeenCalledTimes(1)
+      const [url, init] = f.mock.calls[0]
+      expect(url).toBe(roadUrl(START, TAP, undefined, 100))
+      expect(String(url)).toContain('&bearings=280,60;')
+      expect(Object.keys(init ?? {})).toEqual(['signal'])
+      expect(pts).toEqual(roadPoints(answer()))
+    })
+
+    it('reports no road when the start cannot be left that way, as a one-way street cannot', async () => {
+      mockFetch(json({ code: 'NoSegment', message: 'Could not find a matching segment for coordinate 0' }, 400))
+      expect(await failure(fetchRoad(START, TAP, { uturnFrom: 100 }))).toBe('no-road')
+    })
+
+    it('fails the other ways just as it does without one', async () => {
+      mockFetch(json({ message: 'slow down' }, 429))
+      expect(await failure(fetchRoad(START, TAP, { uturnFrom: 100 }))).toBe('service')
+      mockFetch(new TypeError('Load failed'))
+      expect(await failure(fetchRoad(START, TAP, { uturnFrom: 100 }))).toBe('offline')
+    })
+
+    it('gives up on a slow service after the timeout', async () => {
+      vi.useFakeTimers()
+      mockFetch(silent)
+      const outcome = failure(fetchRoad(START, TAP, { uturnFrom: 100 }))
+      await vi.advanceTimersByTimeAsync(TIMEOUT_MS)
+      expect(await outcome).toBe('timeout')
+    })
+
+    it('can be cancelled while the request is out, which stops the request, and does nothing when cancelled already', async () => {
+      vi.useFakeTimers()
+      const f = mockFetch(silent)
+      const ctl = new AbortController()
+      const outcome = failure(fetchRoad(START, TAP, { signal: ctl.signal, uturnFrom: 100 }))
+      await vi.advanceTimersByTimeAsync(10)
+      ctl.abort()
+      expect(await outcome).toBe('cancelled')
+      expect(f.mock.calls[0][1]?.signal?.aborted).toBe(true)
+      expect(vi.getTimerCount()).toBe(0)
+
+      const again = mockFetch(json(answer()))
+      expect(await failure(fetchRoad(START, TAP, { signal: ctl.signal, uturnFrom: 100 }))).toBe('cancelled')
+      expect(again).not.toHaveBeenCalled()
+    })
+
+    it('keeps to the gap between requests like any other, and stops waiting the moment it is cancelled', async () => {
+      vi.resetModules()
+      const fresh = await import('./roads')
+      vi.useFakeTimers()
+      fresh.rate.minGapMs = 1100
+      const f = mockFetch(json(answer()), json(answer()), json(answer()))
+
+      await fresh.fetchRoad(START, TAP)
+      const second = fresh.fetchRoad(START, TAP, { uturnFrom: 100 })
+      await vi.advanceTimersByTimeAsync(1099)
+      expect(f).toHaveBeenCalledTimes(1)
+      await vi.advanceTimersByTimeAsync(1)
+      await second
+      expect(f).toHaveBeenCalledTimes(2)
+      expect(String(f.mock.calls[1][0])).toContain('bearings=')
+
+      const ctl = new AbortController()
+      const third = failure(fresh.fetchRoad(START, TAP, { signal: ctl.signal, uturnFrom: 100 }))
+      await vi.advanceTimersByTimeAsync(300)
+      ctl.abort()
+      expect(await third).toBe('cancelled')
+      expect(f).toHaveBeenCalledTimes(2)
+      expect(vi.getTimerCount()).toBe(0)
+    })
   })
 
   it('reports no road when the service finds nothing near a tap, or no way between them', async () => {
@@ -466,6 +656,328 @@ describe('extending the route along roads', () => {
     expect(f).toHaveBeenCalledTimes(1)
     ctl.abort()
     expect(await settled).toBe('cancelled')
+  })
+})
+
+describe('extending the route with a U-turn', () => {
+  const before: Route = { points: [{ lat: -33.9125, lng: 151.1549 }, START], sideChanges: [{ idx: 0, side: 'both' }], stops: [] }
+
+  it('asks once, for the road held to leaving the way back, and adds it as usual', async () => {
+    const f = mockFetch(json(answer()))
+    const out = await extendAlongRoads(before, TAP, 'both', { uturnFrom: 125 })
+    expect(f).toHaveBeenCalledTimes(1)
+    expect(f.mock.calls[0][0]).toBe(roadUrl(START, TAP, undefined, 125))
+    expect(String(f.mock.calls[0][0])).toContain('&bearings=305,60;')
+    const road = roadPoints(answer())
+    expect(out.notice).toBeNull()
+    expect(out.route.points).toEqual([...before.points, ...road.slice(1)])
+    expect(out.added).toEqual(road.slice(1))
+    expect(out.route.sideChanges).toEqual([{ idx: 0, side: 'both' }])
+  })
+
+  it('asks without bearings when no U-turn is wanted', async () => {
+    const f = mockFetch(json(answer()))
+    await extendAlongRoads(before, TAP, 'both', {})
+    expect(String(f.mock.calls[0][0])).not.toContain('bearings')
+  })
+
+  it('draws a straight line when there is no road to turn back along, and says a U-turn could not be made', async () => {
+    for (const code of ['NoSegment', 'NoRoute']) {
+      mockFetch(json({ code }, 400))
+      const out = await extendAlongRoads(before, TAP, 'left', { uturnFrom: 125 })
+      expect(out.route.points).toEqual([...before.points, TAP])
+      expect(out.added).toEqual([TAP])
+      expect(out.notice).toBe(UTURN_NOTICE)
+      expect(out.notice).toContain('U-turn')
+      expect(out.route.sideChanges).toEqual([
+        { idx: 0, side: 'both' },
+        { idx: 1, side: 'left' },
+      ])
+    }
+  })
+
+  it('gives the same notice whichever way there was no road: nothing to leave by, a tap off the road, or no way between', async () => {
+    const answers = [
+      json({ code: 'NoSegment', message: 'Could not find a matching segment for coordinate 0' }, 400),
+      json({ code: 'NoSegment', message: 'Could not find a matching segment for coordinate 1' }, 400),
+      json({ code: 'NoRoute', message: 'Impossible route between points' }, 400),
+      // An answer that is a success but says there is no way, as a few servers do.
+      json({ code: 'NoRoute', routes: [] }, 200),
+    ]
+    for (const reply of answers) {
+      mockFetch(reply)
+      const out = await extendAlongRoads(before, TAP, 'both', { uturnFrom: 125 })
+      expect(out.notice).toBe(UTURN_NOTICE)
+      expect(out.route.points).toEqual([...before.points, TAP])
+    }
+  })
+
+  it('does not blame the U-turn alone: the notice names a one-way street and a point far from a road, and still says it is a straight line', () => {
+    // The service answers NoSegment for either place and cannot say which, so the words must be true for each of them.
+    expect(UTURN_NOTICE).toContain('U-turn')
+    expect(UTURN_NOTICE).toMatch(/one-way street/)
+    expect(UTURN_NOTICE).toMatch(/too far from a road/)
+    expect(UTURN_NOTICE).toMatch(/straight line\.$/)
+    // It is a possibility, not a claim of which, and it is not the plain notice either.
+    expect(UTURN_NOTICE).toMatch(/\bmay be\b/)
+    expect(UTURN_NOTICE).not.toBe(ROAD_NOTICE['no-road'])
+  })
+
+  it('says the usual thing, not a U-turn one, when a road was not wanted back or the failure is something else', async () => {
+    mockFetch(json({ code: 'NoSegment' }, 400))
+    expect((await extendAlongRoads(before, TAP, 'both')).notice).toBe(ROAD_NOTICE['no-road'])
+    // A bearing that is not one is no U-turn, and not asked for.
+    const f = mockFetch(json({ code: 'NoSegment' }, 400))
+    expect((await extendAlongRoads(before, TAP, 'both', { uturnFrom: Number.NaN })).notice).toBe(ROAD_NOTICE['no-road'])
+    expect(String(f.mock.calls[0][0])).not.toContain('bearings')
+
+    const cases: [Reply, keyof typeof ROAD_NOTICE][] = [
+      [new TypeError('Load failed'), 'offline'],
+      [json({ message: 'down' }, 503), 'service'],
+    ]
+    for (const [reply, kind] of cases) {
+      mockFetch(reply)
+      const out = await extendAlongRoads(before, TAP, 'both', { uturnFrom: 125 })
+      expect(out.notice).toBe(ROAD_NOTICE[kind])
+      expect(out.route.points).toEqual([...before.points, TAP])
+    }
+  })
+
+  it('draws a straight line, with the usual notice, when the service is too slow', async () => {
+    vi.useFakeTimers()
+    mockFetch(silent)
+    const out = extendAlongRoads(before, TAP, 'both', { uturnFrom: 125 })
+    await vi.advanceTimersByTimeAsync(TIMEOUT_MS)
+    const done = await out
+    expect(done.route.points).toEqual([...before.points, TAP])
+    expect(done.notice).toBe(ROAD_NOTICE.timeout)
+  })
+
+  it('draws a straight line without asking when the phone has no connection', async () => {
+    vi.stubGlobal('navigator', { onLine: false })
+    const f = mockFetch(json(answer()))
+    const out = await extendAlongRoads(before, TAP, 'both', { uturnFrom: 125 })
+    expect(f).not.toHaveBeenCalled()
+    expect(out.notice).toBe(ROAD_NOTICE.offline)
+  })
+
+  it('gives up, rather than drawing a straight line, when cancelled', async () => {
+    const f = mockFetch(silent)
+    const ctl = new AbortController()
+    const settled = failure(extendAlongRoads(before, TAP, 'left', { signal: ctl.signal, uturnFrom: 125 }))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(f).toHaveBeenCalledTimes(1)
+    ctl.abort()
+    expect(await settled).toBe('cancelled')
+  })
+
+  it('does not ask when there is nothing to turn back from, or the tap is on the last point', async () => {
+    const f = mockFetch(json(answer()))
+    const first = await extendAlongRoads({ points: [], sideChanges: [], stops: [] }, TAP, 'left', { uturnFrom: 125 })
+    expect(first.route.points).toEqual([TAP])
+    const double = await extendAlongRoads(before, { lat: START.lat + 0.00001, lng: START.lng }, 'left', { uturnFrom: 125 })
+    expect(double.route).toBe(before)
+    expect(f).not.toHaveBeenCalled()
+  })
+
+  it('is taken back whole by undo, like any other stretch of road', async () => {
+    mockFetch(json(answer()))
+    const out = await extendAlongRoads(before, TAP, 'left', { uturnFrom: 125 })
+    const undone = undoStretch(out.route, [{ added: out.added, replaced: out.replaced }])!
+    expect(undone.route).toEqual(before)
+  })
+
+  describe('where the road to leave by may be', () => {
+    /** A place this many metres east of the last point of the route. */
+    const eastOfStart = (m: number): Pt => ({ lat: START.lat, lng: START.lng + m / (111_320 * Math.cos((START.lat * Math.PI) / 180)) })
+    /** A road near the last point: how far from it, and the way it runs (compass degrees). */
+    interface Nearby {
+      away: number
+      heading: number
+    }
+    /**
+     * Stands in for the routing service in the one respect that matters here: the first place is snapped to the nearest road
+     * within its `radiuses` entry that runs the way its `bearings` entry says, give or take the range. Otherwise it answers
+     * NoSegment, as the real one does. The road then starts where it was snapped, `away` metres east of the last point.
+     */
+    function service(roads: Nearby[]) {
+      return vi.fn((url: string) => {
+        const q = new URLSearchParams(url.split('?')[1])
+        const radius = Number(q.get('radiuses')!.split(';')[0])
+        const [want, range] = (q.get('bearings') ?? '').split(';')[0].split(',').map(Number)
+        const found = roads
+          .filter((r) => r.away <= radius && (q.get('bearings') === null || angleBetween(r.heading, want) <= range))
+          .sort((a, b) => a.away - b.away)[0]
+        if (!found) return Promise.resolve(json({ code: 'NoSegment', message: 'Could not find a matching segment for coordinate 0' }, 400))
+        const start = eastOfStart(found.away)
+        return Promise.resolve(json(answer([[start.lng, start.lat], ...COORDS.slice(1)])))
+      })
+    }
+    const arrival = arrivalBearing(before.points)!
+    const back = reverseBearing(arrival)
+    /** The street the route is on: it runs the way the route came, so it cannot be left the way back. */
+    const oneWay: Nearby = { away: 0, heading: arrival }
+
+    it('does not jump to the next street when the one being driven is one-way, even though that street is 47 m away', async () => {
+      // Seen live in Manhattan: with 50 m to look in, the road began on the next street and was joined by a 47 m diagonal.
+      const f = service([oneWay, { away: 47, heading: back }])
+      vi.stubGlobal('fetch', f)
+      const out = await extendAlongRoads(before, TAP, 'both', { uturnFrom: arrival })
+      expect(f).toHaveBeenCalledTimes(1)
+      expect(out.notice).toBe(UTURN_NOTICE)
+      expect(out.route.points).toEqual([...before.points, TAP])
+      expect(out.added).toEqual([TAP])
+    })
+
+    it('turns back along the other carriageway of a dual carriageway, up to 25 m across', async () => {
+      for (const away of [3, 12, 25]) {
+        const f = service([oneWay, { away, heading: back }])
+        vi.stubGlobal('fetch', f)
+        const out = await extendAlongRoads(before, TAP, 'both', { uturnFrom: arrival })
+        expect(out.notice, `${away} m`).toBeNull()
+        const start = out.added[0]
+        expect(haversine(START, start), `${away} m`).toBeCloseTo(away, 0)
+        expect(out.added[out.added.length - 1]).toEqual(END)
+      }
+    })
+
+    it('looks as far as 30 m for it, and no farther', async () => {
+      vi.stubGlobal('fetch', service([oneWay, { away: UTURN_SNAP_M, heading: back }]))
+      expect((await extendAlongRoads(before, TAP, 'both', { uturnFrom: arrival })).notice).toBeNull()
+      vi.stubGlobal('fetch', service([oneWay, { away: UTURN_SNAP_M + 1, heading: back }]))
+      expect((await extendAlongRoads(before, TAP, 'both', { uturnFrom: arrival })).notice).toBe(UTURN_NOTICE)
+    })
+
+    it('still turns back along a two-way street, and finds nothing when the street only runs one way and no other is near', async () => {
+      vi.stubGlobal('fetch', service([{ away: 0, heading: back }]))
+      const out = await extendAlongRoads(before, TAP, 'both', { uturnFrom: arrival })
+      expect(out.notice).toBeNull()
+      expect(out.added).toEqual(roadPoints(answer()).slice(1))
+      vi.stubGlobal('fetch', service([oneWay]))
+      expect((await extendAlongRoads(before, TAP, 'both', { uturnFrom: arrival })).notice).toBe(UTURN_NOTICE)
+    })
+
+    it('does not narrow an ordinary tap, which may still start on a street up to 50 m away', async () => {
+      const f = service([{ away: 47, heading: arrival }])
+      vi.stubGlobal('fetch', f)
+      const out = await extendAlongRoads(before, TAP, 'both', {})
+      expect(String(f.mock.calls[0][0])).toContain('radiuses=50;50')
+      expect(out.notice).toBeNull()
+      expect(haversine(START, out.added[0])).toBeCloseTo(47, 0)
+    })
+  })
+})
+
+describe('the way a route arrived', () => {
+  const origin: Pt = { lat: 51.5, lng: -0.12 }
+  /** A place this many metres north and east of another. */
+  const from = (p: Pt, north: number, east: number): Pt => ({
+    lat: p.lat + north / 111_320,
+    lng: p.lng + east / (111_320 * Math.cos((p.lat * Math.PI) / 180)),
+  })
+  const near = (got: number | null, want: number, within = 0.5) => {
+    expect(got).not.toBeNull()
+    expect(angleBetween(got!, want)).toBeLessThanOrEqual(within)
+  }
+
+  it('is the compass bearing of the last stretch', () => {
+    near(arrivalBearing([origin, from(origin, 50, 0)]), 0)
+    near(arrivalBearing([origin, from(origin, 0, 50)]), 90)
+    near(arrivalBearing([origin, from(origin, -50, 0)]), 180)
+    near(arrivalBearing([origin, from(origin, 0, -50)]), 270)
+    near(arrivalBearing([origin, from(origin, 50, 50)]), 45)
+  })
+
+  it('goes by only the last stretch, not the whole route', () => {
+    const east = from(origin, 0, 100)
+    near(arrivalBearing([origin, east, from(east, 80, 0)]), 0)
+    const long = [origin, from(origin, 100, 0), from(origin, 100, 100), from(origin, 0, 100)]
+    near(arrivalBearing(long), 180)
+  })
+
+  it('is the way back after a route doubles back on itself', () => {
+    near(arrivalBearing([origin, from(origin, 0, 100), from(origin, 0, 40)]), 270)
+  })
+
+  it('looks past a last piece that is the same place as the end', () => {
+    const b = from(origin, 0, 30)
+    // 0.3 m north of b: on its own that piece points north, which says nothing about how the route arrived.
+    near(arrivalBearing([origin, b, from(b, 0.3, 0)]), 90, 2)
+    near(arrivalBearing([origin, b, b]), 90)
+    near(arrivalBearing([origin, b, b, b]), 90)
+  })
+
+  it('uses a piece as short as a metre or two', () => {
+    const b = from(origin, 0, 30)
+    near(arrivalBearing([origin, b, from(b, 1.5, 0)]), 0, 1)
+  })
+
+  it('is null for a route with no way it arrived', () => {
+    expect(arrivalBearing([])).toBeNull()
+    expect(arrivalBearing([origin])).toBeNull()
+    expect(arrivalBearing([origin, origin])).toBeNull()
+    expect(arrivalBearing([origin, { ...origin }, from(origin, 0.2, 0.2)])).toBeNull()
+  })
+
+  it('does not change the points it is given', () => {
+    const points = [origin, from(origin, 0, 50)]
+    const copy = structuredClone(points)
+    arrivalBearing(points)
+    expect(points).toEqual(copy)
+  })
+})
+
+describe('when a U-turn can be asked for, and when it is on', () => {
+  const a: Pt = { lat: 51.5, lng: -0.12 }
+  const b: Pt = { lat: 51.5, lng: -0.1195 }
+  const c: Pt = { lat: 51.5005, lng: -0.1195 }
+  const route = [a, b]
+
+  it('can be asked for while following roads, once the route has a direction', () => {
+    expect(uturnAvailable(route, true)).toBe(true)
+    expect(uturnAvailable([a, b, c], true)).toBe(true)
+  })
+
+  it('cannot be asked for when roads are not being followed', () => {
+    expect(uturnAvailable(route, false)).toBe(false)
+  })
+
+  it('cannot be asked for before the route has a direction', () => {
+    expect(uturnAvailable([], true)).toBe(false)
+    expect(uturnAvailable([a], true)).toBe(false)
+    expect(uturnAvailable([a, { ...a }], true)).toBe(false)
+  })
+
+  it('is on at the end of the route it was switched on at', () => {
+    expect(uturnIsOn(b, route, true)).toBe(true)
+    // The same place is the same end, whichever object says so.
+    expect(uturnIsOn({ ...b }, route, true)).toBe(true)
+  })
+
+  it('is off when it was never switched on', () => {
+    expect(uturnIsOn(null, route, true)).toBe(false)
+  })
+
+  it('goes off once the route ends anywhere else: the tap it was for added, an undo, a point moved or deleted, a clear', () => {
+    expect(uturnIsOn(b, [a, b, c], true)).toBe(false)
+    expect(uturnIsOn(b, [a], true)).toBe(false)
+    expect(uturnIsOn(b, [], true)).toBe(false)
+    expect(uturnIsOn(b, [a, { lat: b.lat, lng: b.lng + 1e-6 }], true)).toBe(false)
+    expect(uturnIsOn(b, [a, { lat: b.lat + 1e-6, lng: b.lng }], true)).toBe(false)
+    expect(uturnIsOn(c, route, true)).toBe(false)
+  })
+
+  it('stays on when only the points before the end change', () => {
+    expect(uturnIsOn(b, [c, a, b], true)).toBe(true)
+  })
+
+  it('goes off when roads are no longer being followed', () => {
+    expect(uturnIsOn(b, route, false)).toBe(false)
+  })
+
+  it('is off for a route with no direction, even when switched on at its only point', () => {
+    expect(uturnIsOn(a, [a], true)).toBe(false)
+    expect(uturnIsOn(a, [a, { ...a }], true)).toBe(false)
   })
 })
 

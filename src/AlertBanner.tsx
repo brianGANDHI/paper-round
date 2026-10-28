@@ -1,6 +1,7 @@
 import { aheadText, alertSpeech, alertText, platesLayout, plateText } from './alerts'
 import { Icon } from './Icon'
 import type { Stop } from './types'
+import './bundles.css'
 
 /** How many plates of a row of houses fit on a line of the banner. A longer row takes a second line, and then ends with how many more there are. */
 export const PLATES_PER_LINE = 5
@@ -16,27 +17,36 @@ interface Props {
   side: 'left' | 'right' | null
   /** How many more alerts are waiting behind this one. */
   waiting: number
+  /** The driver tapped Dropped. Given for a bundle drop, it adds the big Dropped button, the one tappable part of an alert. */
+  onDropped?: () => void
 }
 
 /**
  * The warning for a stop you are close to: a banner across the top of the map, which stays usable
- * underneath. It has nothing to tap and goes by itself once you are away from the stop. No-throw is
+ * underneath. Touches go through it to the map and it goes by itself once you are away from the stop; the one thing
+ * to tap is a bundle drop's big Dropped button, which says the bundle is done. No-throw is
  * red and flashes; a bundle drop is blue; a special request is purple. Each has the stop's name, with its address
- * under it when it has both, and a bundle drop has how many papers beside them, in a badge that a long name can't
- * push off. A special request has its note in place of the name, in a banner a little taller so it can have the room.
+ * under it when it has both, and a bundle drop has how many papers in a badge that a long name can't push off. A bundle drop
+ * with its button is taller: the stop's details across the top, in bigger type with room for a long name and a two-line address
+ * (the papers are not beside them but beside the button, so the name has the width), and the button under them. A special request
+ * has its note in place of the name, in a banner a little taller so it can have the room.
+ *
+ * The distance changes as the driver approaches, and is hidden from a screen reader: the banner's own label says what it is for,
+ * and each change of the distance would otherwise read the whole alert out again.
  * The house number to look for is on a plate at the front of that line, big enough to read at a glance. The side
  * of the road the stop is on sits at that edge of the banner, with an arrow.
  *
  * For a row of no-throw houses it is a plate for each house, in order, since which house it is is what the driver is after:
  * on one line, or two when the row is long. How many more alerts are waiting is a small badge beside the title.
  */
-export function AlertBanner({ stops, pass = 1, ahead, side, waiting }: Props) {
+export function AlertBanner({ stops, pass = 1, ahead, side, waiting, onDropped }: Props) {
   const stop = stops[0]
   const noThrow = stop.type === 'nothrow'
   const request = stop.type === 'request'
   const { title, name, address, papers, number } = alertText(stop)
   const where = `${name}${pass > 1 ? ` · pass ${pass}` : ''}`
   const row = stops.length > 1
+  const ask = stop.type === 'bundle' && !!onDropped
   const layout = platesLayout(stops.length, PLATES_PER_LINE)
   const marker = side ? (
     <div className="stop-alert-side">
@@ -48,12 +58,8 @@ export function AlertBanner({ stops, pass = 1, ahead, side, waiting }: Props) {
       <Icon name={noThrow ? 'slash' : request ? 'star' : 'package'} size={26} strokeWidth={2} />
     </div>
   )
-  return (
-    <div
-      className={`stop-alert ${noThrow ? 'red' : request ? 'purple' : 'blue'}${side === 'right' ? ' right' : ''}${row ? ' row' : ''}${layout.lines > 1 ? ' tall' : ''}`}
-      role="alert"
-      aria-label={alertSpeech(stops)}
-    >
+  const body = (
+    <>
       {side !== 'right' && marker}
       <div className="stop-alert-text">
         <div className="stop-alert-head">
@@ -63,7 +69,9 @@ export function AlertBanner({ stops, pass = 1, ahead, side, waiting }: Props) {
               +{waiting}
             </span>
           )}
-          <span className="stop-alert-dist">{aheadText(ahead)}</span>
+          <span className="stop-alert-dist" aria-hidden="true">
+            {aheadText(ahead)}
+          </span>
         </div>
         {row ? (
           <div className="stop-alert-plates">
@@ -88,11 +96,29 @@ export function AlertBanner({ stops, pass = 1, ahead, side, waiting }: Props) {
               <span className={address ? (request ? 'stop-alert-name two' : 'stop-alert-name one') : 'stop-alert-name'}>{where}</span>
               {address && <span className="stop-alert-address">{address}</span>}
             </div>
-            {papers && <span className="stop-alert-qty">{papers}</span>}
+            {papers && !ask && <span className="stop-alert-qty">{papers}</span>}
           </div>
         )}
       </div>
       {side === 'right' && marker}
+    </>
+  )
+  return (
+    <div
+      className={`stop-alert ${noThrow ? 'red' : request ? 'purple' : 'blue'}${side === 'right' ? ' right' : ''}${row ? ' row' : ''}${layout.lines > 1 ? ' tall' : ''}${ask ? ' ask' : ''}`}
+      role="alert"
+      aria-label={alertSpeech(stops)}
+    >
+      {ask ? <div className="stop-alert-body">{body}</div> : body}
+      {ask && (
+        <div className="stop-alert-act">
+          {papers && <span className="stop-alert-qty">{papers}</span>}
+          <button className="stop-alert-drop" aria-label={`Dropped: ${name}`} onClick={onDropped}>
+            <Icon name="check" size={30} strokeWidth={3.2} />
+            Dropped
+          </button>
+        </div>
+      )}
     </div>
   )
 }

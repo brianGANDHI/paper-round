@@ -1,4 +1,4 @@
-import { alertable, quietNoThrows } from './alerts'
+import { alertable } from './alerts'
 import { plural } from './format'
 import { occurrences } from './geo'
 import { formatDistance, PAINT_MIN_M, sections } from './routeEdit'
@@ -121,7 +121,7 @@ export function sideExtents(
   return { stretch: { startM, endM, side }, extents }
 }
 
-/** How many times each no-throw house alerts: once for every pass of it that is not on a stretch where nothing is thrown. */
+/** How many times each no-throw house alerts: once for every pass of it that is not quiet. A house that never alerts has no entry. */
 function alertsByHouse(route: Route): Map<string, number> {
   const counts = new Map<string, number>()
   for (const o of alertable(route, occurrences(route))) {
@@ -130,30 +130,51 @@ function alertsByHouse(route: Route): Map<string, number> {
   return counts
 }
 
-/**
- * What a change of side does to the no-throw houses, for telling the driver: how many more will stay quiet (a
- * no-throw house means nothing where nothing is thrown), or how many more will alert, going from `before` to
- * `after`. A house on a street that is driven more than once can lose or gain an alert on one pass and still have
- * the others, and those are counted apart, as houses that stay quiet or alert on a pass. Null when it makes no
- * difference.
- */
-export function sideChangeNote(before: Route, after: Route): string | null {
+/** What a change of side does to the no-throw houses, in words, and whether any of it is houses going quiet. */
+function sideChangeWords(before: Route, after: Route): { note: string; quiets: boolean } | null {
   const noun = (n: number) => plural(n, 'no-throw house', 'no-throw houses')
-  const notes: string[] = []
-  const change = quietNoThrows(after) - quietNoThrows(before)
-  if (change !== 0) notes.push(`${noun(Math.abs(change))} will now ${change > 0 ? 'stay quiet' : 'alert'}`)
-
-  // The houses that keep some of their alerts but lose or gain others. One that loses all of them, or had none, is counted above.
   const was = alertsByHouse(before)
   const now = alertsByHouse(after)
+  // The houses that alerted somewhere and now never do, and the houses that now alert and never did.
+  let quieter = 0
+  let louder = 0
+  // The houses that keep some of their alerts but lose or gain others. One that loses all of them, or had none, is counted above.
   const fewer: number[] = []
   const more: number[] = []
   for (const [id, b] of was) {
     const a = now.get(id) ?? 0
-    if (a > 0 && a < b) fewer.push(b - a)
+    if (a === 0) quieter++
+    else if (a < b) fewer.push(b - a)
     else if (a > b) more.push(a - b)
   }
+  for (const id of now.keys()) if (!was.has(id)) louder++
+
+  const notes: string[] = []
+  if (quieter) notes.push(`${noun(quieter)} will now stay quiet`)
+  if (louder) notes.push(`${noun(louder)} will now alert`)
   if (fewer.length) notes.push(`${noun(fewer.length)} will now stay quiet on ${fewer.every((n) => n === 1) ? 'one pass' : 'some passes'}`)
   if (more.length) notes.push(`${noun(more.length)} will now alert on ${more.every((n) => n === 1) ? 'one more pass' : 'some more passes'}`)
-  return notes.length ? notes.join('; ') : null
+  return notes.length ? { note: notes.join('; '), quiets: quieter > 0 || fewer.length > 0 } : null
+}
+
+/**
+ * What a change of side does to the no-throw houses, for telling the driver: how many will now stay quiet (a no-throw
+ * house means nothing where nothing is thrown, nor on the side of the road that is not thrown), and how many will alert
+ * again, going from `before` to `after`. One change can do both: a stretch changed from Left to Right quiets the houses on
+ * its left and wakes the ones on its right, and those are counted apart, each house on its own, not as a net number. A
+ * house on a street that is driven more than once can lose or gain an alert on one pass and still have the others, and
+ * those are counted apart too, as houses that stay quiet or alert on a pass. Null when it makes no difference.
+ */
+export const sideChangeNote = (before: Route, after: Route): string | null => sideChangeWords(before, after)?.note ?? null
+
+/** Said after houses go quiet, for a driver who has not met the rule. */
+const QUIET_REASON = 'A no-throw house only alerts on a side you throw.'
+
+/**
+ * `sideChangeNote` as sentences for a notice: with its full stop, and when houses go quiet the reason (they are on the side that
+ * is not thrown, or on transit). Empty when the change makes no difference to the houses.
+ */
+export function sideChangeSentence(before: Route, after: Route): string {
+  const words = sideChangeWords(before, after)
+  return words ? `${words.note}.${words.quiets ? ` ${QUIET_REASON}` : ''}` : ''
 }

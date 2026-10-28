@@ -291,9 +291,10 @@ p {
   font-family: var(--font);
 }
 
+/* Above the bottom of the round (bar and buttons, 1000), so where an alert reaches down to them, as on a short screen, its Dropped button is the one tapped, not what is under it. */
 .map-top {
   position: absolute;
-  z-index: 1000;
+  z-index: 1010;
   top: calc(var(--safe-top) + 10px);
   left: 0;
   right: 0;
@@ -303,6 +304,18 @@ p {
   gap: 8px;
   padding: 0 12px;
   pointer-events: none;
+}
+
+/*
+ * A phone on its side is short but wide: the side, the next turn and the alerts keep to the left, clear of a notch, so the middle of
+ * the map (where the driver's dot is) and the buttons down the right have nothing over them.
+ */
+@media (orientation: landscape) and (max-height: 600px) {
+  .map-top {
+    right: auto;
+    width: clamp(320px, 46%, 440px);
+    padding-left: max(12px, env(safe-area-inset-left, 0px));
+  }
 }
 
 .side-pill {
@@ -348,30 +361,6 @@ p {
   backdrop-filter: saturate(180%) blur(20px);
 }
 
-/* On the road the map buttons sit at the bottom, above the count of stops left, out of the way of what the driver is watching for. */
-.fab-group.low {
-  position: static;
-  align-self: flex-end;
-  flex: none;
-}
-
-/* The map buttons and the count of stops left, together along the bottom of the map. */
-.map-bottom {
-  position: absolute;
-  z-index: 1000;
-  left: 12px;
-  right: 12px;
-  bottom: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  pointer-events: none;
-}
-
-.map-bottom > * {
-  pointer-events: auto;
-}
-
 .fab {
   display: grid;
   place-items: center;
@@ -388,44 +377,6 @@ p {
   background: var(--fill-2);
 }
 
-.status-card {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 8px 8px 8px 14px;
-  border-radius: 18px;
-  background: var(--material);
-  box-shadow: var(--shadow);
-  -webkit-backdrop-filter: saturate(180%) blur(20px);
-  backdrop-filter: saturate(180%) blur(20px);
-}
-
-.status-main {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-}
-
-.status-main .grow {
-  flex: 1;
-  min-width: 0;
-}
-
-.big-number {
-  min-width: 26px;
-  font-size: 32px;
-  font-weight: 700;
-  line-height: 1;
-  letter-spacing: -0.03em;
-  font-variant-numeric: tabular-nums;
-}
-
-.status-title {
-  font-size: 17px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-}
-
 /* The side of the road a stop is on, as a small button in the stop list. */
 .chip-btn {
   flex: none;
@@ -439,26 +390,6 @@ p {
 
 .chip-btn[data-warn] {
   background: rgba(255, 149, 0, 0.18);
-  color: var(--warn-text);
-}
-
-/* The alert distance, as a link under the count, so it can be changed on the road. */
-.status-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  padding: 3px 0;
-  color: var(--tint);
-  font-size: 15px;
-  font-weight: 500;
-}
-
-.status-warn {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding-right: 6px;
-  font-size: 14px;
   color: var(--warn-text);
 }
 
@@ -822,13 +753,6 @@ button.row:active:not(:disabled) {
   .stop-row .icon-btn.solo {
     margin-left: 24px;
   }
-}
-
-.dot-check {
-  display: grid;
-  place-items: center;
-  flex: none;
-  width: 38px;
 }
 
 .dot {
@@ -1679,32 +1603,6 @@ button.row:active:not(:disabled) {
   margin-top: 12px;
 }
 
-/* A message at the bottom of the map, with a way to take back the change it tells of. */
-.toast {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 8px 8px 14px;
-  border-radius: 14px;
-  color: #fff;
-  background: rgba(28, 28, 30, 0.94);
-  box-shadow: var(--shadow);
-  font-size: 14px;
-  font-weight: 600;
-  line-height: 1.25;
-  animation: rise 0.2s ease-out;
-}
-
-.toast span {
-  flex: 1;
-  min-width: 0;
-}
-
-.toast .btn {
-  flex: none;
-  color: #5ac8fa;
-}
-
 /*
  * Off the route: an amber banner under the side and the next turn. While waiting to be told what to do after coming back onto the route
  * somewhere else it has two buttons, which have to take touches, since the banner area itself lets them through to the map.
@@ -1785,7 +1683,7 @@ button.row:active:not(:disabled) {
   background: #fff;
 }
 
-/* The OpenStreetMap credit, along the bottom of the round screen where nothing covers it. */
+/* The OpenStreetMap credit, a small chip that is always in view (the round's map turns, so it is kept outside it). */
 .map-credit {
   flex: 0 1 auto;
   min-width: 0;
@@ -1803,16 +1701,12 @@ button.row:active:not(:disabled) {
   color: var(--label-2);
 }
 
-.map-bottom-row {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 8px;
-  pointer-events: none;
-}
-
-.map-bottom-row > * {
-  pointer-events: auto;
+/* On the round it is only the credit itself, tucked in on one line above the bar: the link to fix the map is in the menu. */
+.map-credit.compact {
+  padding: 1px 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* The ring round a house an alert is for. */
@@ -1830,6 +1724,14 @@ button.row:active:not(:disabled) {
   color: #fff;
   text-shadow: 0 0 2px rgba(0, 0, 0, 0.7), 0 0 3px rgba(0, 0, 0, 0.5);
   pointer-events: none;
+}
+
+/* Along a transit stretch the arrows are bigger, to go with its wider line: that road is followed, not delivered along. */
+.arrow.transit span {
+  width: 22px;
+  height: 22px;
+  font-size: 15px;
+  line-height: 22px;
 }
 
 /* ------------------------------------------------------------------ *
@@ -2275,11 +2177,6 @@ textarea.field-input {
  * Wide screens (iPad, desktop): panels float at the side like Apple Maps.
  * ------------------------------------------------------------------ */
 @media (min-width: 700px) {
-  .map-bottom {
-    right: auto;
-    width: 400px;
-  }
-
   .sheet {
     right: auto;
     bottom: 16px;

@@ -50,6 +50,16 @@ export interface RoundState {
   furthest?: number
   /** Where along the route, in metres, the round was started or last skipped to, so that carrying on later starts from there. */
   startM?: number
+  /**
+   * The bundle drops the driver confirmed with "Dropped", by the same keys as `handledStopIds`. Always a subset of the stops done
+   * and never also in `missed`: see `reconcile` in bundles.ts. Left out when there are none, and by rounds saved before it existed.
+   */
+  dropped?: string[]
+  /**
+   * The bundle drops the driver drove past with no confirmation, by the same keys. A subset of the stops done, apart from `dropped`.
+   * A bundle done that is in neither was skipped over (by skipping ahead, carrying on from a spot, or catching up). Left out when none.
+   */
+  missed?: string[]
 }
 
 /**

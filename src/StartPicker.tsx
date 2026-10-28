@@ -1,4 +1,6 @@
 import { useMemo, useRef, useState } from 'react'
+import { roundCounts } from './alerts'
+import { freshStart, restartEffect } from './bundleFlow'
 import { useDialogs } from './confirm'
 import { Icon } from './Icon'
 import { alongPath, cumulativeDistances, snapAtDistance, type Occurrence } from './geo'
@@ -6,10 +8,9 @@ import { MapCredit } from './MapCredit'
 import { MapView, type ViewCmd } from './MapView'
 import { resolveSections, sectionAt, sectionPoint, sectionStatus } from './namedSections'
 import { passesAt, passLabel } from './passChoice'
-import { handledForResume } from './resume'
 import { formatDistance, nearestOnRoute, ON_ROUTE_M, sections as throwSections } from './routeEdit'
 import { Sheet } from './ui'
-import type { NamedSection, Pt, Route } from './types'
+import type { NamedSection, Pt, Route, RoundState } from './types'
 
 interface Props {
   route: Route
@@ -18,6 +19,8 @@ interface Props {
   /** The stops that alert, by pass, and which of them are done now. */
   occs: readonly Occurrence[]
   handled: ReadonlySet<string>
+  /** The round as it is kept: what the spot does to the stops is worked out from it (the bundles dropped decide which done stops stay done). */
+  round: RoundState
   /** How far before the spot a stop still counts as ahead of it, in metres: see `slackFor`. */
   slack: number
   /** Where the phone is, if it is known. */
@@ -30,7 +33,7 @@ interface Props {
 }
 
 /** The map a spot on the route is picked on: tap the line, or choose a named section from the list. */
-export function StartPicker({ route, sections, occs, handled, slack, position, mode, onPick, onClose }: Props) {
+export function StartPicker({ route, sections, occs, handled, round, slack, position, mode, onPick, onClose }: Props) {
   const [picked, setPicked] = useState<{ m: number; pos: Pt } | null>(null)
   const [view, setView] = useState<ViewCmd>()
   // On a short screen (a phone on its side) the header alone fills the usual height of the sheet, so it opens tall.
@@ -81,9 +84,8 @@ export function StartPicker({ route, sections, occs, handled, slack, position, m
           ? `a spot in ${here.name}`
           : 'this spot'
   // What choosing the spot does to the stops: those before it count as done, and those after it that are done come up again.
-  const done = picked ? handledForResume(occs, picked.m, slack) : []
-  const comeBack = picked ? occs.filter((o) => handled.has(o.key) && !done.includes(o.key)).length : 0
-  const newlyDone = done.filter((k) => !handled.has(k)).length
+  // It is worked out the way the round does it, so what is said is what happens (a stop whose drop stays keeps its later passes done too).
+  const { newly: newlyDone, back: comeBack } = picked ? restartEffect(round, occs, handled, picked.m, slack, freshStart(mode === 'jump', roundCounts(occs, handled).finished)) : { newly: 0, back: 0 }
 
   return (
     <div className="picker">

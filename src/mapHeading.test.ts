@@ -1,5 +1,28 @@
 import { describe, expect, it } from 'vitest'
-import { counterRotation, headingUpLayout, HEADING_DEADBAND_DEG, holdHeading, norm360, shortest, smoothHeading } from './mapHeading'
+import {
+  ANCHOR_MAX_FRAC,
+  ANCHOR_MIN_FRAC,
+  bottomCover,
+  counterRotation,
+  DOT_CLEARANCE_PX,
+  DRIVEN_STEP_M,
+  drivenCut,
+  drivenShare,
+  followZoom,
+  HEADING_DEADBAND_DEG,
+  HEADING_UP_FRAC,
+  headingUpFrac,
+  headingUpLayout,
+  holdHeading,
+  isAhead,
+  norm360,
+  shortest,
+  smoothHeading,
+  STREET_ZOOM,
+  TOUCH_STALE_MS,
+  USER_INPUT_MS,
+  userInput,
+} from './mapHeading'
 
 /** What share of the way to a new heading the map goes in a gap of `dt` seconds, as the spec gives it. */
 const share = (dt: number) => 1 - Math.exp(-dt / 1.2)
@@ -659,5 +682,384 @@ describe('turning a label back', () => {
 
   it('cancels the turn of the map, so label and map together come to nothing', () => {
     for (const heading of [null, 0, 35, 180, 359, 370, -20]) expect((-(heading ?? 0) + counterRotation(heading)) % 360).toBeCloseTo(0, 9)
+  })
+})
+
+describe('how much of the map a panel along the bottom covers', () => {
+  it('is the pixels of a bar of a set height', () => {
+    expect(bottomCover(852, undefined, 90)).toBe(90)
+    expect(bottomCover(0, undefined, 56)).toBe(56)
+  })
+
+  it('is the share of the height for a sheet that grows with the screen', () => {
+    expect(bottomCover(800, 0.16)).toBeCloseTo(128)
+    expect(bottomCover(852, 0.45)).toBeCloseTo(383.4)
+  })
+
+  it('is whichever covers more when it is given both ways', () => {
+    expect(bottomCover(800, 0.1, 200)).toBe(200)
+    expect(bottomCover(800, 0.5, 90)).toBe(400)
+  })
+
+  it('is nothing when nothing is said', () => {
+    expect(bottomCover(852)).toBe(0)
+    expect(bottomCover(852, undefined, undefined)).toBe(0)
+  })
+
+  it('counts anything that is not a positive number as nothing, and never gives a negative or a NaN', () => {
+    for (const bad of [-1, NaN, Infinity, -Infinity]) {
+      expect(bottomCover(800, bad)).toBe(0)
+      expect(bottomCover(800, undefined, bad)).toBe(0)
+      expect(bottomCover(800, bad, bad)).toBe(0)
+    }
+    // A bad height leaves a pixel bar as it is and a share of nothing as nothing.
+    expect(bottomCover(NaN, 0.5, 70)).toBe(70)
+    expect(bottomCover(NaN, 0.5)).toBe(0)
+    expect(bottomCover(-10, 0.5)).toBe(0)
+    // One bad value does not spoil the other.
+    expect(bottomCover(800, NaN, 60)).toBe(60)
+    expect(bottomCover(800, 0.25, NaN)).toBe(200)
+  })
+
+  it('grows with the height for a share and not for a bar', () => {
+    expect(bottomCover(1000, 0.2)).toBeGreaterThan(bottomCover(500, 0.2))
+    expect(bottomCover(1000, undefined, 60)).toBe(bottomCover(500, undefined, 60))
+  })
+})
+
+describe('where the driver dot sits above a bar along the bottom', () => {
+  /** [width, height, what covers the bottom]: a slim bar of about 56 px, with the safe area on a phone that has one. */
+  const phones: [number, number, number][] = [
+    [393, 852, 56 + 34],
+    [430, 932, 56 + 34],
+    [390, 844, 56 + 34],
+    [375, 667, 56],
+    [320, 568, 56],
+    [393, 660, 56],
+  ]
+
+  it('is 70 percent of the way down when nothing is known about what covers the bottom, as it was', () => {
+    expect(HEADING_UP_FRAC).toBe(0.7)
+    expect(headingUpFrac(852, null)).toBe(0.7)
+    expect(headingUpFrac(0, 90)).toBe(0.7)
+    expect(headingUpFrac(-5, 90)).toBe(0.7)
+    expect(headingUpFrac(NaN, 90)).toBe(0.7)
+    expect(headingUpFrac(852, NaN)).toBe(0.7)
+    expect(headingUpFrac(852, Infinity)).toBe(0.7)
+  })
+
+  it('is as low as it can be and still clear the bar by the room the dot needs', () => {
+    // 852 - 90 - 72 = 690 pixels down.
+    expect(headingUpFrac(852, 90) * 852).toBeCloseTo(690, 6)
+    // 667 - 56 - 72 = 539.
+    expect(headingUpFrac(667, 56) * 667).toBeCloseTo(539, 6)
+    for (const [, h, cover] of phones) {
+      const ay = headingUpFrac(h, cover) * h
+      expect(h - cover - ay).toBeGreaterThanOrEqual(DOT_CLEARANCE_PX - 1e-9)
+    }
+  })
+
+  it('leaves the dot clear of its own halo and well clear of the bar on every phone in use', () => {
+    for (const [, h, cover] of phones) {
+      const ay = headingUpFrac(h, cover) * h
+      // The dot has a halo 22 px round it.
+      expect(ay + 22).toBeLessThan(h - cover)
+    }
+  })
+
+  it('is lower than the old 70 percent for a slim bar, so more of the screen is road ahead', () => {
+    for (const [, h, cover] of phones) expect(headingUpFrac(h, cover)).toBeGreaterThan(0.7)
+  })
+
+  it('goes higher the more is covered', () => {
+    let last = Infinity
+    for (let cover = 0; cover <= 600; cover += 20) {
+      const f = headingUpFrac(852, cover)
+      expect(f).toBeLessThanOrEqual(last)
+      last = f
+    }
+    expect(headingUpFrac(852, 200)).toBeLessThan(headingUpFrac(852, 90))
+  })
+
+  it('is kept between halfway and the lowest allowed, whatever is covered', () => {
+    expect(headingUpFrac(852, 0)).toBe(ANCHOR_MAX_FRAC)
+    expect(headingUpFrac(852, 5)).toBe(ANCHOR_MAX_FRAC)
+    expect(headingUpFrac(852, 800)).toBe(ANCHOR_MIN_FRAC)
+    expect(headingUpFrac(852, 1e6)).toBe(ANCHOR_MIN_FRAC)
+    for (const h of [200, 393, 568, 852, 1200]) {
+      for (const cover of [-50, 0, 30, 90, 300, 900, 5000]) {
+        const f = headingUpFrac(h, cover)
+        expect(f).toBeGreaterThanOrEqual(ANCHOR_MIN_FRAC)
+        expect(f).toBeLessThanOrEqual(ANCHOR_MAX_FRAC)
+      }
+    }
+  })
+
+  it('treats a negative cover as none', () => {
+    expect(headingUpFrac(852, -40)).toBe(headingUpFrac(852, 0))
+  })
+
+  it('is sized by what covers the bottom of the map, as a bar or as a share of it', () => {
+    // 0.16 of 852 is 136 px, which is more than a bar: the dot goes higher than it does for the bar.
+    const asShare = headingUpFrac(852, bottomCover(852, 0.16))
+    const asBar = headingUpFrac(852, bottomCover(852, undefined, 90))
+    expect(asShare).toBeLessThan(asBar)
+    expect(asShare * 852).toBeCloseTo(852 - 0.16 * 852 - DOT_CLEARANCE_PX, 6)
+  })
+
+  it('still lays out a square that covers every corner of the screen at any angle', () => {
+    for (const [w, h, cover] of phones) {
+      const { ax, ay, s } = headingUpLayout(w, h, headingUpFrac(h, cover))
+      for (const [cx, cy] of [[0, 0], [w, 0], [0, h], [w, h]]) expect(Math.hypot(cx - ax, cy - ay)).toBeLessThanOrEqual(s / 2)
+      expect(ax).toBe(w / 2)
+      // As low as the bar allows, but no lower than the highest share a dot is allowed to go to.
+      expect(ay).toBeCloseTo(Math.min(h * ANCHOR_MAX_FRAC, h - cover - DOT_CLEARANCE_PX), 6)
+    }
+    for (const cover of [0, 40, 90, 200, 400, 900]) {
+      const { ax, ay, s } = headingUpLayout(393, 852, headingUpFrac(852, cover))
+      for (const [cx, cy] of [[0, 0], [393, 0], [0, 852], [393, 852]]) expect(Math.hypot(cx - ax, cy - ay)).toBeLessThanOrEqual(s / 2)
+    }
+  })
+})
+
+describe('the zoom the map follows the driver at', () => {
+  it('is street level when following starts afresh and the map is further out', () => {
+    expect(STREET_ZOOM).toBe(17)
+    expect(followZoom(16, true)).toBe(17)
+    expect(followZoom(13, true)).toBe(17)
+    expect(followZoom(4.5, true)).toBe(17)
+  })
+
+  it('does not take a closer zoom from the driver even when following starts afresh', () => {
+    expect(followZoom(17, true)).toBe(17)
+    expect(followZoom(18, true)).toBe(18)
+    expect(followZoom(19, true)).toBe(19)
+  })
+
+  it('never changes the zoom for a fix after that, whether the driver zoomed in or out', () => {
+    for (const zoom of [3, 12, 14, 15.5, 16, 17, 18, 19]) expect(followZoom(zoom, false)).toBe(zoom)
+  })
+
+  it('keeps the driver zoom through a run of fixes (the bug was that zooming out came straight back to 17)', () => {
+    let street = true
+    let zoom = 16
+    const fix = () => {
+      zoom = followZoom(zoom, street)
+      street = false
+    }
+    fix()
+    expect(zoom).toBe(17)
+    // The driver zooms out to see where to turn.
+    zoom = 14
+    for (let i = 0; i < 30; i++) fix()
+    expect(zoom).toBe(14)
+    // And in, further than street level.
+    zoom = 19
+    fix()
+    expect(zoom).toBe(19)
+  })
+
+  it('goes back to street level after the view of the whole route, and only then', () => {
+    let street = true
+    let zoom = 16
+    const fix = () => {
+      zoom = followZoom(zoom, street)
+      street = false
+    }
+    fix()
+    zoom = 15
+    fix()
+    expect(zoom).toBe(15)
+    // The whole route is fitted (that is our zoom, so the next follow brings it back in).
+    zoom = 13
+    street = true
+    fix()
+    expect(zoom).toBe(17)
+    zoom = 15
+    fix()
+    expect(zoom).toBe(15)
+  })
+})
+
+describe('telling the driver moves of the map from the app own', () => {
+  it('is not the driver with no input at all, even at time zero', () => {
+    const input = userInput()
+    expect(input.active(0)).toBe(false)
+    expect(input.active(1e9)).toBe(false)
+    expect(input.touching(0)).toBe(false)
+  })
+
+  it('is the driver while a finger is down, however still it is held', () => {
+    const input = userInput()
+    input.touch(1, 1000)
+    expect(input.active(1000)).toBe(true)
+    expect(input.active(1000 + USER_INPUT_MS + 1)).toBe(true)
+    expect(input.active(1000 + TOUCH_STALE_MS - 1)).toBe(true)
+  })
+
+  it('stays the driver for a moment after the finger lifts (the zoom snaps after the fingers are up), and then it is not', () => {
+    const input = userInput()
+    input.touch(1, 0)
+    input.touch(0, 100)
+    expect(input.active(100)).toBe(true)
+    expect(input.active(100 + USER_INPUT_MS - 1)).toBe(true)
+    expect(input.active(100 + USER_INPUT_MS)).toBe(false)
+    expect(input.active(5000)).toBe(false)
+  })
+
+  it('is a touch that has ended when its end was missed, once it has said nothing for a while', () => {
+    const input = userInput()
+    input.touch(2, 0)
+    expect(input.touching(TOUCH_STALE_MS - 1)).toBe(true)
+    expect(input.touching(TOUCH_STALE_MS)).toBe(false)
+    expect(input.active(TOUCH_STALE_MS)).toBe(false)
+  })
+
+  it('is kept alive by a finger that is moving', () => {
+    const input = userInput()
+    input.touch(2, 0)
+    input.touch(2, 4000)
+    expect(input.touching(8000)).toBe(true)
+    expect(input.active(8000)).toBe(true)
+    input.touch(0, 8500)
+    expect(input.touching(8500)).toBe(false)
+  })
+
+  it('has a finger touching with one finger or more, and not with none', () => {
+    const input = userInput()
+    expect(input.touching(0)).toBe(false)
+    input.touch(1, 0)
+    expect(input.touching(10)).toBe(true)
+    input.touch(2, 20)
+    expect(input.touching(30)).toBe(true)
+    input.touch(1, 60)
+    expect(input.touching(70)).toBe(true)
+    // Lifted: the driver for a moment more, but nothing is touching.
+    input.touch(0, 80)
+    expect(input.touching(90)).toBe(false)
+    expect(input.active(90)).toBe(true)
+  })
+
+  it('counts a wheel turn or a key as the driver for a moment, but not as a finger on the map', () => {
+    const input = userInput()
+    input.input(1000)
+    expect(input.active(1000)).toBe(true)
+    expect(input.active(1000 + USER_INPUT_MS - 1)).toBe(true)
+    expect(input.active(1000 + USER_INPUT_MS)).toBe(false)
+    expect(input.touching(1000)).toBe(false)
+  })
+
+  it('does not let a wheel turn end a finger that is still down', () => {
+    const input = userInput()
+    input.touch(2, 0)
+    input.input(100)
+    expect(input.touching(200)).toBe(true)
+  })
+
+  it('takes the fingers on the screen as a count: fractions round down, and nonsense means none', () => {
+    const input = userInput()
+    input.touch(2.9, 0)
+    expect(input.touching(1)).toBe(true)
+    input.touch(0.9, 2)
+    expect(input.touching(3)).toBe(false)
+    input.touch(NaN, 4)
+    expect(input.touching(5)).toBe(false)
+    input.touch(-3, 6)
+    expect(input.touching(7)).toBe(false)
+    input.touch(Infinity, 8)
+    expect(input.touching(9)).toBe(false)
+  })
+
+  it('keeps one record for each map', () => {
+    const a = userInput()
+    const b = userInput()
+    a.touch(2, 0)
+    expect(a.touching(1)).toBe(true)
+    expect(b.touching(1)).toBe(false)
+    expect(b.active(1)).toBe(false)
+  })
+
+  it('does not take a zoom of the app own as the driver when their last touch was a while ago', () => {
+    // The first follow zooms in to street level some time after the driver last touched the map.
+    const input = userInput()
+    input.touch(1, 0)
+    input.touch(0, 50)
+    expect(input.active(50 + 5000)).toBe(false)
+  })
+})
+
+describe('the part of the route already driven', () => {
+  it('is cut in steps of 10 metres', () => {
+    expect(DRIVEN_STEP_M).toBe(10)
+    expect(drivenCut(0)).toBe(0)
+    expect(drivenCut(9.99)).toBe(0)
+    expect(drivenCut(10)).toBe(10)
+    expect(drivenCut(1234)).toBe(1230)
+    expect(drivenCut(1239.9)).toBe(1230)
+  })
+
+  it('does not move between fixes within a step, so the line is not redrawn at every fix', () => {
+    const cuts = new Set([1231, 1233.5, 1236, 1239.99].map(drivenCut))
+    expect(cuts.size).toBe(1)
+  })
+
+  it('is nothing when there is no driving, and for a distance that is not a number', () => {
+    expect(drivenCut(undefined)).toBeUndefined()
+    expect(drivenCut(NaN)).toBeUndefined()
+    expect(drivenCut(Infinity)).toBeUndefined()
+    expect(drivenCut(-Infinity)).toBeUndefined()
+  })
+
+  it('is the start of the route for a distance below it, never a negative cut', () => {
+    expect(drivenCut(-5)).toBe(0)
+    expect(Object.is(drivenCut(-5), 0)).toBe(true)
+    expect(drivenCut(-0.1)).toBe(0)
+  })
+
+  it('shares out a section: none of it before a cut that is at or before its start, all of it after its end', () => {
+    expect(drivenShare(0, 100, 300)).toBe(0)
+    expect(drivenShare(100, 100, 300)).toBe(0)
+    expect(drivenShare(200, 100, 300)).toBe(0.5)
+    expect(drivenShare(250, 100, 300)).toBe(0.75)
+    expect(drivenShare(300, 100, 300)).toBe(1)
+    expect(drivenShare(5000, 100, 300)).toBe(1)
+  })
+
+  it('counts a section with no length as all driven, and never goes outside 0 to 1', () => {
+    expect(drivenShare(0, 50, 50)).toBe(1)
+    expect(drivenShare(100, 80, 40)).toBe(1)
+    for (const cut of [-100, 0, 55, 100, 1e6]) {
+      const share = drivenShare(cut, 50, 150)
+      expect(share).toBeGreaterThanOrEqual(0)
+      expect(share).toBeLessThanOrEqual(1)
+    }
+  })
+
+  it('has an arrow ahead until the driver has passed it, and with no driving all of them', () => {
+    expect(isAhead(500, undefined)).toBe(true)
+    expect(isAhead(500, 0)).toBe(true)
+    expect(isAhead(500, 490)).toBe(true)
+    expect(isAhead(500, 500)).toBe(true)
+    expect(isAhead(500, 510)).toBe(false)
+    expect(isAhead(0, 10)).toBe(false)
+  })
+
+  it('leaves off the arrows already driven, and keeps the ones to come, in order', () => {
+    const arrows = [75, 225, 375, 525, 675].map((routeM) => ({ routeM }))
+    const cut = drivenCut(400)
+    expect(arrows.filter((a) => isAhead(a.routeM, cut)).map((a) => a.routeM)).toEqual([525, 675])
+    expect(arrows.filter((a) => isAhead(a.routeM, drivenCut(undefined))).length).toBe(5)
+    expect(arrows.filter((a) => isAhead(a.routeM, drivenCut(10000))).length).toBe(0)
+  })
+
+  it('splits a road driven twice so that the pass still to come is all ahead while the first is all driven', () => {
+    // Down a street (0 to 300 m) and back along it (300 to 600 m), the driver half way back.
+    const cut = drivenCut(450)
+    expect(drivenShare(cut as number, 0, 300)).toBe(1)
+    expect(drivenShare(cut as number, 300, 600)).toBe(0.5)
+    // At the start of the way back nothing of it is driven yet, though the way down is.
+    const atTurn = drivenCut(300)
+    expect(drivenShare(atTurn as number, 0, 300)).toBe(1)
+    expect(drivenShare(atTurn as number, 300, 600)).toBe(0)
   })
 })

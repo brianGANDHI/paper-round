@@ -22,7 +22,7 @@ import {
   setActiveStreets,
   uniqueName,
 } from './library'
-import type { Library, NamedSection, Route, TurnStreet } from './types'
+import type { Library, NamedSection, RoundState, Route, TurnStreet } from './types'
 
 const drawn = (n = 3): Route => ({
   points: Array.from({ length: n }, (_, i) => ({ lat: -33.87 + i * 0.001, lng: 151.2 })),
@@ -714,5 +714,119 @@ describe('reading street names', () => {
     expect(Object.keys(read).sort()).toEqual(['lat', 'lng', 'name', 'out'])
     expect(read).not.toBe(stored)
     expect([stored]).toEqual(copy)
+  })
+})
+
+describe('the bundles dropped and missed in a round', () => {
+  // The same route, with the stop a bundle drop: met on the way up and again on the way back, as 'a' and 'a#2'.
+  const bundles = (): Route => ({ ...doubled(), stops: [{ id: 'a', type: 'bundle', lat: -33.869, lng: 151.2, pathIdx: 0, label: 'Co-op', qty: 12 }] })
+  const started = (round: RoundState) => setActiveRound(addRoute(createLibrary(), 'Saturday', bundles()), round)
+  const read = (round: unknown) => normalizeLibrary({ routes: [{ id: 'x', name: 'A', route: bundles(), round, updatedAt: 0 }] })!.routes[0].round
+
+  describe('keeping them', () => {
+    it('keeps what is dropped and missed with the round, beside the progress', () => {
+      const round = { handledStopIds: ['a', 'a#2'], dropped: ['a'], missed: ['a#2'], furthest: 300, startM: 120 }
+      expect(activeRoute(started(round)).round).toEqual(round)
+    })
+
+    it('has no keys for them when there are none, as a round saved before them has none', () => {
+      const round = activeRoute(started({ handledStopIds: ['a'], furthest: 30, dropped: [], missed: [] })).round
+      expect(round).toEqual({ handledStopIds: ['a'], furthest: 30 })
+      expect('dropped' in round).toBe(false)
+      expect('missed' in round).toBe(false)
+    })
+
+    it('forgets a bundle that is not among the stops done, and one that is in both lists is dropped', () => {
+      const round = activeRoute(started({ handledStopIds: ['a'], dropped: ['a', 'a#2'], missed: ['a', 'zz'] })).round
+      expect(round).toEqual({ handledStopIds: ['a'], dropped: ['a'] })
+    })
+
+    it('does not change the round it is given', () => {
+      const given: RoundState = { handledStopIds: ['a'], dropped: ['a', 'a#2'] }
+      const copy = structuredClone(given)
+      started(given)
+      expect(given).toEqual(copy)
+    })
+
+    it('goes with a route that is adjusted while driving, for the times through still met', () => {
+      const lib = started({ handledStopIds: ['a', 'a#2'], dropped: ['a'], missed: ['a#2'], furthest: 200 })
+      const same = activeRoute(adjustActiveRoute(lib, { ...bundles(), sideChanges: [{ idx: 0, side: 'right' }] }, 1)).round
+      expect(same).toEqual({ handledStopIds: ['a', 'a#2'], dropped: ['a'], missed: ['a#2'], furthest: 200 })
+    })
+
+    it('keeps a stop dropped on one pass with its other pass done (which is what a drop leaves) through saving, adjusting and reading back', () => {
+      const round = { handledStopIds: ['a', 'a#2'], dropped: ['a'], furthest: 200 }
+      const lib = started(round)
+      expect(activeRoute(lib).round).toEqual(round)
+      expect(activeRoute(adjustActiveRoute(lib, { ...bundles(), sideChanges: [{ idx: 0, side: 'right' }] }, 1)).round).toEqual(round)
+      expect(read(round)).toEqual(round)
+    })
+
+    it('forgets those for a time through the route no longer makes, or a stop taken off it', () => {
+      const lib = started({ handledStopIds: ['a', 'a#2'], dropped: ['a'], missed: ['a#2'], furthest: 200 })
+      const once = activeRoute(adjustActiveRoute(lib, { ...bundles(), points: drawn(3).points }, 1)).round
+      expect(once).toEqual({ handledStopIds: ['a'], dropped: ['a'], furthest: 200 })
+      const none = activeRoute(adjustActiveRoute(lib, { ...bundles(), stops: [] }, 1)).round
+      expect(none).toEqual({ handledStopIds: [], furthest: 200 })
+    })
+
+    it('forgets them when the route is edited, which starts the round over', () => {
+      const lib = started({ handledStopIds: ['a'], dropped: ['a'], missed: [] })
+      expect(activeRoute(editActiveRoute(lib, bundles(), 5)).round).toEqual({ handledStopIds: [] })
+    })
+
+    it('does not carry them to a copy of the route, or over a route restored from a backup', () => {
+      let lib = started({ handledStopIds: ['a'], dropped: ['a'], missed: [] })
+      expect(activeRoute(duplicateRoute(lib, lib.activeId)).round).toEqual({ handledStopIds: [] })
+      lib = addImported(lib, [{ name: 'Saturday', route: bundles() }], 9, 'replace')
+      expect(activeRoute(lib).round).toEqual({ handledStopIds: [] })
+    })
+  })
+
+  describe('reading them back', () => {
+    it('keeps the ones that are good', () => {
+      const round = { handledStopIds: ['a', 'a#2', 'b'], dropped: ['a'], missed: ['a#2'], furthest: 450, startM: 10 }
+      expect(read(round)).toEqual(round)
+    })
+
+    it('reads a round saved before they existed just as it was', () => {
+      expect(read({ handledStopIds: ['a', 'b'], furthest: 450 })).toEqual({ handledStopIds: ['a', 'b'], furthest: 450 })
+      expect(read({ handledStopIds: [] })).toEqual({ handledStopIds: [] })
+    })
+
+    it('leaves out a list that is empty, or is junk', () => {
+      for (const junk of [undefined, null, [], 'a', 7, {}, true, [7, null, {}]]) {
+        const round = read({ handledStopIds: ['a'], dropped: junk, missed: junk })
+        expect(round, JSON.stringify(junk)).toEqual({ handledStopIds: ['a'] })
+        expect('dropped' in round, JSON.stringify(junk)).toBe(false)
+        expect('missed' in round, JSON.stringify(junk)).toBe(false)
+      }
+    })
+
+    it('drops what is not a key from a list, keeping the keys', () => {
+      expect(read({ handledStopIds: ['a', 'b'], dropped: ['a', 7, null, 'b'], missed: [] })).toEqual({ handledStopIds: ['a', 'b'], dropped: ['a', 'b'] })
+    })
+
+    it('keeps only what is among the stops done, so neither list holds a stop that is not done', () => {
+      const round = read({ handledStopIds: ['a'], dropped: ['a', 'b'], missed: ['c'] })
+      expect(round).toEqual({ handledStopIds: ['a'], dropped: ['a'] })
+    })
+
+    it('keeps a bundle in the dropped list only, when it is in both', () => {
+      expect(read({ handledStopIds: ['a', 'b'], dropped: ['a'], missed: ['a', 'b'] })).toEqual({ handledStopIds: ['a', 'b'], dropped: ['a'], missed: ['b'] })
+    })
+
+    it('keeps each key once', () => {
+      expect(read({ handledStopIds: ['a', 'b'], dropped: ['a', 'a'], missed: ['b', 'b', 'b'] })).toEqual({ handledStopIds: ['a', 'b'], dropped: ['a'], missed: ['b'] })
+    })
+
+    it('reads the stops done as it did, ignoring a key that is not text, before judging the others', () => {
+      expect(read({ handledStopIds: ['a', 7, null], dropped: ['a', 7], missed: [] })).toEqual({ handledStopIds: ['a'], dropped: ['a'] })
+    })
+
+    it('is the same read twice', () => {
+      const once = read({ handledStopIds: ['a', 'b'], dropped: ['a', 'zz'], missed: ['a', 'b'], furthest: 20 })
+      expect(read(JSON.parse(JSON.stringify(once)))).toEqual(once)
+    })
   })
 })

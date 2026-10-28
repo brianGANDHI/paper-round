@@ -1,0 +1,115 @@
+/*
+ * The round's menu: a sheet that comes up from the bottom of the round screen (above the tab bar), over a dimmed map. Its rows are
+ * the list rows used elsewhere, made taller for a thumb.
+ */
+.round-menu-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 1050;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.35);
+  animation: fade 0.15s ease-out;
+}
+
+/* The side, the next turn and any alert stay above the dimming: they are what the driver is watching for. */
+.screen:has(.round-menu-scrim) .map-top {
+  z-index: 1100;
+}
+
+.round-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: min(100%, 460px);
+  max-height: 100%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  padding: 6px 12px 12px;
+  border-radius: 18px 18px 0 0;
+  background: var(--material);
+  box-shadow: 0 -6px 30px rgba(0, 0, 0, 0.18);
+  -webkit-backdrop-filter: saturate(180%) blur(30px);
+  backdrop-filter: saturate(180%) blur(30px);
+  animation: rise 0.22s ease-out;
+}
+
+/* Opened while a Dropped alert is up, the menu scrolls below it, so its header and Done are not under the Dropped button. That is anywhere but a phone on its side, where the alert is at the left and the menu at the right. */
+@media not all and (orientation: landscape) and (max-height: 600px) {
+  .screen:has(.stop-alert.ask) .round-menu {
+    max-height: calc(100% - 330px);
+  }
+}
+
+/* The groups of rows keep their height when the menu is shorter than they are (under an alert), so the menu scrolls and no row is cut off. */
+.round-menu > * {
+  flex: none;
+}
+
+.round-menu-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 44px;
+}
+
+.round-menu-head h2 {
+  padding-left: 4px;
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.round-menu .row {
+  min-height: 60px;
+}
+
+.round-menu a.row {
+  color: inherit;
+  text-decoration: none;
+}
+
+.round-menu a.row:active {
+  background: var(--fill);
+}
+
+.round-menu .row .icon-tint,
+.round-menu .row .icon-danger {
+  display: flex;
+}
+
+.round-menu-value {
+  flex: none;
+  color: var(--label-2);
+  font-size: 17px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* A phone on its side has little height: the sheet is wider, with the choices in two columns, and the lines of explanation under them are left out. */
+@media (orientation: landscape) and (max-height: 600px) {
+  .round-menu {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    align-items: start;
+    width: min(100%, 720px);
+  }
+
+  .round-menu-head {
+    grid-column: 1 / -1;
+  }
+
+  .round-menu > .group:nth-child(2) {
+    grid-row: 2 / span 2;
+  }
+
+  .round-menu .row {
+    min-height: 52px;
+  }
+
+  .round-menu .row .sub {
+    display: none;
+  }
+}

@@ -1,6 +1,6 @@
 /**
- * Sounds: the beeps that go with a stop's alert, the tick that opens the audio link before a spoken word, and a
- * near-silent signal that keeps that link open.
+ * Sounds: the beeps that go with a stop's alert, the quiet tone that confirms a bundle drop, the tick that opens the
+ * audio link before a spoken word, and a near-silent signal that keeps that link open.
  *
  * A phone sending sound to a car or a speaker over Bluetooth lets the link go idle between sounds, and the first
  * fraction of a second of the next one is lost while it wakes: the start of a spoken turn goes missing. Waiting
@@ -9,6 +9,12 @@
 
 /** How long each stop alert's beeps last, in seconds: the voice waits this long to follow one. */
 export const ALERT_SECONDS = { bundle: 0.15, request: 0.37, nothrow: 0.95, offRoute: 0.4 } as const
+
+/** How long the tone that confirms a bundle drop lasts, in seconds. */
+export const DROPPED_SECONDS = 0.18
+
+/** How loud that tone is: well under the alerts' 0.3, since it answers a tap and is not asking for attention. */
+const DROPPED_GAIN = 0.1
 
 /** How loud the keep-alive signal is: about 56 decibels below full scale, which is quiet enough not to be heard. */
 const KEEP_ALIVE_GAIN = 0.0015
@@ -90,6 +96,18 @@ export function createSound(makeContext: () => AudioContext, sleep: (ms: number)
     return ALERT_SECONDS.offRoute
   }
 
+  /**
+   * A bundle drop was confirmed: a quick tick of two notes going up, short and quiet, to say the tap was taken. Higher and softer than
+   * a special request's two notes, so it is not taken for an alert. Says how long it takes, in seconds.
+   */
+  function dropped(): number {
+    void ctx?.resume()
+    beep(988, 0, 0.07, DROPPED_GAIN)
+    beep(1319, 0.09, 0.09, DROPPED_GAIN)
+    navigator.vibrate?.(40)
+    return DROPPED_SECONDS
+  }
+
   /** iOS Safari has no Vibration API, so the sound and red flash carry this alert. */
   function noThrow(): number {
     void ctx?.resume()
@@ -137,7 +155,7 @@ export function createSound(makeContext: () => AudioContext, sleep: (ms: number)
     keep = null
   }
 
-  return { unlock, ready, bundle, request, noThrow, offRoute, tick, startKeepAlive, stopKeepAlive, keepingAlive: () => keep !== null }
+  return { unlock, ready, bundle, request, noThrow, offRoute, dropped, tick, startKeepAlive, stopKeepAlive, keepingAlive: () => keep !== null }
 }
 
 /** The sound of the app, on the phone's own audio. */

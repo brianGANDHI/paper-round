@@ -23,8 +23,13 @@ import {
   planSpeech,
   platesLayout,
   plateText,
+  quietHouseIds,
   quietNoThrows,
   quietNote,
+  QUIET_REACH_M,
+  quietReason,
+  quietText,
+  roundCounts,
   ROW_GAP_M,
   ROW_MAX,
   ROW_SPAN_M,
@@ -33,12 +38,14 @@ import {
   SPOKEN_ROW_MAX,
   spokenNumber,
   stopOffRoute,
+  stopQuietReasons,
   stopRoadSides,
   stopsWithoutSide,
   zoneExit,
+  type QuietReason,
 } from './alerts'
-import { occurrences, type Occurrence } from './geo'
-import type { Pt, Route, Side, Stop, StopType } from './types'
+import { approachingOccurrences, byPosition, occurrences, type Occurrence } from './geo'
+import type { Pt, Route, Side, SideChange, Stop, StopType } from './types'
 
 const occ = (type: StopType, at: number): Occurrence => ({
   key: 's',
@@ -46,6 +53,28 @@ const occ = (type: StopType, at: number): Occurrence => ({
   idx: 0,
   at,
   off: 0,
+})
+
+/** A spot `x` metres east and `y` metres north of a start at 51 degrees north, for routes with exact distances. */
+const M_PER_DEG = (6371000 * Math.PI) / 180
+const spot = (x: number, y: number): Pt => ({ lat: 51 + y / M_PER_DEG, lng: x / (M_PER_DEG * Math.cos((51 * Math.PI) / 180)) })
+
+describe('how the round stands', () => {
+  const passes = (...keys: string[]) => keys.map((key) => ({ key }))
+
+  it('has nothing done, nothing left and is not finished for a round with no stops', () => {
+    expect(roundCounts([], new Set())).toEqual({ total: 0, done: 0, remaining: 0, finished: false })
+    expect(roundCounts([], new Set(['a']))).toEqual({ total: 0, done: 0, remaining: 0, finished: false })
+  })
+
+  it('counts the passes done and left, and is finished once none is left', () => {
+    expect(roundCounts(passes('a', 'b', 'c'), new Set(['a']))).toEqual({ total: 3, done: 1, remaining: 2, finished: false })
+    expect(roundCounts(passes('a', 'b', 'c'), new Set(['a', 'b', 'c']))).toEqual({ total: 3, done: 3, remaining: 0, finished: true })
+  })
+
+  it('does not count a key that is not one of the passes', () => {
+    expect(roundCounts(passes('a', 'b'), new Set(['a', 'zzz', 'a#2']))).toEqual({ total: 2, done: 1, remaining: 1, finished: false })
+  })
 })
 
 describe('the distances an alert can come up at', () => {
@@ -141,6 +170,16 @@ describe('whether the route runs the same way along two segments', () => {
     // The second segment is the second leg of a path: it starts where the first ends.
     expect(sameWay(path(step(0.001, 0), [{ lat: 0, lng: 0.001 }, { lat: 0.001, lng: 0.002 }]), 0, 1)).toBe(true) // 45 degrees
     expect(sameWay(path(step(0.001, 0), [{ lat: 0, lng: 0.001 }, { lat: 0.001, lng: 0 }]), 0, 1)).toBe(false) // 135 degrees
+  })
+
+  it('counts a turn of exactly a right angle as the same way, and a degree more as back', () => {
+    // East, then due south: exactly 90 degrees between the two.
+    const east = { lat: 0, lng: 0.001 }
+    expect(sameWay([{ lat: 0, lng: 0 }, east, { lat: -0.001, lng: 0.001 }], 0, 1)).toBe(true)
+    // A degree either side of that: south by a hair west of due south is more than a right angle, a hair east is less.
+    const hair = 0.001 * Math.tan((1 * Math.PI) / 180)
+    expect(sameWay([{ lat: 0, lng: 0 }, east, { lat: -0.001, lng: 0.001 - hair }], 0, 1)).toBe(false)
+    expect(sameWay([{ lat: 0, lng: 0 }, east, { lat: -0.001, lng: 0.001 + hair }], 0, 1)).toBe(true)
   })
 
   it('says yes when there is no segment to compare', () => {
@@ -262,11 +301,11 @@ describe('telling the driver about houses with no side', () => {
 })
 
 describe('where nothing is thrown at all', () => {
-  // A road heading north, thrown on the left for the first half and only driven for the second.
+  // A road heading north, thrown on the right for the first half and only driven for the second. The houses are east of it, on the right.
   const north: Pt[] = Array.from({ length: 11 }, (_, i) => ({ lat: 51 + i * 0.001, lng: 0 }))
   const mixed = (stops: Stop[]): Route => ({
     points: north,
-    sideChanges: [{ idx: 0, side: 'left' }, { idx: 5, side: 'transit' }],
+    sideChanges: [{ idx: 0, side: 'right' }, { idx: 5, side: 'transit' }],
     stops,
   })
   const house = (id: string, lat: number, extra: Partial<Stop> = {}): Stop => ({ id, type: 'nothrow', pathIdx: 0, lat, lng: 0.0002, ...extra })
@@ -297,11 +336,11 @@ describe('where nothing is thrown at all', () => {
   })
 
   it('is only quiet when every pass of the house is in transit', () => {
-    // Out along a street thrown on the left, and back along it as transit.
+    // Out along a street thrown on the right, where the house is, and back along it as transit.
     const out = Array.from({ length: 6 }, (_, i) => ({ lat: 51 + i * 0.001, lng: 0 }))
     const twice: Route = {
       points: [...out, ...[...out].reverse().slice(1)],
-      sideChanges: [{ idx: 0, side: 'left' }, { idx: 5, side: 'transit' }],
+      sideChanges: [{ idx: 0, side: 'right' }, { idx: 5, side: 'transit' }],
       stops: [house('s', 51.0025)],
     }
     const occs = occurrences(twice)
@@ -329,8 +368,303 @@ describe('where nothing is thrown at all', () => {
 
   it('has something to say for one house or several, and nothing for none', () => {
     expect(quietNote(0)).toBe('')
-    expect(quietNote(1)).toMatch(/^1 no-throw house is on a transit stretch/)
-    expect(quietNote(2)).toMatch(/^2 no-throw houses are on transit stretches/)
+    expect(quietNote(1)).toBe("1 no-throw house won't alert: it is on a transit stretch, or on the side you don't throw.")
+    expect(quietNote(2)).toBe("2 no-throw houses won't alert: they are on transit stretches, or on the side you don't throw.")
+  })
+})
+
+describe('a no-throw house on the side of the road that is not thrown', () => {
+  // A road heading north, 11 points about 111 m apart. 0.0002 degrees of longitude is about 14 m: east is the right of the way
+  // north and the left of the way back south.
+  const north: Pt[] = Array.from({ length: 11 }, (_, i) => ({ lat: 51 + i * 0.001, lng: 0 }))
+  const outAndBack: Pt[] = [...north, ...[...north].reverse().slice(1)]
+  /** East of the road, which is the right of the way north. */
+  const east = (id: string, lat = 51.0045, extra: Partial<Stop> = {}): Stop => ({ id, type: 'nothrow', pathIdx: 0, lat, lng: 0.0002, ...extra })
+  /** West of the road, which is the left of the way north. */
+  const west = (id: string, lat = 51.0045, extra: Partial<Stop> = {}): Stop => east(id, lat, { lng: -0.0002, ...extra })
+  const route = (points: Pt[], sideChanges: SideChange[], stops: Stop[]): Route => ({ points, sideChanges, stops })
+  const thrown = (side: Side, stops: Stop[], points = north) => route(points, [{ idx: 0, side }], stops)
+  const alerts = (r: Route) => alertable(r, occurrences(r)).map((o) => o.key)
+  const reasons = (r: Route, id = 's') => stopQuietReasons(r, occurrences(r), id)
+
+  it('alerts only for a house on the side that is thrown', () => {
+    expect(alerts(thrown('left', [west('w'), east('e')]))).toEqual(['w'])
+    expect(alerts(thrown('right', [west('w'), east('e')]))).toEqual(['e'])
+  })
+
+  it('says it is the other side that keeps it quiet', () => {
+    expect(reasons(thrown('left', [east('s')]))).toEqual(['otherSide'])
+    expect(reasons(thrown('right', [west('s')]))).toEqual(['otherSide'])
+    expect(reasons(thrown('right', [east('s')]))).toEqual([null])
+    expect(reasons(thrown('left', [west('s')]))).toEqual([null])
+  })
+
+  it('alerts for a house on either side where both sides are thrown', () => {
+    expect(alerts(thrown('both', [west('w'), east('e')])).sort()).toEqual(['e', 'w'])
+  })
+
+  it('stays quiet on a stretch where nothing is thrown, whichever side the house is on', () => {
+    const r = thrown('transit', [west('w'), east('e')])
+    expect(alerts(r)).toEqual([])
+    expect(reasons(r, 'w')).toEqual(['transit'])
+    expect(reasons(r, 'e')).toEqual(['transit'])
+  })
+
+  it('alerts for a house whose side cannot be told, rather than risk missing it', () => {
+    // On the line of the road, where both sides are thrown there is nothing to go by.
+    const online = east('s', 51.0045, { lng: 0 })
+    expect(alerts(thrown('both', [online]))).toEqual(['s'])
+    // Where one side only is thrown a house on the line takes that side, so it alerts too.
+    expect(alerts(thrown('left', [online]))).toEqual(['s'])
+    expect(alerts(thrown('right', [online]))).toEqual(['s'])
+    // A house a metre or so off the line has no side to speak of either.
+    expect(alerts(thrown('left', [east('s', 51.0045, { lng: 0.00001 })]))).toEqual(['s'])
+  })
+
+  it('never keeps a bundle drop or a special request quiet for being on the other side', () => {
+    const r = thrown('left', [east('b', 51.003, { type: 'bundle' }), east('q', 51.004, { type: 'request' }), east('n', 51.005)])
+    expect(alerts(r)).toEqual(['b', 'q'])
+    const [b, q] = occurrences(r)
+    expect(quietReason(r, occurrences(r), b)).toBeNull()
+    expect(quietReason(r, occurrences(r), q)).toBeNull()
+  })
+
+  it('goes by a side picked by hand, even over where the house sits', () => {
+    // The house sits on the right of the road but was picked as being on the left.
+    expect(alerts(thrown('left', [east('s', 51.0045, { side: 'left' })]))).toEqual(['s'])
+    expect(alerts(thrown('right', [east('s', 51.0045, { side: 'left' })]))).toEqual([])
+    // And the other way about.
+    expect(alerts(thrown('right', [west('s', 51.0045, { side: 'right' })]))).toEqual(['s'])
+    expect(alerts(thrown('left', [west('s', 51.0045, { side: 'right' })]))).toEqual([])
+  })
+
+  it('follows the stretch of the route the house is passed on', () => {
+    // Left thrown for the first half of the road, right for the second.
+    const r = route(north, [{ idx: 0, side: 'left' }, { idx: 5, side: 'right' }], [
+      east('e1', 51.002),
+      east('e2', 51.007),
+      west('w1', 51.002),
+      west('w2', 51.007),
+    ])
+    expect(alerts(r).sort()).toEqual(['e2', 'w1'])
+  })
+
+  describe('on a street driven both ways', () => {
+    it('is judged a pass at a time: the house on the right going out is on the left coming back', () => {
+      const left = thrown('left', [east('s')], outAndBack)
+      expect(reasons(left)).toEqual(['otherSide', null])
+      expect(alerts(left)).toEqual(['s#2'])
+      const right = thrown('right', [east('s')], outAndBack)
+      expect(reasons(right)).toEqual([null, 'otherSide'])
+      expect(alerts(right)).toEqual(['s'])
+    })
+
+    it('is the other way about for a house on the other side of the road', () => {
+      expect(alerts(thrown('left', [west('s')], outAndBack))).toEqual(['s'])
+      expect(alerts(thrown('right', [west('s')], outAndBack))).toEqual(['s#2'])
+    })
+
+    it('alerts on both passes when each pass throws the side the house is on', () => {
+      const r = route(outAndBack, [{ idx: 0, side: 'right' }, { idx: 10, side: 'left' }], [east('s')])
+      expect(alerts(r)).toEqual(['s', 's#2'])
+    })
+
+    it('is quiet on both passes when each throws the other side', () => {
+      const r = route(outAndBack, [{ idx: 0, side: 'left' }, { idx: 10, side: 'right' }], [east('s')])
+      expect(alerts(r)).toEqual([])
+      expect(reasons(r)).toEqual(['otherSide', 'otherSide'])
+    })
+
+    it('swaps a side picked by hand on the way back, as the alert does', () => {
+      // Picked as the left going out (though it sits on the right), so on the right coming back.
+      const left = thrown('left', [east('s', 51.0045, { side: 'left' })], outAndBack)
+      expect(reasons(left)).toEqual([null, 'otherSide'])
+      const right = thrown('right', [east('s', 51.0045, { side: 'left' })], outAndBack)
+      expect(reasons(right)).toEqual(['otherSide', null])
+    })
+
+    it('keeps a side picked by hand on a second pass the same way', () => {
+      // North along the street, round a block, and north along it again.
+      const twice: Pt[] = [...north, { lat: 51.01, lng: 0.01 }, { lat: 51, lng: 0.01 }, ...north]
+      const stops = [east('s', 51.0045, { lng: 0, side: 'right' })]
+      expect(occurrences(thrown('right', stops, twice))).toHaveLength(2)
+      expect(alerts(thrown('right', stops, twice))).toEqual(['s', 's#2'])
+      expect(alerts(thrown('left', stops, twice))).toEqual([])
+    })
+
+    it('keeps the keys of the passes that alert, whichever pass is quiet', () => {
+      // Quiet on the first pass, so the only key that alerts is the second pass's, as it would be with both alerting.
+      const r = thrown('left', [east('s')], outAndBack)
+      const all = occurrences(r)
+      expect(all.map((o) => o.key)).toEqual(['s', 's#2'])
+      expect(alertable(r, all)).toEqual([all[1]])
+    })
+
+    it('leaves the passes that alert in route order, among the other stops', () => {
+      const r = thrown('left', [east('a', 51.002), west('b', 51.003), east('c', 51.008), west('d', 51.006)], outAndBack)
+      expect(alerts(r)).toEqual(['b', 'd', 'c#2', 'a#2'])
+    })
+
+    it('counts what is left from the passes that alert', () => {
+      // Round counts what is left and when the round is finished with roundCounts, over these, against the keys of the passes it has done.
+      const r = thrown('left', [east('s')], outAndBack)
+      const occs = alertable(r, occurrences(r))
+      expect(occs).toHaveLength(1)
+      expect(roundCounts(occs, new Set())).toEqual({ total: 1, done: 0, remaining: 1, finished: false })
+      // The first pass is quiet, so doing it is not doing the stop.
+      expect(roundCounts(occs, new Set(['s']))).toEqual({ total: 1, done: 0, remaining: 1, finished: false })
+      expect(roundCounts(occs, new Set(['s#2']))).toEqual({ total: 1, done: 1, remaining: 0, finished: true })
+    })
+
+    it('can be quiet for different reasons on the two passes', () => {
+      // Driving out, then nothing thrown on the way back: both of them keep it quiet.
+      const r = route(outAndBack, [{ idx: 0, side: 'left' }, { idx: 10, side: 'transit' }], [east('s')])
+      expect(reasons(r)).toEqual(['otherSide', 'transit'])
+      expect(alerts(r)).toEqual([])
+    })
+  })
+
+  describe('a house off the route', () => {
+    const farEast = (m: number) => east('s', 51.0045, { lng: m / 70050 })
+
+    it('is never kept quiet for being on the other side, as it is on no stretch of the route', () => {
+      expect(alerts(thrown('left', [farEast(100)]))).toEqual(['s'])
+      expect(alerts(thrown('transit', [farEast(100)]))).toEqual(['s'])
+    })
+
+    it('is judged by the side only while it is within 40 m of the route, and always alerts beyond that', () => {
+      expect(QUIET_REACH_M).toBe(40)
+      expect(alerts(thrown('left', [farEast(35)]))).toEqual([])
+      expect(alerts(thrown('left', [farEast(45)]))).toEqual(['s'])
+      expect(alerts(thrown('left', [farEast(55)]))).toEqual(['s'])
+      expect(alerts(thrown('left', [farEast(65)]))).toEqual(['s'])
+      expect(alerts(thrown('transit', [farEast(35)]))).toEqual([])
+      expect(alerts(thrown('transit', [farEast(45)]))).toEqual(['s'])
+    })
+
+    it('stops being kept quiet just beyond 40 m from the route, for either reason', () => {
+      const r = thrown('left', [farEast(30)])
+      const [o] = occurrences(r)
+      expect(quietReason(r, [o], { ...o, off: QUIET_REACH_M })).toBe('otherSide')
+      expect(quietReason(r, [o], { ...o, off: QUIET_REACH_M + 0.01 })).toBeNull()
+      const t = thrown('transit', [farEast(30)])
+      const [p] = occurrences(t)
+      expect(quietReason(t, [p], { ...p, off: QUIET_REACH_M })).toBe('transit')
+      expect(quietReason(t, [p], { ...p, off: QUIET_REACH_M + 0.01 })).toBeNull()
+    })
+
+    it('is never kept quiet when it would alert by where the driver is, at whatever alert distance', () => {
+      const r = thrown('left', [farEast(30)])
+      const [o] = occurrences(r)
+      for (const distance of ALERT_DISTANCES) {
+        for (let m = 0; m <= 120; m++) {
+          const far = { ...o, off: m }
+          if (byPosition(far, alertRadius(distance))) expect(quietReason(r, [far], far), `${m} m from the route at ${distance} m`).toBeNull()
+        }
+      }
+      // And the distance is the one that matters: at the shortest alert distance a house is met by position from just beyond it.
+      expect(byPosition({ ...o, off: QUIET_REACH_M + 0.01 }, alertRadius(ALERT_DISTANCES[0]))).toBe(true)
+      expect(byPosition({ ...o, off: QUIET_REACH_M }, alertRadius(ALERT_DISTANCES[0]))).toBe(false)
+    })
+
+    it('is not counted or listed as quiet when it is beyond that, and is not only in transit there', () => {
+      const r = thrown('left', [farEast(45)])
+      expect(reasons(r)).toEqual([null])
+      expect(quietHouseIds(r, occurrences(r)).size).toBe(0)
+      expect(quietNoThrows(r)).toBe(0)
+      const t = thrown('transit', [farEast(30)])
+      const [o] = occurrences(t)
+      expect(onlyInTransit(t, [o], 's')).toBe(true)
+      expect(onlyInTransit(t, [{ ...o, off: 45 }], 's')).toBe(false)
+    })
+
+    it('is judged by the occurrence given, not where the stop sits', () => {
+      const r = thrown('left', [farEast(30)])
+      const [o] = occurrences(r)
+      expect(quietReason(r, [o], o)).toBe('otherSide')
+      expect(quietReason(r, [o], { ...o, off: 200 })).toBeNull()
+    })
+  })
+
+  describe('what the Stops list and the counts say', () => {
+    it('is still only transit that onlyInTransit speaks of', () => {
+      const r = thrown('left', [east('s')])
+      expect(onlyInTransit(r, occurrences(r), 's')).toBe(false)
+      expect(onlyInTransit(thrown('transit', [east('s')]), occurrences(thrown('transit', [east('s')])), 's')).toBe(true)
+    })
+
+    it('lists why a house is quiet on each pass, and nothing for a stop that is not on the route', () => {
+      const r = thrown('left', [east('s')], outAndBack)
+      expect(stopQuietReasons(r, occurrences(r), 's')).toEqual(['otherSide', null])
+      expect(stopQuietReasons(r, occurrences(r), 'nobody')).toEqual([])
+    })
+
+    it('counts the houses that are quiet on every pass, for either reason', () => {
+      const r = route(north, [{ idx: 0, side: 'left' }, { idx: 5, side: 'transit' }], [
+        west('alerts', 51.002),
+        east('side', 51.003),
+        west('transit', 51.007),
+        east('bundle', 51.003, { type: 'bundle' }),
+      ])
+      expect(quietHouseIds(r, occurrences(r))).toEqual(new Set(['side', 'transit']))
+      expect(quietNoThrows(r)).toBe(2)
+    })
+
+    it('does not count a house that still alerts on one of its passes', () => {
+      expect(quietNoThrows(thrown('left', [east('s')], outAndBack))).toBe(0)
+      // Quiet in transit going out and for the other side coming back: quiet on every pass.
+      const both = route(outAndBack, [{ idx: 0, side: 'transit' }, { idx: 10, side: 'right' }], [east('s'), west('t')])
+      expect(reasons(both)).toEqual(['transit', 'otherSide'])
+      expect(reasons(both, 't')).toEqual(['transit', null])
+      expect(quietHouseIds(both, occurrences(both))).toEqual(new Set(['s']))
+      expect(quietNoThrows(both)).toBe(1)
+    })
+
+    it('counts nothing for a route with no houses, or with none quiet', () => {
+      expect(quietNoThrows(thrown('left', []))).toBe(0)
+      expect(quietNoThrows(thrown('both', [east('s'), west('t')]))).toBe(0)
+      expect(quietNoThrows({ points: [], sideChanges: [], stops: [east('s')] })).toBe(0)
+    })
+
+    it('does not ask for the side of a house on a transit stretch, but does for one that alerts either way', () => {
+      const online = east('s', 51.0045, { lng: 0 })
+      expect(stopsWithoutSide(thrown('transit', [online]), [online])).toEqual([])
+      expect(stopsWithoutSide(thrown('both', [online]), [online]).map((h) => h.id)).toEqual(['s'])
+    })
+  })
+
+  describe('saying so in the Stops list', () => {
+    const says = (...r: (QuietReason | null)[]) => quietText(r)
+
+    it('says nothing for a house that alerts on every pass, or has none', () => {
+      expect(says()).toBe('')
+      expect(says(null)).toBe('')
+      expect(says(null, null)).toBe('')
+    })
+
+    it('says why when it is quiet on every pass', () => {
+      expect(says('transit')).toBe('in transit, so no alert')
+      expect(says('transit', 'transit')).toBe('in transit, so no alert')
+      expect(says('otherSide')).toBe('quiet here: you throw the other side')
+      expect(says('otherSide', 'otherSide')).toBe('quiet here: you throw the other side')
+      expect(says('transit', 'otherSide')).toBe('quiet here: in transit or you throw the other side')
+    })
+
+    it('says which pass when it is quiet on some', () => {
+      expect(says('otherSide', null)).toBe('quiet on pass 1: you throw the other side')
+      expect(says(null, 'otherSide')).toBe('quiet on pass 2: you throw the other side')
+      expect(says(null, 'transit')).toBe('quiet on pass 2: in transit')
+    })
+
+    it('lists the passes when it is quiet on several', () => {
+      expect(says('otherSide', null, 'otherSide')).toBe('quiet on passes 1 and 3: you throw the other side')
+      expect(says('transit', 'transit', 'transit', null)).toBe('quiet on passes 1, 2 and 3: in transit')
+    })
+
+    it('gives each reason its passes when they differ', () => {
+      expect(says('transit', 'otherSide', null)).toBe('quiet on pass 1: in transit; on pass 2: you throw the other side')
+      expect(says('otherSide', null, 'transit', 'otherSide')).toBe('quiet on pass 3: in transit; on passes 1 and 4: you throw the other side')
+    })
   })
 })
 
@@ -530,7 +864,7 @@ describe('a stop that is off the route', () => {
   })
 
   describe('quiet on transit', () => {
-    const transit = { sideChanges: [{ idx: 0, side: 'transit' as Side }] }
+    const transit = { points: [] as Pt[], sideChanges: [{ idx: 0, side: 'transit' as Side }] }
 
     it('does not make a no-throw house off the route quiet, as it is on no stretch of the route', () => {
       const onIt = { ...off('nothrow', 20), key: 'on', stop: stop('nothrow', { id: 'on' }) }
@@ -713,6 +1047,15 @@ describe('houses in a row', () => {
     expect(keys(houseRow(route, all, occs, new Set(), all[0], zone))).toEqual(['a'])
   })
 
+  it('has only the houses on the side that is thrown, as the others stay quiet', () => {
+    const { route, all, occs } = setup([house('a', 100, 'e'), house('b', 105, 'w'), house('c', 120, 'e'), house('d', 125, 'w')], [{ idx: 0, side: 'left' }])
+    // West is the left of the road north.
+    expect(keys(occs)).toEqual(['b', 'd'])
+    expect(keys(houseRow(route, all, occs, new Set(), occs[0], zone))).toEqual(['b', 'd'])
+    const right = setup([house('a', 100, 'e'), house('b', 105, 'w'), house('c', 120, 'e'), house('d', 125, 'w')], [{ idx: 0, side: 'right' }])
+    expect(keys(houseRow(right.route, right.all, right.occs, new Set(), right.occs[0], zone))).toEqual(['a', 'c'])
+  })
+
   it('is just the house itself when it alerts by where the driver is, as one off the route does', () => {
     // Nearest to the road before the houses, so the houses come after it and could join it if it were in the row.
     const far: Stop = { id: 'far', type: 'nothrow', pathIdx: 0, lat: 51 + 90 / 111195, lng: 400 / 70050 }
@@ -751,6 +1094,32 @@ describe('houses in a row', () => {
     // Every house is passed twice, and the way back is within the gap of the way out here.
     expect(all.find((o) => o.key === 'c#2')!.at - all.find((o) => o.key === 'b')!.at).toBeLessThan(ROW_GAP_M)
     expect(keys(houseRow(out, all, occs, new Set(), first, zone))).toEqual(['a', 'b'])
+  })
+
+  describe('on a street driven both ways, with a side picked by hand', () => {
+    // Up the road 400 m and straight back, with left thrown both ways. A house 12 m east is on the right going out, so it is quiet
+    // there, and on the left coming back, where it alerts. So a house picked as the right going out is only on the alerting list on
+    // its second pass, and the first pass it is told from is not among the passes that alert.
+    const twice = (stops: Stop[]): Route => ({ points: [spot(0, 0), spot(0, 400), spot(0, 0)], sideChanges: [{ idx: 0, side: 'left' }], stops })
+    const east = (id: string, y: number, extra: Partial<Stop> = {}): Stop => ({ id, type: 'nothrow', pathIdx: 0, ...spot(12, y), ...extra })
+    const rowFrom = (stops: Stop[], from: string) => {
+      const r = twice(stops)
+      const all = occurrences(r)
+      const occs = alertable(r, all)
+      return { occs, row: keys(houseRow(r, all, occs, new Set(), occs.find((o) => o.key === from)!, zone)) }
+    }
+
+    it('takes the swapped side of a house picked by hand into the row, though its first pass is quiet', () => {
+      // On the way back the house further along (t) is met first, then s, 40 m after it.
+      const { occs, row } = rowFrom([east('s', 300, { side: 'right' }), east('t', 340)], 't#2')
+      expect(keys(occs)).toEqual(['t#2', 's#2'])
+      expect(row).toEqual(['t#2', 's#2'])
+    })
+
+    it('starts a row from a house picked by hand with the side that swaps, though its first pass is quiet', () => {
+      const { row } = rowFrom([east('s', 340, { side: 'right' }), east('t', 300)], 's#2')
+      expect(row).toEqual(['s#2', 't#2'])
+    })
   })
 })
 
@@ -803,6 +1172,125 @@ describe('which of the queued alerts is the one showing', () => {
     expect(isGoneBy(a, 118, 118, null, radius)).toBe(false)
     expect(isGoneBy(a, 125, 125, null, radius)).toBe(false)
     expect(isGoneBy(a, 120 + HEAD_PASSED_M, 120 + HEAD_PASSED_M, null, radius)).toBe(true)
+  })
+
+  describe('a no-throw house the driver has gone by, and a stop still to come', () => {
+    it('does not hide a bundle drop that is live, whose Dropped button is the only way to confirm it', () => {
+      const queue = [q('house', 'nothrow', 100), q('bundle', 'bundle', 120)]
+      // 15 m past the house and 5 m short of the bundle.
+      expect(pickCurrent(queue, 115, 115, null, radius)?.key).toBe('bundle')
+      // Whichever order they were queued in.
+      expect(pickCurrent([...queue].reverse(), 115, 115, null, radius)?.key).toBe('bundle')
+    })
+
+    it('does not hide a special request that is live either', () => {
+      expect(pickCurrent([q('house', 'nothrow', 100), q('request', 'request', 130)], 120, 120, null, radius)?.key).toBe('request')
+    })
+
+    it('moves on to the live stop exactly when the house is gone by, and not before', () => {
+      const queue = [q('house', 'nothrow', 100), q('bundle', 'bundle', 120)]
+      expect(pickCurrent(queue, 100 + HEAD_PASSED_M - 0.5, 100 + HEAD_PASSED_M - 0.5, null, radius)?.key).toBe('house')
+      expect(pickCurrent(queue, 100 + HEAD_PASSED_M, 100 + HEAD_PASSED_M, null, radius)?.key).toBe('bundle')
+    })
+
+    it('goes by the furthest the driver got, so a wobble back does not bring the house back over the bundle', () => {
+      const queue = [q('house', 'nothrow', 100), q('bundle', 'bundle', 120)]
+      expect(pickCurrent(queue, 115, 90, null, radius)?.key).toBe('bundle')
+    })
+
+    it('still puts a house that is live before a bundle that is live', () => {
+      const queue = [q('bundle', 'bundle', 110), q('house', 'nothrow', 140)]
+      expect(pickCurrent(queue, 100, 100, null, radius)?.key).toBe('house')
+    })
+
+    it('still takes the nearest live house, and not one gone by, when several are queued', () => {
+      const queue = [q('gone', 'nothrow', 90), q('near', 'nothrow', 110), q('far', 'nothrow', 150), q('bundle', 'bundle', 105)]
+      expect(pickCurrent(queue, 105, 105, null, radius)?.key).toBe('near')
+    })
+
+    it('judges a stop met by where the driver is by how far away it is, whichever it is', () => {
+      const far = { ...q('off', 'bundle', 120, 200), stop: { id: 'off', type: 'bundle' as const, pathIdx: 0, lat: 0.0003, lng: 0 } }
+      // About 33 m from the driver: live, and the house just behind does not hide it.
+      expect(pickCurrent([q('house', 'nothrow', 100), far], 115, 115, { lat: 0, lng: 0 }, radius)?.key).toBe('off')
+    })
+  })
+})
+
+describe('driving past a bundle drop with a no-throw house near it, as the round screen does', () => {
+  // A road north with a bundle drop 500 m along. The driver goes along it in 2 m steps without tapping anything. As the screen does, each step
+  // leaves the zones that have been left (a stop gone past is done), brings up what has come into reach, and shows what pickCurrent picks.
+  const STEP = 2
+  const radius = alertRadius(40)
+  const drive = (stops: Stop[]) => {
+    const route: Route = { points: [spot(0, 0), spot(0, 1000)], sideChanges: [{ idx: 0, side: 'both' }], stops }
+    const occs = alertable(route, occurrences(route))
+    let queue: Occurrence[] = []
+    const seen = new Set<string>()
+    const handled = new Set<string>()
+    const showing: [number, string | undefined][] = []
+    for (let y = 0; y <= 1000; y += STEP) {
+      const pos = spot(0, y)
+      const left = queue.flatMap((o) => {
+        const exit = zoneExit(o, y, radius, pos)
+        return exit ? [{ o, exit }] : []
+      })
+      queue = queue.filter((o) => !left.some((l) => l.o.key === o.key))
+      for (const l of left) {
+        if (l.exit === 'passed') handled.add(l.o.key)
+        else seen.delete(l.o.key)
+      }
+      const fresh = approachingOccurrences(y, pos, occs, handled, radius, 5).filter((o) => !seen.has(o.key))
+      for (const o of fresh) seen.add(o.key)
+      queue = [...queue, ...fresh]
+      showing.push([y, pickCurrent(queue, y, y, pos, radius)?.key])
+    }
+    return showing
+  }
+  const bundle: Stop = { id: 'bundle', type: 'bundle', pathIdx: 0, ...spot(8, 500) }
+  const house = (offset: number): Stop => ({ id: 'house', type: 'nothrow', pathIdx: 0, ...spot(8, 500 + offset) })
+  /** Metres of road, before the bundle and in all, on which its alert (and so its Dropped button) was showing. */
+  const metres = (stops: Stop[]) => {
+    const log = drive(stops)
+    const on = log.filter(([, key]) => key === 'bundle')
+    return { before: on.filter(([y]) => y < 500).length * STEP, total: on.length * STEP }
+  }
+
+  /** Within a step of the figure: where exactly a zone starts depends on the rounding of the distances. */
+  const about = (got: number, want: number) => expect(Math.abs(got - want), `${got} against ${want}`).toBeLessThanOrEqual(STEP)
+
+  it('shows a bundle drop alone for the whole of its zone', () => {
+    const alone = metres([bundle])
+    about(alone.before, 40)
+    about(alone.total, 80)
+  })
+
+  it('shows the bundle once a house just before it is passed, instead of only after the car has gone by the bundle', () => {
+    // The house is 30 m before the bundle: passed 10 m on, 20 m before the bundle. The bundle was hidden for all of that before.
+    const thirty = metres([bundle, house(-30)])
+    about(thirty.before, 20)
+    about(thirty.total, 62)
+    const fifteen = metres([bundle, house(-15)])
+    about(fifteen.before, 4)
+    about(fifteen.total, 32)
+  })
+
+  it('shows the bundle for the stretch before a house just after it comes into reach', () => {
+    about(metres([bundle, house(10)]).before, 8)
+    about(metres([bundle, house(25)]).before, 24)
+    about(metres([bundle, house(40)]).before, 38)
+  })
+
+  it('has the bundle showing as the car reaches it when the house before it has been passed', () => {
+    const at = (y: number, log: [number, string | undefined][]) => log.find(([m]) => m === y)?.[1]
+    const log = drive([bundle, house(-30)])
+    expect(at(470, log)).toBe('house')
+    expect(at(490, log)).toBe('bundle')
+    expect(at(500, log)).toBe('bundle')
+  })
+
+  it('still has the bundle wait for a house at the same spot, which is passed only as the bundle is', () => {
+    // What still waits: a house at the very spot of the bundle hides it for as long as it is live, and then the bundle is gone by too.
+    expect(metres([bundle, house(0)]).before).toBe(0)
   })
 })
 
