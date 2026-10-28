@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { backupFileName, makeBackup, toBackupRoute, type BackupRoute } from './backup'
 import { BackupDialog, RestoreDialog } from './BackupDialogs'
 import { useDialogs } from './confirm'
+import { Contact } from './Contact'
 import { formatDate, plural } from './format'
 import { Icon } from './Icon'
 import {
@@ -206,6 +207,7 @@ export function Routes({ library, update, onGoSetup }: Props) {
         <p className="footnote">
           Your routes are saved automatically on this device and stay here for future runs. To plan a round on a computer, draw it there, tap Back Up and copy the text or save the file, then on your phone choose Restore from Backup and paste it in or open the file.
         </p>
+        <Contact />
       </div>
 
       {sheet?.kind === 'backup' && <BackupDialog title={sheet.title} text={sheet.text} fileName={sheet.fileName} onClose={() => setSheet(null)} />}

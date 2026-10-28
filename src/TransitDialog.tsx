@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { Contact } from './Contact'
 import { Icon } from './Icon'
 import { routeByAddress, TransitError, transitMessage, type Stage, type TransitResult } from './transit'
 import { Banner, Segmented } from './ui'
@@ -173,6 +174,7 @@ export function TransitDialog({ open, route, onAdded, onClose }: Props) {
           Needs internet. The addresses you type are sent to OpenStreetMap's search service, and FOSSGIS's routing server works out the road. Undo takes the
           stretch back off.
         </p>
+        <Contact />
       </form>
     </div>
   )

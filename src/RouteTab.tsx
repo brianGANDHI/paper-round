@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Icon } from './Icon'
 import { formatDistance, routeLength } from './routeEdit'
 import { BRUSH_OPTIONS } from './sideOptions'
+import { Contact } from './Contact'
 import { StreetNames } from './StreetNames'
 import { Banner, Segmented } from './ui'
 import type { Pt, Route, Side, TurnStreet } from './types'
@@ -173,6 +174,7 @@ export function RouteTab(p: Props) {
           </div>
           <p className="footnote">Tap a line on the map to change which side it is thrown on.</p>
           <StreetNames route={p.route} streets={p.streets} onStreets={p.onStreets} />
+          <Contact />
           <button className="btn primary block" onClick={p.onNext}>
             Next: Choose Throw Side
           </button>

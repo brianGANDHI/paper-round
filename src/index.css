@@ -899,6 +899,11 @@ button.row:active:not(:disabled) {
   background: transparent;
 }
 
+.footnote.contact a {
+  color: inherit;
+  text-decoration: underline;
+}
+
 .footnote {
   padding: 0 4px;
   font-size: 13px;
