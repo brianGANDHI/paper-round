@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   alongPath,
+  APPROACH_RADIUS,
   approachingOccurrences,
   awayBearing,
   awayFromRoad,
@@ -354,7 +355,7 @@ describe('a small alert zone', () => {
   const stop: Stop = { id: 's', type: 'nothrow', pathIdx: 0, lat: 51.005, lng: 0 }
   const o: Occurrence = { key: 's', stop, idx: 4, at: 500, off: 0 }
   const here: Pt = { lat: 51.005, lng: 0 }
-  const zone = (m: number) => ({ nothrow: m, bundle: m, request: m })
+  const zone = (m: number) => ({ nothrow: m, bundle: m, request: m, block: m })
 
   it('does not alert for a stop already further behind than the zone reaches', () => {
     // 15 m past the stop: inside a zone of 20 m or more, outside one of 10 m.
@@ -403,7 +404,7 @@ describe('how far a stop is from the route', () => {
 
 describe('stops that are met by where the driver is, not along the route', () => {
   const east = (m: number) => m / 70050
-  const zone = (m: number) => ({ nothrow: m, bundle: m, request: m })
+  const zone = (m: number) => ({ nothrow: m, bundle: m, request: m, block: m })
   const stopAtOff = (id: string, lat: number, offM: number, type: Stop['type'] = 'bundle'): Stop => ({
     id,
     type,
@@ -425,8 +426,8 @@ describe('stops that are met by where the driver is, not along the route', () =>
 
   it('go by the zone of their own kind of stop', () => {
     const [o] = occurrences({ points: road, stops: [stopAtOff('f', 51.005, 80)] })
-    expect(byPosition(o, { nothrow: 60, bundle: 40, request: 40 })).toBe(true)
-    expect(byPosition({ ...o, stop: { ...o.stop, type: 'nothrow' } }, { nothrow: 60, bundle: 40, request: 40 })).toBe(false)
+    expect(byPosition(o, { nothrow: 60, bundle: 40, request: 40, block: 40 })).toBe(true)
+    expect(byPosition({ ...o, stop: { ...o.stop, type: 'nothrow' } }, { nothrow: 60, bundle: 40, request: 40, block: 40 })).toBe(false)
   })
 
   it('alert when the driver is within the alert distance of them, wherever the driver is along the route', () => {
@@ -757,5 +758,203 @@ describe('the segment a stop is on when its nearest point is where two segments 
       const [o] = occurrences({ points: [at(0, 0), at(0, 60), at(0, 100), at(60, 100), at(100, 100)], stops: [{ id: 'c', type: 'nothrow' as const, pathIdx: 0, ...at(x, y) }] })
       expect(o.idx).toBe(2)
     }
+  })
+})
+
+describe('a stop passed on both legs of a turn-round: the other leg it is passed on', () => {
+  const at = (x: number, y: number): Pt => ({ lat: 51 + y / 111195, lng: x / 69977 })
+  const stopAt = (x: number, y: number, id = 'h'): Stop => ({ id, type: 'nothrow', pathIdx: 0, ...at(x, y) })
+
+  /** Up a 300 m street and straight back down the same line: segment 0 is the way in and segment 1 the way out. */
+  const exact: Pt[] = [at(0, 0), at(0, 300), at(0, 0)]
+
+  it('is kept for a house at the turn, which is passed once, on the other segment', () => {
+    for (const x of [12, -12]) {
+      const passes = occurrences({ points: exact, stops: [stopAt(x, 295)] })
+      expect(passes).toHaveLength(1)
+      expect(passes[0].alt, `${x} m east`).toBe(passes[0].idx === 0 ? 1 : 0)
+    }
+  })
+
+  it('is the leg a house at the tip is not on: the later when the earlier is taken and the earlier when the later is', () => {
+    // A tie is the earlier leg, and a house past the tip itself is taken as on the leg that starts there.
+    expect(occurrences({ points: exact, stops: [stopAt(12, 285)] })[0]).toMatchObject({ idx: 0, alt: 1 })
+    expect(occurrences({ points: exact, stops: [stopAt(12, 300)] })[0]).toMatchObject({ idx: 1, alt: 0 })
+  })
+
+  it('is kept for a hairpin drawn with a short run round, whichever way it turns', () => {
+    // Up the street, 6 m on, 5 m across, 14 m back and down the lane 5 m over: the shape the U-turn button draws.
+    const right = [at(0, 0), at(0, 300), at(0, 306), at(5, 306), at(5, 292), at(5, 0)]
+    const left = [at(0, 0), at(0, 300), at(0, 306), at(-5, 306), at(-5, 292), at(-5, 0)]
+    for (const points of [right, left]) {
+      for (const [x, y] of [[12, 300], [-12, 300], [12, 285], [-12, 285]] as const) {
+        const passes = occurrences({ points, stops: [stopAt(x, y)] })
+        expect(passes).toHaveLength(1)
+        expect(passes[0].alt, `${x},${y}`).toBeDefined()
+      }
+    }
+  })
+
+  it('is on a segment that runs the other way to the one the pass is on', () => {
+    const [o] = occurrences({ points: exact, stops: [stopAt(12, 290)] })
+    const dir = (i: number) => (i === 0 ? 'up' : 'down')
+    expect(dir(o.alt as number)).not.toBe(dir(o.idx))
+  })
+
+  it('is the nearest of the segments that run the other way', () => {
+    // Up the street, across 15 m, and down a lane drawn as two segments, the first running from 300 m to 285 m and the next on from there.
+    const points = [at(0, 0), at(0, 300), at(15, 300), at(15, 285), at(15, 250), at(15, 0)]
+    // A house 5 m west of the street, nearest the street. The way across runs east, so is not the other leg; the lane is.
+    expect(occurrences({ points, stops: [stopAt(-5, 295)] })[0]).toMatchObject({ idx: 0, alt: 2 })
+    expect(occurrences({ points, stops: [stopAt(-5, 280)] })[0]).toMatchObject({ idx: 0, alt: 3 })
+  })
+
+  it('is left out for a stop passed one way only: a straight road, a corner and a bend', () => {
+    expect(occurrences({ points: road, stops: [{ id: 'h', type: 'nothrow', pathIdx: 0, lat: 51.0045, lng: 0.0002 }] })[0].alt).toBeUndefined()
+    const corner = [at(0, 0), at(0, 100), at(100, 100)]
+    expect(occurrences({ points: corner, stops: [stopAt(-10, 110)] })[0].alt).toBeUndefined()
+    expect(occurrences({ points: corner, stops: [stopAt(10, 90)] })[0].alt).toBeUndefined()
+    // A bend of 120 degrees is still not the route coming back.
+    const bend = [at(0, 0), at(0, 100), at(87, 50)]
+    expect(occurrences({ points: bend, stops: [stopAt(-10, 100)] })[0].alt).toBeUndefined()
+  })
+
+  it('is kept where the route turns back by more than 135 degrees, and left out where it turns back by less', () => {
+    // Up 300 m and back down a street that leaves the first at the tip, `turn` degrees round from the way up.
+    const hairpin = (turn: number): Pt[] => {
+      const rad = (turn * Math.PI) / 180
+      return [at(0, 0), at(0, 300), at(Math.sin(rad) * 200, 300 + Math.cos(rad) * 200)]
+    }
+    for (const turn of [140, 150, 170]) {
+      const [o] = occurrences({ points: hairpin(turn), stops: [stopAt(-4, 296)] })
+      expect(o.alt, `${turn} degrees`).toBeDefined()
+    }
+    for (const turn of [90, 110, 130]) {
+      const [o] = occurrences({ points: hairpin(turn), stops: [stopAt(-4, 296)] })
+      expect(o.alt, `${turn} degrees`).toBeUndefined()
+    }
+  })
+
+  it('is left out for a house along a street driven out and back, which is passed twice by passes of their own', () => {
+    const passes = occurrences({ points: exact, stops: [stopAt(12, 120)] })
+    expect(passes).toHaveLength(2)
+    for (const p of passes) expect(p.alt).toBeUndefined()
+  })
+
+  it('does not change how many times a stop is passed, nor its key or place along the route', () => {
+    for (const y of [0, 100, 250, 270, 285, 295, 300]) {
+      const passes = occurrences({ points: exact, stops: [stopAt(12, y)] })
+      expect(passes.map((p) => p.key)).toEqual(passes.length === 2 ? ['h', 'h#2'] : ['h'])
+      for (const p of passes) expect({ idx: p.idx, at: p.at, off: p.off }).toEqual({ idx: p.idx, at: p.at, off: p.off })
+    }
+    const [o] = occurrences({ points: exact, stops: [stopAt(12, 300)] })
+    const { alt, altAt, ...plain } = o
+    expect(alt).toBe(0)
+    expect(altAt).toBeCloseTo(300, 0)
+    expect(plain).toEqual({ key: 'h', stop: o.stop, idx: 1, at: o.at, off: o.off })
+  })
+
+  it('says how far along the route the other leg passes it', () => {
+    // 285 m up the way in, and 15 m back down the way out from the turn at 300 m.
+    const [o] = occurrences({ points: exact, stops: [stopAt(12, 285)] })
+    expect(o).toMatchObject({ idx: 0, alt: 1 })
+    expect(o.at).toBeCloseTo(285, 0)
+    expect(o.altAt).toBeCloseTo(315, 0)
+    const [pass] = passesNear(exact, at(-12, 290))
+    expect(pass.altAt).toBeCloseTo(310, 0)
+    // Only with `alt`.
+    const [one] = occurrences({ points: road, stops: [{ id: 'h', type: 'nothrow', pathIdx: 0, lat: 51.0045, lng: 0.0002 }] })
+    expect('altAt' in one).toBe(false)
+  })
+
+  it('is not an own property when there is none, so a stop compares equal to one made without it', () => {
+    const [o] = occurrences({ points: road, stops: [{ id: 'h', type: 'nothrow', pathIdx: 0, lat: 51.0045, lng: 0.0002 }] })
+    expect('alt' in o).toBe(false)
+  })
+
+  it('is given by passesNear too', () => {
+    const [pass] = passesNear(exact, at(12, 295))
+    expect(pass.alt).toBeDefined()
+  })
+})
+
+describe('a stop beyond the end of a court closed with the U-turn button', () => {
+  const at = (x: number, y: number): Pt => ({ lat: 51 + y / 111195, lng: x / 69977 })
+  const stopAt = (x: number, y: number): Stop => ({ id: 'h', type: 'nothrow', pathIdx: 0, ...at(x, y) })
+  // Up a 300 m court, 6 m on, 5 m across to the right and back down the lane: segments 0 and 1 the way in, 2 the way across, 3 and 4 the way back.
+  const box: Pt[] = [at(0, 0), at(0, 300), at(0, 306), at(5, 306), at(5, 292), at(5, 0)]
+
+  it('is passed on the way in and the way back, not on the way across: the leg nearer it is the one it is on and the other is its alt', () => {
+    // Straight ahead, ahead to the left, ahead to the right and just past the corner the way across starts from.
+    for (const [x, y] of [[0, 316], [-11, 311], [2.5, 316], [8, 312], [-6, 314], [0, 309]] as const) {
+      const [o] = occurrences({ points: box, stops: [stopAt(x, y)] })
+      expect(o.idx, `${x},${y}`).not.toBe(2)
+      expect([1, 3]).toContain(o.idx)
+      expect(o.alt, `${x},${y}`).toBe(o.idx === 1 ? 3 : 1)
+    }
+  })
+
+  it('is on the way in when that is nearer, or as near, and on the way back when that is nearer, timed where each passes it', () => {
+    const [ahead] = occurrences({ points: box, stops: [stopAt(-11, 311)] })
+    expect(ahead).toMatchObject({ idx: 1, alt: 3 })
+    expect(ahead.at).toBeCloseTo(306, 0)
+    expect(ahead.altAt).toBeCloseTo(311, 0)
+    // Halfway across: as near the corner the way in ends at as the one the way back starts from.
+    expect(occurrences({ points: box, stops: [stopAt(2.5, 316)] })[0]).toMatchObject({ idx: 1, alt: 3 })
+    const [right] = occurrences({ points: box, stops: [stopAt(8, 312)] })
+    expect(right).toMatchObject({ idx: 3, alt: 1 })
+    expect(right.at).toBeCloseTo(311, 0)
+  })
+
+  it('keeps the way across of a wider loop: a cross street of a block between two streets driven opposite ways', () => {
+    // North 100 m, a 30 m cross street east, and south again: a house beside the cross street is passed along it, on its left.
+    const loop = [at(0, 0), at(0, 100), at(30, 100), at(30, 0)]
+    for (const x of [10, 15, 20]) {
+      const [o] = occurrences({ points: loop, stops: [stopAt(x, 110)] })
+      expect(o.idx, `${x}`).toBe(1)
+      expect(o.alt).toBeUndefined()
+    }
+  })
+
+  it('keeps the way across for a stop between the legs of a wider U-turn, 3 m or more from each, and the legs for any other', () => {
+    // 10 m across, as one tapped by hand might be: a house straight ahead between the legs is on the right of both, so it is passed on
+    // the way across, on its left as the car swings round outside it. One straight on from the way in, or out to the left, is on the legs.
+    const wide: Pt[] = [at(0, 0), at(0, 300), at(0, 306), at(10, 306), at(10, 292), at(10, 0)]
+    const [between] = occurrences({ points: wide, stops: [stopAt(5, 314)] })
+    expect(between.idx).toBe(2)
+    expect(between.alt).toBeUndefined()
+    expect(occurrences({ points: wide, stops: [stopAt(0, 316)] })[0]).toMatchObject({ idx: 1, alt: 3 })
+    expect(occurrences({ points: wide, stops: [stopAt(-11, 311)] })[0]).toMatchObject({ idx: 1, alt: 3 })
+    // Within 3 m of one leg it is on the legs, as it is for the U-turn the app draws, 5 m across.
+    expect(occurrences({ points: wide, stops: [stopAt(2, 314)] })[0]).toMatchObject({ idx: 1, alt: 3 })
+  })
+
+  it('keeps a short piece of the route that is not across a U-turn: the corner of a dog-leg', () => {
+    // North, 8 m east, then on north: the legs either side run the same way, so the piece east is the way the house is passed.
+    const dogleg = [at(0, 0), at(0, 100), at(8, 100), at(8, 200)]
+    const [o] = occurrences({ points: dogleg, stops: [stopAt(4, 103)] })
+    expect(o.idx).toBe(1)
+    expect(o.alt).toBeUndefined()
+  })
+})
+
+describe('how far a round has got, with a stop at the turn-round of a court', () => {
+  const at = (x: number, y: number): Pt => ({ lat: 51 + y / 111195, lng: x / 69977 })
+  const exact: Pt[] = [at(0, 0), at(0, 300), at(0, 0)]
+
+  it('goes by the earlier of the two legs it is passed on, whichever its alert was for', () => {
+    // Nearest the way in at 285 m, and passed again on the way out at 315 m.
+    const occs = occurrences({ points: exact, stops: [{ id: 'h', type: 'nothrow', pathIdx: 0, ...at(12, 285) }] })
+    expect(handledUpTo(occs, new Set(['h']))).toBeCloseTo(285, 0)
+    // The same pass put on the way out, as `alertable` does for a house thrown only there.
+    const [o] = occs
+    const moved: Occurrence = { ...o, idx: o.alt as number, at: o.altAt as number, alt: o.idx, altAt: o.at }
+    expect(handledUpTo([moved], new Set(['h']))).toBeCloseTo(285, 0)
+  })
+})
+
+describe('the radius a block is told of at', () => {
+  it('is that of a bundle drop when none is given', () => {
+    expect(APPROACH_RADIUS.block).toBe(APPROACH_RADIUS.bundle)
   })
 })

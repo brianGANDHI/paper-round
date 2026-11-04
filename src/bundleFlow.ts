@@ -1,18 +1,24 @@
 import {
   BUNDLE_STATUS_LABEL,
+  ROW_STATUS_LABEL,
+  awayText,
   bundleAheadText,
   bundleStops,
-  bundleTotals,
   canMarkDropped,
+  distanceText,
+  isToDo,
   markMissed,
-  nextBundle,
+  nextInOrder,
   papersText,
   reconcile,
+  rowTotals,
   settleDrops,
   undoDropped,
   type BundleItem,
+  type BundleRow,
   type BundleStatus,
   type PassStates,
+  type RowStatus,
 } from './bundles'
 import type { Occurrence } from './geo'
 import { handledForResume } from './resume'
@@ -114,16 +120,20 @@ export function restoreBundle(round: RoundState, key: string, was: boolean | Pas
 }
 
 /**
- * The bar's line for bundle drops: the next one with how far it is and its papers, or when none is ahead how the round stands. Null
- * when the route has no bundle drops, so the bar shows no such line. `missed` is how many bundle stops were driven past without being
- * dropped, counted once each however many times the route goes by (see `bundleTotals`); one with a pass still to come is not missed yet.
+ * The bar's line for bundle drops, from the driver's list (`bundleRows`): the next bundle in the driver's order with how far it is from
+ * the phone in a straight line (left off while the phone's position is not known), its papers, how many bundle stops are left to do
+ * (the next one included) and how many were driven past without being dropped. When none is left to do it says how the round stands
+ * instead. Null when the route has no bundle drops, so the bar shows no such line. `missed` and `left` count stops, once each however
+ * many times the route goes by (see `rowTotals`); a stop with a pass still to come is not missed yet.
  */
-export function barBundle(list: readonly BundleItem[]): NextBundle | null {
-  if (!list.length) return null
-  const totals = bundleTotals(list)
-  const next = nextBundle(list)
-  if (next) return { lead: 'Next bundle', name: next.name, distance: bundleAheadText(next.ahead), papers: papersText(next.papers), missed: totals.missed }
-  return { lead: 'Bundles', name: totals.dropped === totals.total ? 'All bundles dropped' : 'No more bundles ahead', distance: null, papers: null, missed: totals.missed }
+export function barBundle(rows: readonly BundleRow[]): NextBundle | null {
+  if (!rows.length) return null
+  const totals = rowTotals(rows)
+  const next = nextInOrder(rows)
+  if (next) {
+    return { lead: 'Next bundle', name: next.name, distance: distanceText(next.distance), papers: papersText(next.papers), missed: totals.missed, left: totals.toDrop }
+  }
+  return { lead: 'Bundles', name: totals.dropped === totals.total ? 'All bundles dropped' : 'No bundles left', distance: null, papers: null, missed: totals.missed, left: 0 }
 }
 
 /** The longest a venue's name is in a notice, in characters: a long one would grow the bar's line. */
@@ -181,6 +191,50 @@ export function sheetRow(b: BundleItem): SheetRow {
   const label = [`${statusLabel}.`, `${b.name}${papers ? `, ${papers}` : ''}${pass ? `, ${pass.toLowerCase()}` : ''}.`, `${where}.`].join(' ')
   return { key: b.key, name: b.name, address: b.address, status: b.status, statusLabel, where, papers, pass, action, label }
 }
+
+/** What a row's button does, and the key of the pass it acts on: Mark dropped, or Undo for a drop. */
+export type StopAction = { kind: 'mark'; key: string } | { kind: 'undo'; key: string }
+
+/** One bundle stop in the driver's list, as words: everything the row shows or reads out, and what its button does. */
+export interface StopRow {
+  /** The stop's id. */
+  id: string
+  /** Its place in the driver's list, from 1. */
+  place: number
+  name: string
+  /** Shown under the name, when the stop has both. */
+  address: string | null
+  status: RowStatus
+  statusLabel: string
+  /** "340 m away" or "Here now", or null while the phone's position is not known. */
+  where: string | null
+  /** "12 papers", or null when no amount was set. */
+  papers: string | null
+  /** "2 passes" for a street the route goes by more than once; null otherwise. */
+  passes: string | null
+  /**
+   * Mark dropped for a bundle still to do or missed, Undo for one dropped, and nothing for one skipped over. The next has Mark dropped
+   * too: it may be nowhere near the driver, and so have no alert with a Dropped button.
+   */
+  action: StopAction | null
+  /** The whole row for a screen reader. */
+  label: string
+}
+
+/** A row of the driver's list in words. `place` is its number in the list, from 1. */
+export function stopRow(row: BundleRow, place: number): StopRow {
+  const statusLabel = ROW_STATUS_LABEL[row.status]
+  const papers = papersText(row.papers)
+  const where = awayText(row.distance)
+  const passes = row.passes > 1 ? `${row.passes} passes` : null
+  const action: StopAction | null =
+    row.status === 'dropped' ? (row.undoKey !== null ? { kind: 'undo', key: row.undoKey } : null) : row.markKey !== null ? { kind: 'mark', key: row.markKey } : null
+  const label = [`${statusLabel}.`, `${row.name}${papers ? `, ${papers}` : ''}${passes ? `, ${passes}` : ''}.`, ...(where ? [`${where}.`] : [])].join(' ')
+  return { id: row.id, place, name: row.name, address: row.address, status: row.status, statusLabel, where, papers, passes, action, label }
+}
+
+/** How many bundle stops in the driver's list that count towards the papers (dropped, or still to do) have no amount set: see `unsetAmounts`. */
+export const unsetRows = (rows: readonly BundleRow[]): number => rows.filter((r) => r.papers === null && (r.status === 'dropped' || isToDo(r.status))).length
 
 /**
  * How many bundle stops that count towards the papers (dropped, or still to drop) have no amount set. The totals add nothing for them, so

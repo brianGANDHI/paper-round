@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import { haversine } from './geo'
 import {
+  ARRIVE_NEAR_M,
   AWAY_M,
   BACK_FIXES,
+  BIG_LEAP_M,
+  BLIND_GAP_MS,
+  BLIND_MPS,
   CARRY_ON_SECONDS,
   carryOnHere,
   guideToLeft,
@@ -17,18 +21,24 @@ import {
   REJOIN_RUN_M,
   REMIND_MOVE_M,
   REMIND_SECONDS,
+  restartWatch,
   RETURN_GIVE_UP_M,
   RUN_GAP_SECONDS,
   startOffRoute,
+  startOffWatch,
   stepOffRoute,
+  stepWatched,
   takeMeBack,
+  unasked,
+  watchFix,
   type LeftAt,
   type OffEvent,
   type OffPhase,
   type OffState,
+  type OffWatch,
   type RouteFix,
 } from './offRoute'
-import { advance, makeTrack, startProgress, type Progress } from './progress'
+import { advance, makeTrack, offRouteGap, startProgress, type Progress } from './progress'
 import type { Pt } from './types'
 
 // A place in Sydney, so the maths is checked away from the equator and the prime meridian.
@@ -45,7 +55,7 @@ const spot = ([x, y]: readonly [number, number]): Pt => ({
 const HERE = spot([0, 0])
 const NO_FAR = { fixes: 0, since: null }
 /** A state with nothing counted, written out so that the shape the machine keeps is checked as well. */
-const BLANK: OffState = { phase: 'on', left: null, far: NO_FAR, near: 0, nearFrom: null, away: false, remindedAt: null, remindedFrom: null, rejoin: null }
+const BLANK: OffState = { phase: 'on', left: null, followedAt: null, far: NO_FAR, near: 0, nearFrom: null, away: false, remindedAt: null, remindedFrom: null, rejoin: null }
 const blank = (over: Partial<OffState> = {}): OffState => ({ ...BLANK, ...over })
 /** Where the route was left: 500 metres along. */
 const LEFT: LeftAt = { along: 500, furthest: 520, at: spot([0, 500]) }
@@ -109,6 +119,10 @@ describe('the numbers it goes by', () => {
     expect([REJOIN_RUN_M, RUN_GAP_SECONDS, REMIND_MOVE_M, AWAY_M, LEAP_M, RETURN_GIVE_UP_M]).toEqual([120, 10, 50, 30, 150, 500])
   })
 
+  it('include the ones for a phone unseen for a while, and for the way to where the round starts', () => {
+    expect([BLIND_MPS, BLIND_GAP_MS, ARRIVE_NEAR_M]).toEqual([20, 10_000, 100])
+  })
+
   it('start on the route with nothing counted and nowhere left yet', () => {
     expect(startOffRoute).toEqual(BLANK)
   })
@@ -116,6 +130,7 @@ describe('the numbers it goes by', () => {
   it('are a starting point that cannot be changed by mistake for the next round', () => {
     expect(Object.isFrozen(startOffRoute)).toBe(true)
     expect(Object.isFrozen(startOffRoute.far)).toBe(true)
+    expect(Object.isFrozen(startOffWatch)).toBe(true)
   })
 })
 
@@ -526,7 +541,8 @@ describe('while off the route', () => {
   it('is back after two near fixes in a row, and takes the place from the second', () => {
     const r = play(OFF, [onRoute(540, 11_000), onRoute(560, 12_000, { furthest: 565, at: spot([1, 560]) })])
     expect(r.events).toEqual([null, 'back'])
-    expect(r.state).toEqual(blank({ left: { along: 560, furthest: 565, at: spot([1, 560]) } }))
+    // (Followed from the time of that fix: see `OffState.followedAt`.)
+    expect(r.state).toEqual(blank({ left: { along: 560, furthest: 565, at: spot([1, 560]) }, followedAt: 12_000 }))
   })
 
   it('is back at 39 and 40 metres, and not at 41', () => {
@@ -675,7 +691,7 @@ describe('while off the route', () => {
     expect(play(lost, [onRoute(1500, 11_000)]).events).toEqual([null])
     const r = play(lost, [onRoute(1500, 11_000), onRoute(1520, 12_000, { furthest: 1530 })])
     expect(r.events).toEqual([null, 'back'])
-    expect(r.state).toEqual(blank({ left: { along: 1520, furthest: 1530, at: HERE } }))
+    expect(r.state).toEqual(blank({ left: { along: 1520, furthest: 1530, at: HERE }, followedAt: 12_000 }))
     // And it still reminds while it is not.
     expect(stepOffRoute(lost, offBy(80, 40_000)).event).toBe('remind')
   })
@@ -689,7 +705,7 @@ describe('coming back somewhere else', () => {
   it('is on the route again at once when a near fix is within 150 metres of the place left', () => {
     const r = stepOffRoute(REJOINED, onRoute(560, 100_500, { furthest: 570, at: spot([1, 560]) }))
     expect(r.event).toBe('back')
-    expect(r.state).toEqual(blank({ left: { along: 560, furthest: 570, at: spot([1, 560]) } }))
+    expect(r.state).toEqual(blank({ left: { along: 560, furthest: 570, at: spot([1, 560]) }, followedAt: 100_500 }))
   })
 
   it('judges that at 149, 150 and 151 metres either side of the place left', () => {
@@ -753,7 +769,7 @@ describe('coming back somewhere else', () => {
     expect(stepOffRoute(REJOINED, onRoute(1650, 100_000 + 59_999)).event).toBeNull()
     const r = stepOffRoute(REJOINED, onRoute(1650, 100_000 + 60_000, { furthest: 1655, at: spot([300, 1650]) }))
     expect(r.event).toBe('carried-on')
-    expect(r.state).toEqual(blank({ left: { along: 1650, furthest: 1655, at: spot([300, 1650]) } }))
+    expect(r.state).toEqual(blank({ left: { along: 1650, furthest: 1655, at: spot([300, 1650]) }, followedAt: 160_000 }))
   })
 
   it('carries on with the next fix after the 60 seconds that is on the route, and not one 40 to 50 metres out', () => {
@@ -893,7 +909,7 @@ describe('being taken back', () => {
     expect(at(1899).said).toEqual([])
     const r = at(1900)
     expect(r.said).toEqual(['carried-on'])
-    expect(r.state).toEqual(blank({ left: { along: 1900, furthest: 1901, at: spot([0, 1900]) } }))
+    expect(r.state).toEqual(blank({ left: { along: 1900, furthest: 1901, at: spot([0, 1900]) }, followedAt: 2000 }))
     // On the early side of it as well.
     expect(at(-401).said).toEqual([])
     expect(play(RETURNING, [onRoute(100, 1000), onRoute(-400, 2000)]).said).toEqual(['carried-on'])
@@ -931,7 +947,7 @@ describe('being taken back', () => {
   it('is back after two near fixes in a row close to the place left', () => {
     const r = play(RETURNING, [onRoute(480, 1000), onRoute(470, 2000, { furthest: 520, at: spot([1, 470]) })])
     expect(r.events).toEqual([null, 'back'])
-    expect(r.state).toEqual(blank({ left: { along: 470, furthest: 520, at: spot([1, 470]) } }))
+    expect(r.state).toEqual(blank({ left: { along: 470, furthest: 520, at: spot([1, 470]) }, followedAt: 2000 }))
   })
 
   it('is back only if it is 150 metres or less from the place left', () => {
@@ -1083,6 +1099,140 @@ describe('the driver choosing to be taken back', () => {
   it('is judged as being taken back from then on', () => {
     const r = play(takeMeBack(REJOINED), [onRoute(1500, 150_000), onRoute(1600, 151_000), onRoute(480, 152_000), onRoute(490, 153_000)])
     expect(r.events).toEqual([null, null, null, 'back'])
+  })
+})
+
+describe('what the screen keeps beside the machine', () => {
+  /** A fix from the phone, as the screen watches every one: when, and how accurate. */
+  const raw = (time: number | null | undefined, accuracy = 10) => ({ accuracy, time })
+  /** The watch after a fix at each of these times (good ones), from nothing. */
+  const after = (...times: number[]) => times.reduce<OffWatch>((w, t) => watchFix(w, raw(t)), startOffWatch)
+  /** The jump of the drives above, 1000 m along the route from where it was last followed, at the start of the clock. */
+  const FOLLOWED = state('on', { left: LEFT, followedAt: 0 })
+  const jumpAt = (time: number) => onRoute(1500, time, { at: spot([100, 520]) })
+
+  describe('taking the phone for unseen', () => {
+    it('is not, at the first fix to go by, however late, nor for fixes up to 10 seconds apart', () => {
+      expect(after(500_000)).toEqual({ goodAt: 500_000, blind: false, arrived: false })
+      expect(after(0, 10_000, 20_000)).toEqual({ goodAt: 20_000, blind: false, arrived: false })
+    })
+
+    it('is, once more than 10 seconds have gone without a fix to go by: no fixes at all, as with Safari in the background', () => {
+      expect(after(0, 10_001)).toEqual({ goodAt: 10_001, blind: true, arrived: false })
+      // And stays so, whatever comes after, until the machine follows the route from a new place.
+      expect(after(0, 10_001, 11_001, 12_001).blind).toBe(true)
+    })
+
+    it('is, when the fixes in between are too poor to go by (worse than 40 m): to the machine they are none', () => {
+      let w = after(0)
+      for (let t = 1000; t <= 20_000; t += 1000) w = watchFix(w, raw(t, 41))
+      expect(w).toEqual(after(0))
+      expect(watchFix(w, raw(21_000)).blind).toBe(true)
+      // A fix of 40 m is one to go by.
+      let fair = after(0)
+      for (let t = 1000; t <= 21_000; t += 1000) fair = watchFix(fair, raw(t, 40))
+      expect(fair).toEqual({ goodAt: 21_000, blind: false, arrived: false })
+    })
+
+    it('goes by nothing from a fix with no time, or with an accuracy that is not a real one', () => {
+      const w = after(0)
+      for (const f of [raw(null), raw(undefined), raw(Number.NaN), raw(20_000, Number.NaN), raw(20_000, -1)]) expect(watchFix(w, f), JSON.stringify(f)).toBe(w)
+    })
+
+    it('takes a clock gone backwards for no time passed, and goes on from the earlier time', () => {
+      expect(after(60_000, 30_000)).toEqual({ goodAt: 30_000, blind: false, arrived: false })
+      expect(after(60_000, 30_000, 40_001).blind).toBe(true)
+    })
+
+    it('is so for a fix the machine would have been asked about and was not (beside a stop away from the route): the place last followed is not kept up', () => {
+      const w = after(0, 1000)
+      expect(unasked(w)).toEqual({ ...w, blind: true })
+      const blind = unasked(w)
+      expect(unasked(blind)).toBe(blind)
+      // A minute on, the driver is asked about again, 1000 m on along the route: that is taken up, as after a gap in the fixes.
+      const r = stepWatched({ ...blind, arrived: true }, FOLLOWED, jumpAt(60_000), 0)
+      expect(r.event).toBeNull()
+      expect(r.state.left!.along).toBe(1500)
+      expect(stepWatched({ ...w, arrived: true }, FOLLOWED, jumpAt(60_000), 0).state.near).toBe(1)
+    })
+  })
+
+  describe('asking the machine', () => {
+    it('tells it whether the phone was unseen, and so a jump from the place last followed is taken up if the time explains it', () => {
+      // (Long since there, at the start of the route.)
+      const unseen = { ...after(0, 60_000), arrived: true }
+      const r = stepWatched(unseen, FOLLOWED, jumpAt(60_000), 0)
+      expect(r.fix).toMatchObject({ blind: true, approaching: false })
+      expect(r.event).toBeNull()
+      expect(r.state.left!.along).toBe(1500)
+      // Without the gap, it is held back.
+      expect(stepWatched({ ...after(59_000, 60_000), arrived: true }, FOLLOWED, jumpAt(60_000), 0).state.near).toBe(1)
+    })
+
+    it('sees the phone again once the machine follows the route from a new place, and not before', () => {
+      const unseen = { ...after(0, 60_000), arrived: true }
+      // A fix at a place the tracker is doubting, one that says too little, and one between 40 and 50 m out keep the place last followed: still unseen.
+      for (const f of [onRoute(1500, 60_000, { doubt: true }), onRoute(1500, 60_000, { accuracy: 55 }), offBy(45, 60_000)]) {
+        const r = stepWatched(unseen, FOLLOWED, f, 0)
+        expect(r.state.left, JSON.stringify(f)).toBe(LEFT)
+        expect(r.watch, JSON.stringify(f)).toBe(unseen)
+      }
+      // A jump held back (the time not explaining it) keeps it too.
+      const held = stepWatched(unseen, FOLLOWED, jumpAt(30_000), 0)
+      expect(held.state.near).toBe(1)
+      expect(held.watch.blind).toBe(true)
+      // On along the route from a new place: seen.
+      const on = stepWatched(unseen, FOLLOWED, onRoute(520, 61_000, { at: spot([0, 520]) }), 0)
+      expect(on.state.left!.along).toBe(520)
+      expect(on.watch).toEqual({ ...unseen, blind: false })
+    })
+
+    it('does not see the phone again for a new place off the route, which is not followed', () => {
+      // Back on the route somewhere else, and asked: the place it was left is kept until the driver says, and so is the phone unseen.
+      const unseen = { ...after(0, 60_000), arrived: true }
+      const r = stepWatched(unseen, state('off', { left: LEFT, near: 1, nearFrom: spot([100, 400]) }), jumpAt(60_000), 0)
+      expect(r.event).toBe('rejoined-elsewhere')
+      expect(r.watch.blind).toBe(true)
+    })
+
+    it('tells it the phone is on its way to where the round starts until it has been on the route within 100 m along it of the spot, going by the fixes before', () => {
+      let w = after(0)
+      const at = (along: number, over: Partial<RouteFix> = {}) => {
+        const r = stepWatched(w, BLANK, onRoute(along, 1000, over), 2200)
+        w = r.watch
+        return r.fix.approaching
+      }
+      expect(at(1500)).toBe(true)
+      expect(at(2099)).toBe(true)
+      expect(w.arrived).toBe(false)
+      // The fix that gets there is still on the way (a jump that lands at the spot is the way there): the next is not.
+      expect(at(2100)).toBe(true)
+      expect(w.arrived).toBe(true)
+      expect(at(2100)).toBe(false)
+      expect(at(500)).toBe(false)
+    })
+
+    it('takes a fix past the spot for being there, and not one that is not on the route', () => {
+      expect(stepWatched(startOffWatch, BLANK, onRoute(5000, 1000), 2200).watch.arrived).toBe(true)
+      for (const over of [{ lost: true }, { doubt: true }, { gap: 41 }, { gap: 80 }, { accuracy: 41 }]) {
+        expect(stepWatched(startOffWatch, BLANK, onRoute(2200, 1000, over), 2200).watch.arrived, JSON.stringify(over)).toBe(false)
+      }
+    })
+
+    it('is there at once for a round from the start of the route', () => {
+      const r = stepWatched(startOffWatch, BLANK, onRoute(5, 1000), 0)
+      expect(r.watch.arrived).toBe(true)
+    })
+
+    it('gives the same watch back when nothing it keeps has changed', () => {
+      const w = { ...after(0, 1000), arrived: true }
+      expect(stepWatched(w, FOLLOWED, onRoute(520, 1000, { at: spot([0, 520]) }), 0).watch).toBe(w)
+    })
+  })
+
+  it('starts again on the way, with nothing followed, for a round started, skipped to or carried on from somewhere, and keeps when the last fix came', () => {
+    expect(restartWatch({ goodAt: 30_000, blind: true, arrived: true })).toEqual({ goodAt: 30_000, blind: false, arrived: false })
+    expect(restartWatch(startOffWatch)).toEqual(startOffWatch)
   })
 })
 
@@ -1331,19 +1481,32 @@ interface DriveOptions {
   glitch?: { at: number[]; dx: number; dy: number; accuracy?: number }
   time0?: number
   progress?: Progress | null
+  /**
+   * The round was started (or skipped) this many metres along the route, from `startProgress` there: the machine is only asked once the route
+   * is reached, as the Round screen does (REACH_NEAR_M and REACH_RUN_M in Round.tsx): at once on it within 100 metres along it of the start,
+   * anywhere else after 200 metres on it. Until then the tracker may find its pass, a long way from where it was put, with nothing said.
+   */
+  startAt?: number
   state?: OffState
   /** Called after each fix is judged: the driver may press a button, by giving back the state it leaves. */
   act?: (beat: Beat) => OffState | undefined
   /** Called after that, with the progress, and may give back another: what the screen does with it, such as keeping how far the driver has got down. */
   adjust?: (progress: Progress, machine: OffState) => Progress
-  /** Instead of driving a path, these exact places, a fix a second. */
-  exact?: XY[]
+  /** Instead of driving a path, these exact places, a fix a second: with, as a third number, how fast the phone says it is going there (0 for a stop), or `speed`. */
+  exact?: Waypoint[]
   /** The phone never says how fast it is going, moving or not. */
   nullSpeed?: boolean
   /** No fixes at all for the seconds from the first of these to the second (counting from the start of the drive). */
   drop?: [number, number]
+  /**
+   * Poor fixes for the seconds from the first of these to the second (counted as `drop` counts them): they claim POOR_ACCURACY_M of accuracy and
+   * are out by POOR_NOISE_M of noise, which the tracker still takes in but the machine cannot go by.
+   */
+  poor?: [number, number]
   /** Leave out what the tracker says about holding the driver's old place while it is unsure, as a screen that did not pass it on would. */
   unaware?: boolean
+  /** Give the machine the distance to the place the tracker chose (its `gap`), which is not what the screen does, to show what that would do. */
+  gap?: 'tracker'
 }
 
 interface Beat {
@@ -1354,11 +1517,13 @@ interface Beat {
   truth: XY
   out: number
   progress: Progress | null
-  /** What the machine was given, if the tracker moved the driver (otherwise it was not asked). */
+  /** What the machine was given, if the tracker moved the driver (otherwise it was not asked): with what the watch knows. */
   routeFix: RouteFix | null
   /** What the machine made of it, before any button the driver pressed in answer. */
   state: OffState
   event: OffEvent
+  /** What the screen keeps beside the machine (see `OffWatch`), after this fix. */
+  watch: OffWatch
 }
 
 interface Drive {
@@ -1371,9 +1536,14 @@ interface Drive {
   clock: number
 }
 
+/** What a poor fix claims its accuracy is, and how far out it is, in metres (see `DriveOptions.poor`). */
+const POOR_ACCURACY_M = 50
+const POOR_NOISE_M = 15
+
 /**
- * Drive a car along `path`, a fix a second, and judge each fix as the Round screen does: the tracker first, and the machine
- * only when the tracker moved the driver (a phone standing still gives back the same progress).
+ * Drive a car along `path`, a fix a second, and judge each fix as the Round screen does: every fix kept in the watch, the tracker,
+ * and the machine only when the tracker moved the driver (a phone standing still gives back the same progress), told what the
+ * watch knows by the same functions the screen uses.
  */
 function drive(route: XY[], path: Waypoint[], o: DriveOptions = {}): Drive {
   const { speed = 10, noise = 5, carry = 0.5, seed = 1, headingNoise = 10, heading = true } = o
@@ -1391,41 +1561,68 @@ function drive(route: XY[], path: Waypoint[], o: DriveOptions = {}): Drive {
     const dy = path[i + 1][1] - path[i][1]
     return { xy: [path[i][0] + dx * t, path[i][1] + dy * t], course: ((Math.atan2(dx, dy) * 180) / Math.PI + 360) % 360 }
   }
-  const exactAt = (i: number): { xy: XY; course: number } => {
+  const exactAt = (i: number): { xy: XY; course: number; pace: number } => {
     const here = o.exact![i]
     const before = o.exact![Math.max(0, i - 1)]
-    return { xy: here, course: ((Math.atan2(here[0] - before[0], here[1] - before[1]) * 180) / Math.PI + 360) % 360 }
+    return { xy: [here[0], here[1]], course: ((Math.atan2(here[0] - before[0], here[1] - before[1]) * 180) / Math.PI + 360) % 360, pace: here[2] ?? speed }
   }
   const waits = path.flatMap((w, i) => (w.length === 3 && w[2] > 0 ? [{ s: cum[i], seconds: w[2] }] : []))
 
-  let progress = o.progress ?? null
+  let progress = o.progress ?? (o.startAt === undefined ? null : startProgress(track, o.startAt))
   let machine = o.state ?? startOffRoute
+  // Whether the route has been reached, and where the run on it that counts towards that began (see `startAt`).
+  let reached = o.startAt === undefined
+  let reachRun: Pt | null = null
+  const reaches = (p: Progress): boolean => {
+    if (reached) return true
+    if (p.lost || p.gap > ON_ROUTE_M || p.accuracy > OFF_MAX_ACCURACY_M) {
+      reachRun = null
+      return false
+    }
+    reachRun ??= p.at
+    reached = Math.abs(p.along - o.startAt!) <= 100 || haversine(reachRun, p.at) >= 200
+    return reached
+  }
+  // What the screen keeps beside the machine, and where the round starts from (the start of the route, for a round not started part way).
+  let watch = startOffWatch
+  const from = o.startAt ?? 0
   let clock = o.time0 ?? 0
   let err = [0, 0]
   const beats: Beat[] = []
   const said: Drive['said'] = []
+  // The seconds of the drive so far, for `drop` and `poor`.
+  let taken = 0
+  const inside = (w: [number, number] | undefined) => w !== undefined && taken >= w[0] && taken < w[1]
   const fixAt = (s: number, moving: boolean) => {
     const i = beats.length
-    const { xy, course } = o.exact ? exactAt(i) : where(s)
-    err = err.map((e) => carry * e + Math.sqrt(1 - carry * carry) * gaussian(r) * noise)
+    const { xy, course, pace } = o.exact ? exactAt(i) : { ...where(s), pace: speed }
+    const going = moving && pace > 0
+    const poor = inside(o.poor)
+    err = err.map((e) => carry * e + Math.sqrt(1 - carry * carry) * gaussian(r) * (poor ? POOR_NOISE_M : noise))
     const glitching = o.glitch?.at.includes(i)
     const seen: XY = [xy[0] + err[0] + (glitching ? o.glitch!.dx : 0), xy[1] + err[1] + (glitching ? o.glitch!.dy : 0)]
-    const gps = { ...spot(seen), accuracy: glitching ? (o.glitch!.accuracy ?? accuracy) : accuracy, time: clock, speed: o.nullSpeed ? null : moving ? speed : 0 }
+    const claimed = glitching ? (o.glitch!.accuracy ?? accuracy) : poor ? POOR_ACCURACY_M : accuracy
+    const gps = { ...spot(seen), accuracy: claimed, time: clock, speed: o.nullSpeed ? null : going ? pace : 0 }
     const flipped = o.flipHeading && i >= o.flipHeading[0] && i <= o.flipHeading[1]
-    const hdg = heading && moving && speed >= 1.5 && i >= 1 ? (course + (flipped ? 180 : 0) + gaussian(r) * headingNoise + 720) % 360 : null
+    const hdg = heading && going && pace >= 1.5 && i >= 1 ? (course + (flipped ? 180 : 0) + gaussian(r) * headingNoise + 720) % 360 : null
+    // Every fix the phone gives is watched, before the tracker has it.
+    watch = watchFix(watch, gps)
     const before = progress
     progress = advance(track, progress, gps, hdg)
     if (progress && progress !== before && o.adjust) progress = o.adjust(progress, machine)
     let routeFix: RouteFix | null = null
     let event: OffEvent = null
-    if (progress && progress !== before) {
+    if (progress && progress !== before && reaches(progress)) {
       const p = progress
-      routeFix = { time: p.time, at: p.at, accuracy: p.accuracy, speed: gps.speed, gap: p.gap, along: p.along, furthest: p.furthest, lost: p.lost, doubt: o.unaware ? undefined : p.doubt !== null }
-      const step = stepOffRoute(machine, routeFix)
+      // The distance to the nearest part of the route, as the screen gives it, not to the place the tracker chose (which it may be holding).
+      routeFix = { time: p.time, at: p.at, accuracy: p.accuracy, speed: gps.speed, gap: o.gap === 'tracker' ? p.gap : offRouteGap(p), along: p.along, furthest: p.furthest, lost: p.lost, doubt: o.unaware ? undefined : p.doubt !== null }
+      const step = stepWatched(watch, machine, routeFix, from)
+      routeFix = step.fix
+      watch = step.watch
       machine = step.state
       event = step.event
     }
-    const beat: Beat = { i, time: clock, truth: xy, out: distToPath(xy, route), progress, routeFix, state: machine, event }
+    const beat: Beat = { i, time: clock, truth: xy, out: distToPath(xy, route), progress, routeFix, state: machine, event, watch }
     beats.push(beat)
     if (event) said.push({ event, beat })
     const pressed = o.act?.(beat)
@@ -1433,15 +1630,15 @@ function drive(route: XY[], path: Waypoint[], o: DriveOptions = {}): Drive {
   }
   if (o.exact) {
     for (let k = 0; k < o.exact.length; k++) {
+      taken = k
       fixAt(0, true)
       clock += 1000
     }
     return { beats, said, state: machine, progress, clock }
   }
-  let taken = 0
   for (let s = 0; s <= total; s += speed) {
     // A stretch of time with no fixes at all: the car goes on, and the phone says nothing.
-    if (!o.drop || taken < o.drop[0] || taken >= o.drop[1]) fixAt(s, true)
+    if (!inside(o.drop)) fixAt(s, true)
     taken++
     clock += 1000
     for (const w of waits) {
@@ -1464,6 +1661,20 @@ const first = (d: Drive, event: Exclude<OffEvent, null>) => d.said.find((x) => x
 const jump = (b: Beat) => b.state.rejoin!.along - b.state.left!.along
 /** How many seconds between two fixes. */
 const seconds = (a: Beat, b: Beat) => (b.time - a.time) / 1000
+/**
+ * The biggest move of the place last followed, along the route beyond the ground between (as the machine measures a jump), that it made
+ * without a word, on the route.
+ */
+function quietLeap(d: Drive): number {
+  let worst = 0
+  let left: LeftAt | null = null
+  for (const b of d.beats) {
+    const now = b.state.left
+    if (left && now && now !== left && b.state.phase === 'on' && b.event === null) worst = Math.max(worst, Math.abs(now.along - left.along) - haversine(left.at, now.at))
+    left = now ?? left
+  }
+  return worst
+}
 /** Whether the driver stepped the machine at this fix, with the car a long way from the route (the glitch or the stop did what it was meant to). */
 const farFixes = (d: Drive) => d.beats.filter((b) => b.routeFix && b.routeFix.gap > OFF_ROUTE_M).length
 
@@ -1696,17 +1907,29 @@ describe('a street driven twice', () => {
   })
 
   it('says nothing when the tracker has the driver on the wrong pass, since the driver is on the route', () => {
-    // A round started at the way back (700 metres on) but driven on the way out: the tracker keeps to the wrong pass.
-    const track = makeTrack(street.map(spot))
-    const d = drive(street, street, { progress: startProgress(track, 700) })
-    expect(d.beats.slice(0, 20).every((b) => b.progress!.along > 600), 'the wrong pass is the one it follows').toBe(true)
+    // A round started 100 metres up the way back (900 metres on) but driven on the way out. Every place that fits the phone and lies ahead of
+    // the tracker's is on the way back, so it keeps to the wrong pass all the way up the street.
+    const d = drive(street, [[0, 100], [0, 400]], { startAt: 900 })
+    expect(d.beats.length).toBeGreaterThan(25)
+    expect(d.beats.every((b) => b.progress!.along > 600), 'the wrong pass is the one it follows').toBe(true)
     expect(events(d)).toEqual([])
   })
 
+  it('leaves the wrong pass of a street at its end once the place it holds has lost touch with the phone, and says nothing', () => {
+    // A round started at the way back (700 metres on) but driven on the way out. The tracker starts on the wrong pass, at the foot of the street,
+    // where the route goes on along the next street: once the phone is 25 metres up the street, that is no longer where it is, and the way out fits.
+    // (The round has not reached the route yet: the tracker was put 300 m from the start, and the car has not gone 200 m on it. A machine asked
+    // all along would take the jump back of 950 m, which the phone was on the route for, for a wrong turn onto a street already driven.)
+    const d = drive(street, street, { startAt: 700 })
+    expect(d.beats.slice(0, 3).every((b) => b.progress!.along > 600), 'it starts on the wrong pass').toBe(true)
+    expect(d.beats.slice(8, 40).every((b) => b.progress!.along < 500), 'and has the way out well before the top of the street').toBe(true)
+    expect(events(d)).toEqual([])
+    expect(events(drive(street, street, { progress: startProgress(makeTrack(street.map(spot)), 700) }))).toContain('rejoined-elsewhere')
+  })
+
   it('judges a wrong turn on the street by the pass the tracker has, so that it is back where it was left', () => {
-    const track = makeTrack(street.map(spot))
     const detour: Waypoint[] = [[0, 0], [0, 300], [200, 300], [0, 300], [0, 500], [0, 0], [400, 0]]
-    const d = drive(street, detour, { progress: startProgress(track, 700) })
+    const d = drive(street, detour, { startAt: 700 })
     expect(events(d)).toEqual(['went-off', 'back'])
     // And with the tracker on the right pass.
     expect(events(drive(street, detour))).toEqual(['went-off', 'back'])
@@ -1790,6 +2013,9 @@ describe('a tracker that is unsure where the driver is', () => {
   })
 })
 
+/** North 300 m to a junction, right round a block `side` m a side and back down to the junction, and on north. */
+const block = (side: number): XY[] => [[0, 0], [0, 300], [side, 300], [side, 300 + side], [0, 300 + side], [0, 300], [0, 1500]]
+
 /** A serpentine route: `rungs` streets `width` metres long, `gap` metres apart, joined at alternate ends, the first going east. */
 function serpentine(rungs: number, width: number, gap: number): XY[] {
   const out: XY[] = []
@@ -1857,10 +2083,36 @@ describe('a jump along the route that nothing else explains', () => {
     expect(stepOffRoute(AWAY, onRoute(1500, 1000, { at: spot([0, 1400]) })).state.left?.along).toBe(1500)
   })
 
-  it('is taken up without a word when the driver has not been away from the route', () => {
-    const r = stepOffRoute(ON, jumped(0, 1000))
+  it('is taken up without a word when the driver has not been away from the route, up to 450 metres more than the ground explains', () => {
+    // (A court, or a street driven out and back, up to 150 m deep that the driver went by: 300 m of route, and the 150 m any jump wants.)
+    expect(BIG_LEAP_M).toBe(450)
+    // Both at the same spot, so that the ground between is nothing.
+    const r = stepOffRoute(ON, onRoute(950, 1000, { at: LEFT.at }))
     expect(r.event).toBeNull()
-    expect(r.state).toEqual(blank({ left: place(jumped(0, 1000)) }))
+    expect(r.state).toEqual(blank({ left: place(onRoute(950, 1000, { at: LEFT.at })), followedAt: 1000 }))
+    expect(stepOffRoute(ON, onRoute(50, 1000, { at: LEFT.at })).state.left?.along).toBe(50)
+    // 300 m on, and 102 m away on the ground.
+    expect(stepOffRoute(ON, onRoute(800, 1000, { at: spot([100, 520]) })).state).toEqual(blank({ left: place(onRoute(800, 1000, { at: spot([100, 520]) })), followedAt: 1000 }))
+  })
+
+  it('is held back without the driver having been away from the route when it is bigger than that, and told once it has gone on for some distance', () => {
+    // (A turn missed into a loop that comes back to the street, or one onto a street already driven: the phone is on the route all the time.)
+    expect(stepOffRoute(ON, onRoute(950.5, 1000, { at: LEFT.at })).state).toEqual({ ...ON, near: 1, nearFrom: LEFT.at })
+    expect(stepOffRoute(ON, onRoute(49.5, 1000, { at: LEFT.at })).state).toEqual({ ...ON, near: 1, nearFrom: LEFT.at })
+    // 1000 m on, and 102 m away on the ground: as after straying.
+    const r = play(ON, run(14, 1000, (t, i) => jumped(i, t)))
+    expect(r.events.indexOf('rejoined-elsewhere')).toBe(11)
+    expect(r.said).toEqual(['rejoined-elsewhere'])
+    expect(r.state).toEqual(blank({ phase: 'rejoined', left: LEFT, rejoin: { along: 1500 + 11 * 11, furthest: 1500 + 11 * 11, at: spot([100, 520 + 11 * 11]), time: 12_000 } }))
+  })
+
+  it('goes on, once held back, while it is a jump at all, though no longer as big as that', () => {
+    // Up a street already driven, from where the route was last followed, which is 500 m on along the route: the jump back shrinks as the car goes
+    // on (it is 500 m less twice the ground covered), and is under 450 m from the second fix on. Told once the fixes have covered 120 m of ground.
+    const upAgain = (i: number, t: number) => onRoute(31 * i, t, { at: spot([0, 500 + 31 * i]) })
+    const r = play(ON, run(6, 1000, (t, i) => upAgain(i, t)))
+    expect(r.events).toEqual([null, null, null, null, 'rejoined-elsewhere', null])
+    expect(r.state.rejoin!.along - r.state.left!.along).toBe(31 * 4 - 500)
   })
 
   it('has nothing to compare with before the route has been followed', () => {
@@ -1879,7 +2131,7 @@ describe('a jump along the route that nothing else explains', () => {
 
   it('is forgotten when the tracker goes back to where the route was being followed', () => {
     const r = play(AWAY, [jumped(0, 1000), jumped(1, 2000), onRoute(520, 3000, { at: spot([0, 520]) })])
-    expect(r.state).toEqual(blank({ left: place(onRoute(520, 3000, { at: spot([0, 520]) })) }))
+    expect(r.state).toEqual(blank({ left: place(onRoute(520, 3000, { at: spot([0, 520]) })), followedAt: 3000 }))
   })
 
   it('does not hold up going off', () => {
@@ -1891,6 +2143,68 @@ describe('a jump along the route that nothing else explains', () => {
   it('is not held up by a fix that says too little', () => {
     const r = play(AWAY, [...run(6, 1000, (t, i) => jumped(i, t)), offBy(80, 7000, { accuracy: 55 }), ...run(6, 8000, (t, i) => jumped(6 + i, t))])
     expect(r.said).toEqual(['rejoined-elsewhere'])
+  })
+
+  describe('made while the phone was unseen', () => {
+    /** On the route, last followed at the start of the clock: the jumps below are 1000 m along it from there, 102 m away on the ground. */
+    const FOLLOWED = state('on', { left: LEFT, followedAt: 0 })
+    const held = (from: OffState) => ({ ...from, near: 1, nearFrom: spot([100, 520]) })
+
+    it('is taken up without a word when the time since the place last followed explains it, at 20 m a second', () => {
+      // (The phone in the background, or under poor sky, for a minute: the driver has driven on along the route, and the tracker has followed.)
+      const r = stepOffRoute(FOLLOWED, jumped(0, 60_000, { blind: true }))
+      expect(r.event).toBeNull()
+      expect(r.state).toEqual(blank({ left: place(jumped(0, 60_000)), followedAt: 60_000 }))
+      // 1000 m in 50 s is 20 m a second: just explained. A millisecond less is not.
+      expect(stepOffRoute(FOLLOWED, jumped(0, 50_000, { blind: true })).state.left).toEqual(place(jumped(0, 50_000)))
+      expect(stepOffRoute(FOLLOWED, jumped(0, 49_999, { blind: true })).state).toEqual(held(FOLLOWED))
+    })
+
+    it('is held back as ever when the phone was not unseen, whatever the time', () => {
+      expect(stepOffRoute(FOLLOWED, jumped(0, 60_000)).state).toEqual(held(FOLLOWED))
+      expect(stepOffRoute(FOLLOWED, jumped(0, 60_000, { blind: false })).state).toEqual(held(FOLLOWED))
+    })
+
+    it('is held back when the time cannot explain it: 1000 m in 30 s is more than 20 m a second', () => {
+      expect(stepOffRoute(FOLLOWED, jumped(0, 30_000, { blind: true })).state).toEqual(held(FOLLOWED))
+    })
+
+    it('is held back when it is not known when the place was last followed, or when the fix was taken', () => {
+      const unknown = state('on', { left: LEFT })
+      expect(stepOffRoute(unknown, jumped(0, 60_000, { blind: true })).state).toEqual(held(unknown))
+      expect(stepOffRoute(FOLLOWED, jumped(0, 60_000, { blind: true, time: null })).state).toEqual(held(FOLLOWED))
+    })
+
+    it('is held back after straying, and goes on once held, as before: only a jump made on the route all the time is put down to driving it unseen', () => {
+      const strayed = { ...FOLLOWED, away: true }
+      expect(stepOffRoute(strayed, jumped(0, 60_000, { blind: true })).state).toEqual(held(strayed))
+      const going = held(FOLLOWED)
+      expect(stepOffRoute(going, jumped(1, 61_000, { blind: true })).state).toEqual({ ...going, near: 2 })
+    })
+  })
+
+  describe('made on the way to where the round was started, skipped to or carried on from', () => {
+    /** Last followed 500 m along the route, and 1100 m further along it 20 m on along the ground: a loop, or a street driven out and back, passed by. */
+    const BEFORE = state('on', { left: { along: 500, furthest: 500, at: spot([0, 500]) } })
+    const passed = (over: Partial<RouteFix> = {}) => driving(1600, 1000, { at: spot([0, 520]), ...over })
+
+    it('is taken up without a word: it is the tracker following the driver along their own way there', () => {
+      const r = stepOffRoute(BEFORE, passed({ approaching: true }))
+      expect(r.event).toBeNull()
+      expect(r.state).toMatchObject({ phase: 'on', near: 0 })
+      expect(r.state.left!.along).toBe(1600)
+    })
+
+    it('is held back once the phone has been there', () => {
+      expect(stepOffRoute(BEFORE, passed()).state).toMatchObject({ phase: 'on', near: 1, left: BEFORE.left })
+      expect(stepOffRoute(BEFORE, passed({ approaching: false })).state.near).toBe(1)
+    })
+
+    it('is held back after straying, and goes on once held, as before', () => {
+      expect(stepOffRoute({ ...BEFORE, away: true }, passed({ approaching: true })).state).toMatchObject({ near: 1, left: BEFORE.left })
+      const going = { ...BEFORE, near: 1, nearFrom: spot([0, 480]) }
+      expect(stepOffRoute(going, passed({ approaching: true })).state).toMatchObject({ near: 2, left: BEFORE.left })
+    })
   })
 
   describe('and what counts as having been away from the route', () => {
@@ -1974,6 +2288,32 @@ describe('driving across the route and along it', () => {
     }
   })
 
+  it('says nothing when the phone has no fix, or only poor ones, for a minute or more as the driver follows a winding route', { timeout: 60_000 }, () => {
+    // (Safari in the background for a phone call, a screen that locked, or poor sky. When the fixes come back the tracker is 600 m to 2 km further
+    // along the route, which on a winding round is a few hundred metres on the ground: before, that was a big jump without straying, and the driver
+    // was told they were back on the route further on, and asked whether to carry on from there or be taken back to where the gap began.)
+    for (const [rungs, width, gap] of [[10, 200, 80], [8, 300, 100], [6, 500, 100]]) {
+      const route = serpentine(rungs, width, gap)
+      for (const n of [60, 80, 100, 150, 200]) {
+        for (const kind of ['drop', 'poor'] as const) {
+          for (const noise of [3, 6, 9]) {
+            for (const seed of [1, 2, 3, 4]) {
+              for (const heading of [true, false]) {
+                const d = drive(route, route, { speed: 10, noise, seed, heading, [kind]: [20, 20 + n] })
+                const label = `serpentine(${rungs}, ${width}, ${gap}), ${kind} for ${n} s, noise ${noise}, seed ${seed}, heading ${heading}`
+                expect(events(d), label).toEqual([])
+                // The machine was told the phone had been unseen; and from 80 s on, the place last followed was moved on by a jump bigger than
+                // BIG_LEAP_M without a word: it is that which is not asked about, not something else.
+                expect(d.beats.some((b) => b.routeFix?.blind), label).toBe(true)
+                if (n >= 80) expect(quietLeap(d), label).toBeGreaterThan(BIG_LEAP_M)
+              }
+            }
+          }
+        }
+      }
+    }
+  })
+
   it('does not tell a street crossed while off the route from a route rejoined, and so does not flip about', () => {
     for (const gap of [200, 300]) {
       for (const speed of [6, 12]) {
@@ -2039,5 +2379,324 @@ describe('a phone that is poor but still believed, on the road', () => {
 
   it('says nothing at 19 metres, as it never did', () => {
     expect(said(12, 19, 20)).toBe(0)
+  })
+})
+
+describe('a court the driver does not drive to its end', () => {
+  // The street out 300 m, a court off it `depth` m deep (in along it and out again, the same line), and on along the street.
+  const court = (depth: number): XY[] => [[0, 0], [0, 300], [depth, 300], [0, 300], [0, 600]]
+  const DEPTHS = [60, 100, 150]
+  const ways = (depth: number): [string, Waypoint[]][] => [
+    ['does not go in at all, and drives on along the street', [[0, 0], [0, 600]]],
+    ['goes in 10 m, and out again', [[0, 0], [0, 300], [10, 300], [7, 297], [0, 297], [0, 600]]],
+    ['turns round 40 m short of the end of it', [[0, 0], [0, 300], [depth - 40, 300], [depth - 43, 297], [0, 297], [0, 600]]],
+  ]
+
+  it('says nothing, whatever the speed and the GPS error: the car is on the route, though the tracker keeps the junction of the court for a while', { timeout: 30_000 }, () => {
+    for (const depth of DEPTHS) {
+      for (const [name, path] of ways(depth)) {
+        for (const speed of [4, 6, 10]) {
+          for (const noise of [3, 6, 9]) {
+            for (const seed of [1, 2, 3, 4]) {
+              const d = drive(court(depth), path, { speed, noise, seed })
+              const label = `${depth} m deep, ${name}, ${speed} m/s, noise ${noise}, seed ${seed}`
+              expect(events(d), label).toEqual([])
+              // (The car is never more than the width of the turn from the route.)
+              expect(Math.max(...d.beats.map((b) => b.out)), label).toBeLessThan(4)
+            }
+          }
+        }
+      }
+    }
+  })
+
+  it('says nothing when the phone gives no course, either', () => {
+    for (const depth of DEPTHS) {
+      for (const [name, path] of ways(depth)) {
+        for (const speed of [4, 10]) {
+          for (const seed of [1, 2, 3]) {
+            expect(events(drive(court(depth), path, { speed, noise: 6, seed, heading: false })), `${depth} m deep, ${name}, ${speed} m/s, seed ${seed}`).toEqual([])
+          }
+        }
+      }
+    }
+  })
+
+  it('says nothing for a court driven to its end and out again on the other lane, near or far from the route', () => {
+    for (const depth of [30, 60, 100, 150, 250]) {
+      for (const lane of [0, 12, 30]) {
+        for (const seed of [1, 2]) {
+          const path: Waypoint[] = lane === 0 ? court(depth) : [[0, 0], [0, 300], [depth, 300], [depth, 300 + lane], [0, 300 + lane], [0, 300], [0, 600]]
+          expect(events(drive(court(depth), path, { seed, noise: 6 })), `${depth} m deep, ${lane} m lane, seed ${seed}`).toEqual([])
+        }
+      }
+    }
+  })
+
+  it('is what the machine is given the distance for: with the gap of the place the tracker holds, the car on the street is told to be back on the route further on', () => {
+    // The gap of the place held at the junction climbs to 25 m or more for a car on the street, and the machine takes the car for having been away from the route.
+    let told = 0
+    for (const depth of DEPTHS) {
+      for (const speed of [4, 6, 10]) {
+        for (const noise of [6, 9]) {
+          for (const seed of [1, 2, 3, 4]) {
+            const d = drive(court(depth), ways(depth)[0][1], { speed, noise, seed, gap: 'tracker' })
+            if (events(d).includes('rejoined-elsewhere')) told++
+          }
+        }
+      }
+    }
+    expect(told).toBeGreaterThan(0)
+  })
+})
+
+describe('leaving the route and coming back, on a route with a court on it', () => {
+  // The street out 300 m, a court 100 m deep, and on 1700 m more of street.
+  const route: XY[] = [[0, 0], [0, 300], [100, 300], [0, 300], [0, 2000]]
+  const intoCourt: Waypoint[] = [[0, 0], [0, 300], [100, 300], [97, 297], [0, 297], [0, 1000]]
+  const pastCourt: Waypoint[] = [[0, 0], [0, 1000]]
+
+  for (const [name, start] of [['that the car drove to the end of', intoCourt], ['that the car drove past', pastCourt]] as [string, Waypoint[]][]) {
+    it(`still says off route, and then back, for a wrong turn onto a side street that is not on it, after a court ${name}`, () => {
+      for (const seed of [1, 2, 3]) {
+        const d = drive(route, [...start, [300, 1000], [0, 1000], [0, 1800]], { seed })
+        expect(events(d), `seed ${seed}`).toEqual(['went-off', 'remind', 'back'])
+        // Told it is off when it is, a good way up the side street, and back where it was left, which is on the street beyond the court.
+        expect(first(d, 'went-off').out, `seed ${seed}`).toBeGreaterThan(55)
+        expect(first(d, 'went-off').state.left!.along, `seed ${seed}`).toBeGreaterThan(1150)
+        expect(first(d, 'went-off').state.left!.along, `seed ${seed}`).toBeLessThan(1250)
+        expect(d.state.phase).toBe('on')
+      }
+    })
+
+    it(`still asks where the driver is, for a wrong turn onto a parallel street that comes back onto the route further on, after a court ${name}`, () => {
+      for (const seed of [1, 2, 3]) {
+        const d = drive(route, [...start.slice(0, -1), [0, 700], [150, 700], [150, 1400], [0, 1400], [0, 1900]], { seed })
+        expect(events(d).slice(0, 1), `seed ${seed}`).toEqual(['went-off'])
+        expect(events(d), `seed ${seed}`).toContain('rejoined-elsewhere')
+        expect(events(d), `seed ${seed}`).not.toContain('back')
+        const asked = first(d, 'rejoined-elsewhere')
+        expect(asked.state.phase).toBe('rejoined')
+        // 700 m of the street were left behind (the court's 200 m of route not among them, if it was not driven), and 120 m or so of the new part driven first.
+        expect(jump(asked), `seed ${seed}`).toBeGreaterThan(650)
+        // Told only once the phone has covered about REJOIN_RUN_M of ground on the route again (the car's own ground, the phone's being a little out),
+        // which a street crossed does not.
+        const onAgain = d.beats.find((b) => b.i > first(d, 'went-off').i && b.out <= ON_ROUTE_M && b.truth[0] === 0)!
+        expect(haversine(spot(onAgain.truth), spot(asked.truth)), `seed ${seed}`).toBeGreaterThanOrEqual(REJOIN_RUN_M - 35)
+        expect(haversine(spot(onAgain.truth), spot(asked.truth)), `seed ${seed}`).toBeLessThan(REJOIN_RUN_M + 50)
+      }
+    })
+  }
+
+  it('still asks where the driver is for a cross street between two streets of the route that skips more than 200 m of it, next to a court', () => {
+    // A street across the route 400 m long and 120 m north of a court: the car comes off the street, along a street that is not on the route, and back onto it
+    // at the far end of the route's court, a long way along it.
+    const folded: XY[] = [[0, 0], [0, 300], [100, 300], [0, 300], [0, 600], [400, 600], [400, 0]]
+    for (const seed of [1, 2, 3, 4]) {
+      const d = drive(folded, [[0, 0], [0, 300], [100, 300], [0, 300], [0, 450], [400, 450], [400, 200], [400, 0]], { seed })
+      expect(events(d), `seed ${seed}`).toContain('rejoined-elsewhere')
+      expect(events(d), `seed ${seed}`).not.toContain('back')
+    }
+  })
+})
+
+describe('a turn missed onto another part of the route, with the phone on the route all the time', () => {
+  // The car is never away from the route, so only the size of the jump along it tells: more than BIG_LEAP_M beyond the ground between.
+
+  it('asks, further on by the whole loop, when the turn into a loop round a block, which comes back to the street, is missed', { timeout: 30_000 }, () => {
+    // (Before, nothing was said: the stops round the block never came up, and the furthest reached went on past them.)
+    for (const side of [150, 300]) {
+      // (At 14 m/s, a block 150 m a side is told in about half the drives: the tracker can come onto the street beyond the loop in two jumps, by
+      // way of the loop's last stretch, which runs down the street, and neither is as big as that.)
+      for (const speed of side === 300 ? [6, 10, 14] : [6, 10]) {
+        for (const noise of [3, 6, 9]) {
+          for (const seed of [1, 2, 3, 4]) {
+            for (const heading of [true, false]) {
+              const d = drive(block(side), [[0, 0], [0, 1400]], { speed, noise, seed, heading })
+              const label = `${side} m a side, ${speed} m/s, noise ${noise}, seed ${seed}, heading ${heading}`
+              expect(events(d)[0], label).toBe('rejoined-elsewhere')
+              expect(events(d), label).not.toContain('went-off')
+              expect(events(d), label).not.toContain('back')
+              // Asked once the car has gone on 120 m or so: on the street beyond the loop, that is the loop's 4 sides and a little more. (Without a
+              // heading the tracker can have the car on the loop's last stretch for a while, which runs down the street: it is still asked, a side less.)
+              expect(jump(first(d, 'rejoined-elsewhere')), label).toBeGreaterThan(2 * side + 100)
+              expect(jump(first(d, 'rejoined-elsewhere')), label).toBeLessThan(4 * side + 350)
+            }
+          }
+        }
+      }
+    }
+  })
+
+  it('asks when the driver does not turn into a street driven out and back that is 250 m long', { timeout: 30_000 }, () => {
+    const spur: XY[] = [[0, 0], [0, 300], [250, 300], [0, 300], [0, 1200]]
+    for (const speed of [6, 10, 14]) {
+      for (const noise of [3, 6, 9]) {
+        for (const seed of [1, 2, 3, 4]) {
+          for (const heading of [true, false]) {
+            const d = drive(spur, [[0, 0], [0, 1100]], { speed, noise, seed, heading })
+            const label = `${speed} m/s, noise ${noise}, seed ${seed}, heading ${heading}`
+            expect(events(d)[0], label).toBe('rejoined-elsewhere')
+            expect(jump(first(d, 'rejoined-elsewhere')), label).toBeGreaterThan(500)
+            expect(jump(first(d, 'rejoined-elsewhere')), label).toBeLessThan(800)
+          }
+        }
+      }
+    }
+  })
+
+  it('asks, earlier on, when the car turns onto a street already driven', () => {
+    // North up the main street to 600, round a block and back to it at 300, where the route goes on west: the car turns right, up the main street again.
+    const route: XY[] = [[0, 0], [0, 600], [300, 600], [300, 300], [0, 300], [-400, 300]]
+    for (const speed of [6, 10, 14]) {
+      for (const noise of [3, 6, 9]) {
+        for (const seed of [1, 2, 3, 4]) {
+          for (const heading of [true, false]) {
+            const d = drive(route, [[0, 0], [0, 600], [300, 600], [300, 300], [0, 300], [0, 600]], { speed, noise, seed, heading })
+            const label = `${speed} m/s, noise ${noise}, seed ${seed}, heading ${heading}`
+            expect(events(d), label).toEqual(['rejoined-elsewhere'])
+            const asked = first(d, 'rejoined-elsewhere')
+            // The place left is the junction, 1500 m along the route; the main street is 300 to 600 m along it.
+            expect(asked.state.left!.along, label).toBeGreaterThan(1400)
+            expect(jump(asked), label).toBeLessThan(-900)
+            expect(offRouteSpeech('rejoined-elsewhere', jump(asked)), label).toMatch(/^Back on the route, .* earlier on\.$/)
+          }
+        }
+      }
+    }
+  })
+
+  it('still asks when the car stops a while just past the turn it missed: a stop is no gap in the fixes', { timeout: 60_000 }, () => {
+    // The phone gives fixes all through the stop, so it is never unseen, and the time stopped does not explain the jump. (Taking the time since the
+    // place last followed for the time unseen, whatever came in between, a stop of 30 s 60 to 80 m past the turn into a block 150 m a side
+    // explained it, and the driver was not asked.)
+    const cells: [number, number, number][] = [[300, 340, 30], [300, 360, 30], [300, 380, 30], [300, 400, 30], [300, 340, 90], [300, 360, 90], [300, 380, 90], [300, 400, 90], [150, 340, 30], [150, 360, 30], [150, 380, 30]]
+    for (const [side, y, stop] of cells) {
+      for (const speed of [6, 10]) {
+        for (const noise of [3, 6, 9]) {
+          for (const seed of [1, 2, 3, 4]) {
+            for (const heading of [true, false]) {
+              const d = drive(block(side), [[0, 0], [0, y, stop], [0, 1400]], { speed, noise, seed, heading })
+              const label = `${side} m a side, ${stop} s at ${y} m, ${speed} m/s, noise ${noise}, seed ${seed}, heading ${heading}`
+              expect(events(d)[0], label).toBe('rejoined-elsewhere')
+              expect(events(d), label).not.toContain('went-off')
+              expect(d.beats.some((b) => b.routeFix?.blind), label).toBe(false)
+            }
+          }
+        }
+      }
+    }
+  })
+
+  it('still asks when the phone has no fix for a while as the car misses the turn, if the time cannot explain the jump', { timeout: 60_000 }, () => {
+    // Unseen for 10 to 40 s from around the junction, at 10 m/s: the jump along the route is the loop and the street driven since, more than 20 m a
+    // second for the time unseen. (Taking any jump made unseen for driving, it was not asked.)
+    const cells: [number, [number, number]][] = [[300, [25, 35]], [300, [28, 43]], [300, [30, 50]], [300, [30, 70]], [150, [30, 70]]]
+    for (const [side, drop] of cells) {
+      for (const noise of [3, 6, 9]) {
+        for (const seed of [1, 2, 3, 4]) {
+          for (const heading of [true, false]) {
+            const d = drive(block(side), [[0, 0], [0, 1400]], { noise, seed, heading, drop })
+            const label = `${side} m a side, no fixes from ${drop[0]} to ${drop[1]} s, noise ${noise}, seed ${seed}, heading ${heading}`
+            expect(events(d)[0], label).toBe('rejoined-elsewhere')
+            expect(events(d), label).not.toContain('went-off')
+            expect(first(d, 'rejoined-elsewhere').routeFix!.blind, label).toBe(true)
+          }
+        }
+      }
+    }
+  })
+
+  it('says nothing for a car that backs up on a street driven out and back, up to 90 m at a brisk reversing pace, and drives on', { timeout: 60_000 }, () => {
+    // The tracker puts it on the way back, 1.2 km on, as it backs up, and back on the way out as it drives on (see progress.ts). (With the turn round
+    // sure at 30 m along the way back, 40 m and more at 3 to 4 m/s stayed there, and the driver was told they were back on the route further on.)
+    /** A fix a second from `from`: on to each spot at so many metres a second, or a stop of so many seconds. */
+    const paced = (from: XY, legs: ({ to: XY; speed: number } | { stop: number })[]): Waypoint[] => {
+      const out: Waypoint[] = [[...from, 0]]
+      let at = from
+      for (const leg of legs) {
+        if ('stop' in leg) {
+          for (let k = 0; k < leg.stop; k++) out.push([...at, 0])
+          continue
+        }
+        const n = Math.max(1, Math.round(Math.hypot(leg.to[0] - at[0], leg.to[1] - at[1]) / leg.speed))
+        for (let k = 1; k <= n; k++) out.push([at[0] + ((leg.to[0] - at[0]) * k) / n, at[1] + ((leg.to[1] - at[1]) * k) / n, leg.speed])
+        at = leg.to
+      }
+      return out
+    }
+    const street: XY[] = [[0, 0], [0, 800], [0, 0], [-300, 0]]
+    for (const [metres, speed] of [[9, 3], [12, 3], [20, 3], [12, 4], [20, 4], [40, 3], [50, 4], [70, 3], [70, 4], [90, 3]]) {
+      for (const noise of [3, 5]) {
+        for (const seed of [1, 2, 3, 4]) {
+          const exact = paced([0, 0], [{ to: [0, 200], speed: 8 }, { stop: 3 }, { to: [0, 200 - metres], speed }, { stop: 2 }, { to: [0, 800], speed: 8 }, { to: [0, 0], speed: 8 }, { to: [-300, 0], speed: 8 }])
+          const d = drive(street, [[0, 0], [0, 1]], { exact, noise, seed })
+          expect(events(d), `${metres} m back at ${speed} m/s, noise ${noise}, seed ${seed}`).toEqual([])
+          expect(d.progress!.along).toBeGreaterThan(1250)
+        }
+      }
+    }
+  })
+})
+
+describe('the way to where the round was started, skipped to or carried on from, along the route itself', () => {
+  // The machine is asked once the route is reached, which can be 200 m on it, a long way before the spot (see `startAt`). On the way there the tracker
+  // finds its pass, and is put past a loop, or a street driven out and back, that lies before the spot by a jump bigger than BIG_LEAP_M: the driver's
+  // own way there. (Before, they were asked whether they were back on the route further on; and left alone, the round carried on from short of the
+  // spot, and the stops between that the start had counted as done came up again.)
+  it('says nothing of a loop, and a street driven out and back, that lie before where the round was started part way', { timeout: 60_000 }, () => {
+    // North up the main street, a loop round a block 150 m a side 300 m up (300 to 900 m along the route), a street of 250 m driven out and back 700 m up
+    // (1300 to 1800 along it), and on north: started 2200 m along, 1100 m up.
+    const route: XY[] = [[0, 0], [0, 300], [150, 300], [150, 450], [0, 450], [0, 300], [0, 700], [250, 700], [0, 700], [0, 1600]]
+    for (const speed of [6, 10, 14]) {
+      for (const noise of [3, 6, 9]) {
+        for (const seed of [1, 2, 3, 4]) {
+          for (const heading of [true, false]) {
+            const d = drive(route, [[0, 0], [0, 1500]], { speed, noise, seed, heading, startAt: 2200 })
+            const label = `${speed} m/s, noise ${noise}, seed ${seed}, heading ${heading}`
+            expect(events(d), label).toEqual([])
+            // (The machine was asked before the spot, and moved on past the loop by a jump bigger than that, without a word.)
+            expect(quietLeap(d), label).toBeGreaterThan(BIG_LEAP_M)
+          }
+        }
+      }
+    }
+  })
+
+  it('says nothing of a loop skipped to the far side of, or to the junction it comes back to', { timeout: 60_000 }, () => {
+    // (Skipped to while driving 200 m or more before the loop: to the street beyond it, or to the junction where its last stretch comes back to the
+    // street, which the fix that gets there is put at by the jump itself.)
+    for (const [side, startAt] of [[150, 1350], [150, 930], [300, 1800]]) {
+      for (const speed of [6, 10, 14]) {
+        for (const noise of [3, 6, 9]) {
+          for (const seed of [1, 2, 3, 4]) {
+            for (const heading of [true, false]) {
+              const d = drive(block(side), [[0, 0], [0, 1400]], { speed, noise, seed, heading, startAt })
+              expect(events(d), `${side} m a side, skipped to ${startAt}, ${speed} m/s, noise ${noise}, seed ${seed}, heading ${heading}`).toEqual([])
+            }
+          }
+        }
+      }
+    }
+  })
+
+  it('still asks about a loop missed after the spot, once the phone has been there', { timeout: 60_000 }, () => {
+    // A loop round a block 150 m a side 300 m up, skipped on the way, and one 300 m a side 1300 m up (1900 to 3100 m along the route), past the spot
+    // 1700 m along it (1100 m up): that turn the car misses.
+    const route: XY[] = [[0, 0], [0, 300], [150, 300], [150, 450], [0, 450], [0, 300], [0, 1300], [300, 1300], [300, 1600], [0, 1600], [0, 1300], [0, 2400]]
+    for (const speed of [6, 10, 14]) {
+      for (const noise of [3, 6, 9]) {
+        for (const seed of [1, 2, 3, 4]) {
+          for (const heading of [true, false]) {
+            const d = drive(route, [[0, 0], [0, 2300]], { speed, noise, seed, heading, startAt: 1700 })
+            const label = `${speed} m/s, noise ${noise}, seed ${seed}, heading ${heading}`
+            expect(events(d)[0], label).toBe('rejoined-elsewhere')
+            expect(events(d), label).not.toContain('went-off')
+            // Asked about the second loop, not the first.
+            expect(first(d, 'rejoined-elsewhere').state.left!.along, label).toBeGreaterThan(1800)
+          }
+        }
+      }
+    }
   })
 })

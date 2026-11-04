@@ -20,15 +20,17 @@ import {
   roadUrl,
   TIMEOUT_MS,
   undoStretch,
-  UTURN_NOTICE,
+  UTURN_NO_ROAD_NOTICE,
   UTURN_RANGE_DEG,
   UTURN_SNAP_M,
+  UTURN_UNREACHED_NOTICE,
   uturnAvailable,
   uturnIsOn,
   type Stretch,
 } from './roads'
 import { removeLastPoint } from './routeEdit'
 import type { Pt, Route } from './types'
+import { drawUturn, localUturn } from './uturnShape'
 
 /**
  * A real answer from routing.openstreetmap.de (car profile, overview=full, geometries=geojson) for a 1.2 km drive
@@ -681,17 +683,22 @@ describe('extending the route with a U-turn', () => {
     expect(String(f.mock.calls[0][0])).not.toContain('bearings')
   })
 
-  it('draws a straight line when there is no road to turn back along, and says a U-turn could not be made', async () => {
+  it('draws a U-turn at the end of the route, not a line to the tap, when there is no road to turn back along', async () => {
+    const shape = localUturn(before.points)!
     for (const code of ['NoSegment', 'NoRoute']) {
       mockFetch(json({ code }, 400))
       const out = await extendAlongRoads(before, TAP, 'left', { uturnFrom: 125 })
-      expect(out.route.points).toEqual([...before.points, TAP])
-      expect(out.added).toEqual([TAP])
-      expect(out.notice).toBe(UTURN_NOTICE)
+      // The three points of the shape, and not the tap.
+      expect(out.route.points).toEqual([...before.points, ...shape])
+      expect(out.added).toEqual(shape)
+      expect(out.added).not.toContainEqual(TAP)
+      expect(out.replaced).toBeNull()
+      expect(out.notice).toBe(UTURN_NO_ROAD_NOTICE)
       expect(out.notice).toContain('U-turn')
+      // The run on past the end is the pass just driven (both); the turn and the way back are thrown on the side asked for.
       expect(out.route.sideChanges).toEqual([
         { idx: 0, side: 'both' },
-        { idx: 1, side: 'left' },
+        { idx: 2, side: 'left' },
       ])
     }
   })
@@ -704,64 +711,93 @@ describe('extending the route with a U-turn', () => {
       // An answer that is a success but says there is no way, as a few servers do.
       json({ code: 'NoRoute', routes: [] }, 200),
     ]
+    const shape = localUturn(before.points)!
     for (const reply of answers) {
       mockFetch(reply)
       const out = await extendAlongRoads(before, TAP, 'both', { uturnFrom: 125 })
-      expect(out.notice).toBe(UTURN_NOTICE)
-      expect(out.route.points).toEqual([...before.points, TAP])
+      expect(out.notice).toBe(UTURN_NO_ROAD_NOTICE)
+      expect(out.route.points).toEqual([...before.points, ...shape])
     }
   })
 
-  it('does not blame the U-turn alone: the notice names a one-way street and a point far from a road, and still says it is a straight line', () => {
+  it('says what was drawn and what to do next, in words that are true whichever way the road was not found', () => {
     // The service answers NoSegment for either place and cannot say which, so the words must be true for each of them.
-    expect(UTURN_NOTICE).toContain('U-turn')
-    expect(UTURN_NOTICE).toMatch(/one-way street/)
-    expect(UTURN_NOTICE).toMatch(/too far from a road/)
-    expect(UTURN_NOTICE).toMatch(/straight line\.$/)
-    // It is a possibility, not a claim of which, and it is not the plain notice either.
-    expect(UTURN_NOTICE).toMatch(/\bmay be\b/)
-    expect(UTURN_NOTICE).not.toBe(ROAD_NOTICE['no-road'])
+    expect(UTURN_NO_ROAD_NOTICE).toBe(
+      'No road to turn round on there (it may be a one-way street), so a U-turn was drawn at the end of your route. Tap where you head next.',
+    )
+    expect(UTURN_UNREACHED_NOTICE).toBe(
+      "Couldn't reach the road service, so a U-turn was drawn at the end of your route. Tap where you head next.",
+    )
+    // It is a possibility, not a claim of which, and neither is the plain notice.
+    expect(UTURN_NO_ROAD_NOTICE).toMatch(/\bmay be\b/)
+    expect(UTURN_NO_ROAD_NOTICE).not.toBe(ROAD_NOTICE['no-road'])
+    expect(UTURN_UNREACHED_NOTICE).not.toBe(ROAD_NOTICE.offline)
   })
 
-  it('says the usual thing, not a U-turn one, when a road was not wanted back or the failure is something else', async () => {
-    mockFetch(json({ code: 'NoSegment' }, 400))
-    expect((await extendAlongRoads(before, TAP, 'both')).notice).toBe(ROAD_NOTICE['no-road'])
-    // A bearing that is not one is no U-turn, and not asked for.
-    const f = mockFetch(json({ code: 'NoSegment' }, 400))
-    expect((await extendAlongRoads(before, TAP, 'both', { uturnFrom: Number.NaN })).notice).toBe(ROAD_NOTICE['no-road'])
-    expect(String(f.mock.calls[0][0])).not.toContain('bearings')
-
-    const cases: [Reply, keyof typeof ROAD_NOTICE][] = [
-      [new TypeError('Load failed'), 'offline'],
-      [json({ message: 'down' }, 503), 'service'],
+  it('draws the same U-turn, with the other notice, when the road service could not be reached or failed', async () => {
+    const shape = localUturn(before.points)!
+    const cases: [string, Reply][] = [
+      ['offline', new TypeError('Load failed')],
+      ['HTTP 500', json({ message: 'down' }, 500)],
+      ['HTTP 503', json({ message: 'down' }, 503)],
+      ['HTTP 429', json({ message: 'too many' }, 429)],
+      ['an answer that makes no sense', json({ code: 'InvalidQuery' }, 400)],
+      ['an answer with no route', json({ code: 'Ok', routes: [] }, 200)],
     ]
-    for (const [reply, kind] of cases) {
+    for (const [name, reply] of cases) {
       mockFetch(reply)
       const out = await extendAlongRoads(before, TAP, 'both', { uturnFrom: 125 })
-      expect(out.notice).toBe(ROAD_NOTICE[kind])
-      expect(out.route.points).toEqual([...before.points, TAP])
+      expect(out.notice, name).toBe(UTURN_UNREACHED_NOTICE)
+      expect(out.route.points, name).toEqual([...before.points, ...shape])
+      expect(out.added, name).toEqual(shape)
     }
   })
 
-  it('draws a straight line, with the usual notice, when the service is too slow', async () => {
+  it('draws the plain straight line when a road was not asked to turn back, or the bearing is not one', async () => {
+    mockFetch(json({ code: 'NoSegment' }, 400))
+    const plain = await extendAlongRoads(before, TAP, 'both')
+    expect(plain.notice).toBe(ROAD_NOTICE['no-road'])
+    expect(plain.route.points).toEqual([...before.points, TAP])
+    // A bearing that is not one is no U-turn, and not asked for.
+    const f = mockFetch(json({ code: 'NoSegment' }, 400))
+    const nan = await extendAlongRoads(before, TAP, 'both', { uturnFrom: Number.NaN })
+    expect(nan.notice).toBe(ROAD_NOTICE['no-road'])
+    expect(nan.route.points).toEqual([...before.points, TAP])
+    expect(String(f.mock.calls[0][0])).not.toContain('bearings')
+    mockFetch(new TypeError('Load failed'))
+    expect((await extendAlongRoads(before, TAP, 'both')).notice).toBe(ROAD_NOTICE.offline)
+  })
+
+  it('draws a straight line to the tap when the route has no way it is heading, so there is nothing to turn back from', async () => {
+    // Two points less than a metre apart: a bearing was asked for, but there is no shape to draw.
+    const stub: Route = { points: [START, { lat: START.lat + 0.000002, lng: START.lng }], sideChanges: [{ idx: 0, side: 'both' }], stops: [] }
+    expect(drawUturn(stub, 'both')).toBeNull()
+    mockFetch(json({ code: 'NoSegment' }, 400))
+    const out = await extendAlongRoads(stub, TAP, 'both', { uturnFrom: 125 })
+    expect(out.route.points).toEqual([...stub.points, TAP])
+    expect(out.notice).toBe(ROAD_NOTICE['no-road'])
+  })
+
+  it('draws the U-turn, with the usual notice for a timeout, when the service is too slow', async () => {
     vi.useFakeTimers()
     mockFetch(silent)
     const out = extendAlongRoads(before, TAP, 'both', { uturnFrom: 125 })
     await vi.advanceTimersByTimeAsync(TIMEOUT_MS)
     const done = await out
-    expect(done.route.points).toEqual([...before.points, TAP])
-    expect(done.notice).toBe(ROAD_NOTICE.timeout)
+    expect(done.route.points).toEqual([...before.points, ...localUturn(before.points)!])
+    expect(done.notice).toBe(UTURN_UNREACHED_NOTICE)
   })
 
-  it('draws a straight line without asking when the phone has no connection', async () => {
+  it('draws the U-turn without asking when the phone has no connection', async () => {
     vi.stubGlobal('navigator', { onLine: false })
     const f = mockFetch(json(answer()))
     const out = await extendAlongRoads(before, TAP, 'both', { uturnFrom: 125 })
     expect(f).not.toHaveBeenCalled()
-    expect(out.notice).toBe(ROAD_NOTICE.offline)
+    expect(out.notice).toBe(UTURN_UNREACHED_NOTICE)
+    expect(out.route.points).toEqual([...before.points, ...localUturn(before.points)!])
   })
 
-  it('gives up, rather than drawing a straight line, when cancelled', async () => {
+  it('gives up, rather than drawing a straight line or a U-turn, when cancelled', async () => {
     const f = mockFetch(silent)
     const ctl = new AbortController()
     const settled = failure(extendAlongRoads(before, TAP, 'left', { signal: ctl.signal, uturnFrom: 125 }))
@@ -824,9 +860,11 @@ describe('extending the route with a U-turn', () => {
       vi.stubGlobal('fetch', f)
       const out = await extendAlongRoads(before, TAP, 'both', { uturnFrom: arrival })
       expect(f).toHaveBeenCalledTimes(1)
-      expect(out.notice).toBe(UTURN_NOTICE)
-      expect(out.route.points).toEqual([...before.points, TAP])
-      expect(out.added).toEqual([TAP])
+      // The next street is not followed to, and nor is a line to the tap drawn: the U-turn is drawn on the spot.
+      expect(out.notice).toBe(UTURN_NO_ROAD_NOTICE)
+      expect(out.route.points).toEqual([...before.points, ...localUturn(before.points)!])
+      expect(out.added).toEqual(localUturn(before.points))
+      expect(out.added).not.toContainEqual(TAP)
     })
 
     it('turns back along the other carriageway of a dual carriageway, up to 25 m across', async () => {
@@ -845,7 +883,7 @@ describe('extending the route with a U-turn', () => {
       vi.stubGlobal('fetch', service([oneWay, { away: UTURN_SNAP_M, heading: back }]))
       expect((await extendAlongRoads(before, TAP, 'both', { uturnFrom: arrival })).notice).toBeNull()
       vi.stubGlobal('fetch', service([oneWay, { away: UTURN_SNAP_M + 1, heading: back }]))
-      expect((await extendAlongRoads(before, TAP, 'both', { uturnFrom: arrival })).notice).toBe(UTURN_NOTICE)
+      expect((await extendAlongRoads(before, TAP, 'both', { uturnFrom: arrival })).notice).toBe(UTURN_NO_ROAD_NOTICE)
     })
 
     it('still turns back along a two-way street, and finds nothing when the street only runs one way and no other is near', async () => {
@@ -854,7 +892,7 @@ describe('extending the route with a U-turn', () => {
       expect(out.notice).toBeNull()
       expect(out.added).toEqual(roadPoints(answer()).slice(1))
       vi.stubGlobal('fetch', service([oneWay]))
-      expect((await extendAlongRoads(before, TAP, 'both', { uturnFrom: arrival })).notice).toBe(UTURN_NOTICE)
+      expect((await extendAlongRoads(before, TAP, 'both', { uturnFrom: arrival })).notice).toBe(UTURN_NO_ROAD_NOTICE)
     })
 
     it('does not narrow an ordinary tap, which may still start on a street up to 50 m away', async () => {

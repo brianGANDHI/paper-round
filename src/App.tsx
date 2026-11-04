@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Icon, type IconName } from './Icon'
-import { activeRoute, adjustActiveRoute, editActiveRoute, setActiveRound, setActiveSections, setActiveStreets } from './library'
+import { activeRoute, adjustActiveRoute, editActiveRoute, setActiveRound, setActiveSections, setActiveStreets, setBundleOrder } from './library'
 import { Round } from './Round'
 import { Routes } from './Routes'
 import { Setup } from './Setup'
@@ -46,6 +46,8 @@ export default function App() {
   // Names for parts of the route are saved for the route that was in use when they were made. Street names found by a lookup that was
   // running are kept only if the route is still the one (and has the points) it was asked about.
   const routeId = current.id
+  // The driver's order of bundle drops is kept with the route it was set for, in the round's list or in Setup.
+  const onBundleOrder = (order: string[]) => update((lib) => setBundleOrder(lib, routeId, order))
 
   return (
     <div className="app">
@@ -63,6 +65,8 @@ export default function App() {
             routeName={current.name}
             sections={current.sections ?? NONE}
             streets={current.streets ?? NONE}
+            bundleOrder={current.bundleOrder}
+            onBundleOrder={onBundleOrder}
             onRound={(r) => update((lib) => setActiveRound(lib, r))}
             onAdjustRoute={(r) => update((lib) => adjustActiveRoute(lib, r))}
             onGoSetup={() => setTab('setup')}
@@ -79,6 +83,8 @@ export default function App() {
             onSections={(s) => update((lib) => (lib.activeId === routeId ? setActiveSections(lib, s) : lib))}
             streets={current.streets ?? NONE}
             onStreets={(s, points) => update((lib) => (lib.activeId === routeId && (!points || activeRoute(lib).route.points === points) ? setActiveStreets(lib, s) : lib))}
+            bundleOrder={current.bundleOrder}
+            onBundleOrder={onBundleOrder}
             onGoRoutes={() => setTab('routes')}
           />
         )}

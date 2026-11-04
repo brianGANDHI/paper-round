@@ -24,6 +24,11 @@ export interface GuidanceContext {
   heading: number | null
   /** Turns at or before this many metres along the route are behind the driver for good. */
   after: number
+  /**
+   * How far along the route the driver is known to have got, in metres (the furthest reached): a turn they are through by then is behind
+   * them for good, so in a short court the turn in does not come back after the U-turn, nor the U-turn after the turn out (see `upcomingTurn`).
+   */
+  reached?: number
 }
 
 /**
@@ -33,7 +38,7 @@ export interface GuidanceContext {
  */
 export function guidanceToShow<T extends Turn>(turns: readonly T[], c: GuidanceContext): TransitGuidance<T> | null {
   if (!c.onTrack) return null
-  const options = { heading: c.heading, after: c.after }
+  const options = { heading: c.heading, after: c.after, reached: c.reached }
   if (c.transit) return transitGuidance(turns, c.along, c.routeEnd, options)
   const next = upcomingTurn(turns, c.along, options)
   return next ? { kind: 'turn', turn: next.turn, ahead: next.ahead } : null

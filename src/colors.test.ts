@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { LEAFLET_Z, LINE_PANES, lineStyle, SIDE_COLOR, SIDE_PILL, STOP_COLOR } from './colors'
+import { BLOCK_GLYPH, BLOCK_MARK_HTML, BLOCK_MARK_PX, BLOCK_PANE, blockMarkClass, LEAFLET_Z, LINE_PANES, lineStyle, SIDE_COLOR, SIDE_PILL, STOP_COLOR } from './colors'
 import type { Side } from './types'
 
 const SIDES: Side[] = ['both', 'left', 'right', 'transit']
@@ -78,6 +78,95 @@ describe('the colour of transit', () => {
     }
     expect(hue(SIDE_COLOR.transit)).toBe(true)
     expect(hue(SIDE_PILL.transit)).toBe(true)
+  })
+})
+
+/** The hue of a #rrggbb colour, in degrees round the colour wheel. */
+function hue(hex: string): number {
+  const n = parseInt(hex.slice(1), 16)
+  const [r, g, b] = [(n >> 16) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255]
+  const max = Math.max(r, g, b)
+  const d = max - Math.min(r, g, b)
+  if (d === 0) return 0
+  const h = max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4
+  return (h * 60 + 360) % 360
+}
+
+/** How far apart two hues are, in degrees: at most 180. */
+const hueGap = (a: string, b: string): number => {
+  const d = Math.abs(hue(a) - hue(b))
+  return Math.min(d, 360 - d)
+}
+
+describe('the colour of an apartment block', () => {
+  const others = [STOP_COLOR.bundle, STOP_COLOR.nothrow, STOP_COLOR.request]
+
+  it('has a colour of its own, not that of another stop, a side or the guide line', () => {
+    expect(STOP_COLOR.block).toMatch(/^#[0-9a-f]{6}$/)
+    expect([...others, ...Object.values(SIDE_COLOR), GUIDE]).not.toContain(STOP_COLOR.block)
+  })
+
+  it('is a blue-green teal, a clear step from the blue of a bundle drop and from the green of the left side', () => {
+    expect(hue(STOP_COLOR.block)).toBeGreaterThan(165)
+    expect(hue(STOP_COLOR.block)).toBeLessThan(190)
+    expect(hueGap(STOP_COLOR.block, STOP_COLOR.bundle)).toBeGreaterThanOrEqual(30)
+    expect(hueGap(STOP_COLOR.block, SIDE_COLOR.left)).toBeGreaterThanOrEqual(30)
+    expect(hueGap(STOP_COLOR.block, STOP_COLOR.request)).toBeGreaterThanOrEqual(60)
+    expect(hueGap(STOP_COLOR.block, STOP_COLOR.nothrow)).toBeGreaterThanOrEqual(60)
+  })
+
+  it('reads against the white edge of its marker and the light map, and carries a white building', () => {
+    for (const background of [WHITE, OSM_LAND]) expect(contrast(STOP_COLOR.block, background)).toBeGreaterThanOrEqual(3)
+  })
+})
+
+describe('the glyph of an apartment block', () => {
+  it('is plain SVG shapes on the 24-unit grid of Icon, with nothing that could run', () => {
+    expect(BLOCK_GLYPH).toMatch(/^(<(rect|path)\b[^<>]*\/>)+$/)
+    for (const n of BLOCK_GLYPH.match(/-?\d+(\.\d+)?/g) ?? []) expect(Math.abs(Number(n))).toBeLessThanOrEqual(24)
+  })
+
+  it('is a building: a tall block with windows and a door', () => {
+    expect(BLOCK_GLYPH).toContain('<rect')
+    const rect = /<rect x="(\d+)" y="(\d+)" width="(\d+)" height="(\d+)"/.exec(BLOCK_GLYPH)!
+    expect(Number(rect[4])).toBeGreaterThan(Number(rect[3]))
+    expect((BLOCK_GLYPH.match(/<path/g) ?? []).length).toBeGreaterThanOrEqual(2)
+  })
+})
+
+describe('the marker of an apartment block on the map', () => {
+  it('is a box with the building in it, drawn as lines in the colour of the text, and hidden from a screen reader', () => {
+    expect(BLOCK_MARK_HTML).toMatch(/^<span><svg [^>]*aria-hidden="true"[^>]*>.*<\/svg><\/span>$/)
+    expect(BLOCK_MARK_HTML).toContain(BLOCK_GLYPH)
+    expect(BLOCK_MARK_HTML).toContain('stroke="currentColor"')
+  })
+
+  it('has a class for what is to do and one for what is done, which is the faded one', () => {
+    expect(blockMarkClass(false)).toBe('block-mark')
+    expect(blockMarkClass(true)).toBe('block-mark done')
+  })
+
+  it('has a building that fits the box it is drawn in, with the box the size of the circles the other stops are', () => {
+    const size = Number(/width="(\d+)"/.exec(BLOCK_MARK_HTML)![1])
+    expect(size).toBeGreaterThan(0)
+    // The box has a 3 px edge, and the glyph sits inside it.
+    expect(size).toBeLessThanOrEqual(BLOCK_MARK_PX - 2 * 3)
+    // A circle of radius 12 with its 3 px edge is 27 px across.
+    expect(BLOCK_MARK_PX).toBeGreaterThanOrEqual(27)
+  })
+})
+
+describe('the pane an apartment block is drawn in', () => {
+  it('is over the lines of the route and under the overlay pane with the other stops and the driver, so the dot is never hidden by a block', () => {
+    for (const pane of Object.values(LINE_PANES)) expect(BLOCK_PANE.zIndex).toBeGreaterThan(pane.zIndex)
+    expect(BLOCK_PANE.zIndex).toBeLessThan(LEAFLET_Z.overlay)
+  })
+
+  it('has a name of its own, plain and none of Leaflet default panes, which react-leaflet refuses', () => {
+    expect(Object.values(LINE_PANES).map((p) => p.name)).not.toContain(BLOCK_PANE.name)
+    expect(BLOCK_PANE.name).toMatch(/^[a-z][a-z-]*$/)
+    for (const reserved of ['mapPane', 'markerPane', 'overlayPane', 'popupPane', 'shadowPane', 'tilePane', 'tooltipPane']) expect(BLOCK_PANE.name).not.toBe(reserved)
+    expect(Object.values(LINE_PANES).map((p) => p.zIndex)).not.toContain(BLOCK_PANE.zIndex)
   })
 })
 

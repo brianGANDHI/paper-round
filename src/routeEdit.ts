@@ -468,7 +468,7 @@ export const MAX_LABEL = 60
 export const MAX_ADDRESS = 100
 /** The longest note kept with a special request: short enough to read at a glance, and to fit the alert's three lines on the narrowest phone. */
 export const MAX_NOTE = 60
-/** The most papers a stop can be given: a bundle is a few dozen at most, and this keeps a slip of the finger sensible. */
+/** The most papers a stop can be given: a bundle drop or an apartment block is a few dozen at most, and this keeps a slip of the finger sensible. */
 export const MAX_QTY = 9999
 
 const tidy = (text: string, max: number): string | undefined => text.replace(/\s+/g, ' ').trim().slice(0, max).trim() || undefined
@@ -545,28 +545,36 @@ export function parseQty(text: string): number | undefined {
 export const qtyProblem = (text: string): string | null =>
   !text.trim() || parseQty(text) !== undefined ? null : `Papers must be a whole number from 1 to ${MAX_QTY}.`
 
-/** What a stop is called in a list: its name, or its address when it has no name. */
-export const stopName = (s: Pick<Stop, 'type' | 'label' | 'address'>): string =>
-  s.label ?? s.address ?? (s.type === 'bundle' ? 'Bundle drop' : s.type === 'request' ? 'Special request' : 'No-throw house')
+/** What each kind of stop is called when it has no name or address to be called by. */
+const STOP_KIND: Record<StopType, string> = { bundle: 'Bundle drop', request: 'Special request', block: 'Apartment block', nothrow: 'No-throw house' }
+
+/** What a stop is called in a list: its name, or its address when it has no name, or else what kind of stop it is. */
+export const stopName = (s: Pick<Stop, 'type' | 'label' | 'address'>): string => s.label ?? s.address ?? STOP_KIND[s.type]
+
+/**
+ * Whether a stop of this kind has a number of papers: how many a bundle drop gets, and how many are thrown at an apartment block. The
+ * forms ask for it, the list shows it and an alert tells it for these kinds and no other.
+ */
+export const hasPapers = (type: StopType): boolean => type === 'bundle' || type === 'block'
 
 /** The address to show under a stop's name, which is only when it has both: with no name the address is the name. */
 export const stopWhere = (s: Pick<Stop, 'label' | 'address'>): string | null => (s.label && s.address ? s.address : null)
 
-/** How many papers a bundle drop gets, or that no amount is set. A special request's note, or that it has none. For a no-throw house, what it is. */
+/** How many papers a bundle drop gets or are thrown at an apartment block, or that no amount is set. A special request's note, or that it has none. For a no-throw house, what it is. */
 export const stopDetail = (s: Pick<Stop, 'type' | 'qty' | 'note'>): string => {
-  if (s.type === 'bundle') return s.qty ? plural(s.qty, 'paper', 'papers') : 'no amount set'
+  if (hasPapers(s.type)) return s.qty ? plural(s.qty, 'paper', 'papers') : 'no amount set'
   if (s.type === 'request') return s.note ?? 'no note set'
   return 'No-throw'
 }
 
-/** A bundle drop with no amount, or a special request with no note: its alert can't say what to do. */
+/** A bundle drop or an apartment block with no amount, or a special request with no note: its alert can't say what to do. */
 export const stopIncomplete = (s: Pick<Stop, 'type' | 'qty' | 'note'>): boolean =>
-  (s.type === 'bundle' && !s.qty) || (s.type === 'request' && !s.note)
+  (hasPapers(s.type) && !s.qty) || (s.type === 'request' && !s.note)
 
 /**
  * The route with one stop's name, address, papers and note changed. Anything left out is taken off the stop, so
- * blank means none. Only a bundle drop has papers, and only a special request has a note. The route is the same
- * one when there is no such stop.
+ * blank means none. Only a bundle drop and an apartment block have papers (see `hasPapers`), and only a special request has a note.
+ * The route is the same one when there is no such stop.
  */
 export function updateStop(route: Route, id: string, change: { label?: string; address?: string; qty?: number; note?: string }): Route {
   if (!route.stops.some((s) => s.id === id)) return route
@@ -579,7 +587,7 @@ export function updateStop(route: Route, id: string, change: { label?: string; a
         ...rest,
         ...(change.label ? { label: change.label } : {}),
         ...(change.address ? { address: change.address } : {}),
-        ...(s.type === 'bundle' && change.qty ? { qty: change.qty } : {}),
+        ...(hasPapers(s.type) && change.qty ? { qty: change.qty } : {}),
         ...(s.type === 'request' && change.note ? { note: change.note } : {}),
       }
     }),

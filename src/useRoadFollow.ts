@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { arrivalBearing, canFollow, extendAlongRoads, undoStretch, uturnAvailable, uturnIsOn, type Stretch } from './roads'
 import { appendPoint } from './routeEdit'
 import type { Pt, Route, Side } from './types'
+import { canDrawUturn, drawUturn, uturnHereNotice } from './uturnShape'
 
 /** How many stretches of road can be taken back one by one. */
 const HISTORY = 50
@@ -21,11 +22,16 @@ interface Options {
  * result is added to the route when it comes back. Cancel it, change the route, or stop following,
  * and the lookup is abandoned without touching the route.
  *
- * U-turn is a switch for the next tap: the road then leaves the route's last point heading back the way the route
+ * U-turn along the road is a switch for the next tap: the road then leaves the route's last point heading back the way the route
  * arrived, so it turns round there instead of going round the block. It belongs to the end of the route it was switched
  * on at, so it goes off by itself when the tap it was for is added (or drawn straight), and when the end of the route
  * changes by an undo, a deleted or moved point or a cleared route, and when following roads stops. A tap that is
- * cancelled, or that adds nothing, leaves it on.
+ * cancelled, or that adds nothing, leaves it on. When no road can be found to turn round on, a U-turn is drawn at the end
+ * of the route instead of a line to the tap (see `extendAlongRoads`).
+ *
+ * U-turn here (`uturnHere`) is not a switch and has nothing to do with the road service: it draws a U-turn at the end of the route
+ * at once (see `localUturn`), whether or not roads are being followed, and Undo takes it off whole. The road for the tap after it
+ * usually takes the place of its way back (see `extendAlongRoads`); Undo of that tap then gives the U-turn back as it was.
  */
 export function useRoadFollow({ route, side, active, onRoute, onNotice }: Options) {
   /** The tap whose road is being looked up. */
@@ -38,6 +44,8 @@ export function useRoadFollow({ route, side, active, onRoute, onNotice }: Option
   const [uturnAt, setUturnAt] = useState<Pt | null>(null)
   const uturn = uturnIsOn(uturnAt, route.points, active)
   const canUturn = uturnAvailable(route.points, active)
+  /** A U-turn can be drawn at the end of the route whenever it has a way it is heading, following roads or not. */
+  const canUturnHere = canDrawUturn(route.points)
 
   // Once the switch has gone off (see above) forget where it was set, or an undo back to that end would switch it on again.
   if (uturnAt && !uturn) setUturnAt(null)
@@ -106,11 +114,25 @@ export function useRoadFollow({ route, side, active, onRoute, onNotice }: Option
     history.current = [...history.current, stretch].slice(-HISTORY)
   }
 
-  /** Switch U-turn on for the next tap, or off. Only where it can be asked for, and not while a road is being looked up. */
+  /**
+   * U-turn here: a U-turn drawn at the end of the route, thrown on the side being drawn (see `withUturn`), and Undo takes all three of its points off at once.
+   * Nothing is looked up, so it works offline and on a one-way street. A lookup still running is given up first: it was for a tap on the route as it was.
+   * Where the route has no way it is heading there is nothing to turn back from, and nothing happens.
+   */
+  const uturnHere = () => {
+    const drawn = drawUturn(route, side)
+    if (!drawn) return
+    cancel()
+    remember({ added: drawn.added, replaced: null })
+    onRoute(drawn.route)
+    onNotice(uturnHereNotice(side))
+  }
+
+  /** Switch U-turn along the road on for the next tap, or off. Only where it can be asked for, and not while a road is being looked up. */
   const setUturn = (on: boolean) => {
     if (running.current) return
     setUturnAt(on && canUturn ? route.points[route.points.length - 1] : null)
   }
 
-  return { finding, tap, undo, remember, uturn, canUturn, setUturn }
+  return { finding, tap, undo, remember, uturn, canUturn, setUturn, canUturnHere, uturnHere }
 }

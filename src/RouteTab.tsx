@@ -20,8 +20,15 @@ interface Props {
   onFollow: (on: boolean) => void
   finding: boolean
   /**
-   * U-turn: the road for the next tap leaves the last point heading back the way the route came. Offered while following roads,
-   * once the route has a direction; whether it is on, and a change to that. It goes off by itself after that tap.
+   * U-turn here: a U-turn is drawn at the end of the route, at once, with no road lookup. Offered whenever the route has a direction,
+   * whether or not roads are followed; not while a road is being looked up (`finding`).
+   */
+  canUturnHere: boolean
+  onUturnHere: () => void
+  /**
+   * U-turn along the road: the road for the next tap leaves the last point heading back the way the route came. Offered while following roads,
+   * once the route has a direction, for a turn that is not at the end of the route, such as a gap in a median; whether it is on, and a change
+   * to that. It goes off by itself after that tap.
    */
   canUturn: boolean
   uturn: boolean
@@ -151,6 +158,20 @@ export function RouteTab(p: Props) {
             Done
           </button>
         </div>
+        {p.canUturnHere && (
+          <>
+            <button
+              className="btn secondary block"
+              disabled={p.finding}
+              title="Draws a U-turn at the end of your route: on a little way, across and back. Needs no internet."
+              onClick={p.onUturnHere}
+            >
+              <UTurnIcon />
+              U-turn here
+            </button>
+            <p className="footnote">Draws a U-turn at the end of your route. Then tap where you head next.</p>
+          </>
+        )}
         {p.canUturn && (
           <>
             <button
@@ -162,7 +183,7 @@ export function RouteTab(p: Props) {
               onClick={() => p.onUturn(!p.uturn)}
             >
               <UTurnIcon />
-              U-turn
+              U-turn along the road
             </button>
             <p className="footnote">For the next tap only: the road turns round and heads back the way you came.</p>
           </>

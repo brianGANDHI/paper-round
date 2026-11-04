@@ -13,7 +13,7 @@ import {
 } from 'react-leaflet'
 import 'leaflet/dist/leaflet.css'
 import { alertable, quietHouseIds } from './alerts'
-import { LINE_PANES, lineStyle, SIDE_COLOR, STOP_COLOR } from './colors'
+import { BLOCK_MARK_HTML, BLOCK_MARK_PX, BLOCK_PANE, blockMarkClass, LINE_PANES, lineStyle, SIDE_COLOR, STOP_COLOR } from './colors'
 import { arrowsAlong, awayBearing, haversine, occurrences, pathLength, screenPlace, splitPathAt, type Place } from './geo'
 import { bottomCover, drivenCut, drivenShare, followZoom, headingUpFrac, headingUpLayout, isAhead, userInput, type UserInput } from './mapHeading'
 import { houseNumber } from './routeEdit'
@@ -21,6 +21,7 @@ import { passViews } from './passes'
 import { AUSTRALIA } from './region'
 import { fitPadding, followAnimation, settleZoom, stepZoom } from './roundView'
 import type { Pt, Route } from './types'
+import './block.css'
 
 /** Ask the map to move. A new `key` makes it move again, even to the same place. */
 export interface ViewCmd {
@@ -358,6 +359,26 @@ function HouseTag({ at, text, place, next }: { at: Pt; text: string; place: Plac
   return <Marker position={toLatLng(at)} icon={tagIcon('house', text, place, next)} interactive={false} keyboard={false} zIndexOffset={1000} />
 }
 
+const blockIcons = new Map<boolean, DivIcon>()
+/**
+ * An apartment block on the map: a rounded square in teal with a building in it, where the other stops are circles, so it is told by its
+ * shape as well as its colour. One that is done is faded. The building is turned back by however far the map is turned (see `turnMap`),
+ * so it stays upright.
+ */
+function blockIcon(done: boolean): DivIcon {
+  let icon = blockIcons.get(done)
+  if (!icon) {
+    icon = divIcon({
+      className: blockMarkClass(done),
+      html: BLOCK_MARK_HTML,
+      iconSize: [BLOCK_MARK_PX, BLOCK_MARK_PX],
+      iconAnchor: [BLOCK_MARK_PX / 2, BLOCK_MARK_PX / 2],
+    })
+    blockIcons.set(done, icon)
+  }
+  return icon
+}
+
 const vertexIcons = new Map<boolean, DivIcon>()
 /** A point on the route you can drag. The box is bigger than the dot so a finger can find it. */
 function vertexIcon(selected: boolean): DivIcon {
@@ -431,6 +452,8 @@ interface Props {
   position: Pt | null
   /** The stops done, by key (see `occurrences`). Only the round has it, and with it a stop whose every alert is done is drawn faded, and a no-throw house that never alerts (see `quietHouseIds`) small and muted. */
   handled?: ReadonlySet<string>
+  /** How far from the route a no-throw house can be kept quiet, in metres (see `quietReachFor`): the round's, which goes with its alert distance. Only with `handled`. */
+  reachM?: number
   /** Keep the map centred on the position. The screen decides this: the map never turns it off by itself. */
   follow?: boolean
   /** Following is paused ("free look", while the driver looks around a north-up map): the map stays where the driver has put it, and goes back to the position, at the zoom it has, as soon as this is false again. Only means anything with `follow`; it stays true there so the whole-route fit does not take over. */
@@ -484,6 +507,7 @@ export function MapView({
   route,
   position,
   handled,
+  reachM,
   follow,
   paused = false,
   fit = true,
@@ -522,8 +546,8 @@ export function MapView({
   const alerting = useMemo(() => {
     if (!tracked) return null
     const occs = occurrences(route)
-    return { occs: alertable(route, occs), quiet: quietHouseIds(route, occs) }
-  }, [route, tracked])
+    return { occs: alertable(route, occs, reachM), quiet: quietHouseIds(route, occs, reachM) }
+  }, [route, tracked, reachM])
   // A stop passed more than once only counts as finished when every pass of it that alerts is handled. A quiet no-throw house has no alert to be handled (it is in `alerting.quiet`, not here).
   const finished = useMemo(() => {
     if (!handled || !alerting) return null
@@ -621,6 +645,14 @@ export function MapView({
             ) : null,
           )}
         </Pane>
+        {/* The apartment blocks, over the lines and under the stops' circles and the driver's dot (see `BLOCK_PANE`). */}
+        <Pane name={BLOCK_PANE.name} style={{ zIndex: BLOCK_PANE.zIndex }}>
+          {route.stops.map((s) =>
+            s.type === 'block' ? (
+              <Marker key={s.id} position={[s.lat, s.lng]} icon={blockIcon(finished?.get(s.id) ?? false)} interactive={false} keyboard={false} />
+            ) : null,
+          )}
+        </Pane>
         {selectable &&
           views.map((v) => (
             <Polyline
@@ -675,20 +707,24 @@ export function MapView({
           return (
             <Fragment key={s.id}>
               {active?.[0] === s.id && (
-                <CircleMarker center={[s.lat, s.lng]} radius={20} pathOptions={{ color: STOP_COLOR[s.type], weight: 4, fill: false, className: 'stop-ring', interactive: false }} />
+                // The ring is clear of the corners of a block's square, which reach further than a circle's edge.
+                <CircleMarker center={[s.lat, s.lng]} radius={s.type === 'block' ? 24 : 20} pathOptions={{ color: STOP_COLOR[s.type], weight: 4, fill: false, className: 'stop-ring', interactive: false }} />
               )}
-              <CircleMarker
-                center={[s.lat, s.lng]}
-                radius={quiet ? QUIET_RADIUS : 12}
-                pathOptions={{
-                  color: '#fff',
-                  weight: 3,
-                  fillColor: STOP_COLOR[s.type],
-                  fillOpacity: muted ? 0.3 : 1,
-                  opacity: muted ? 0.6 : 1,
-                  interactive: false,
-                }}
-              />
+              {/* An apartment block is not a circle: it is the marker in its own pane, further up. */}
+              {s.type !== 'block' && (
+                <CircleMarker
+                  center={[s.lat, s.lng]}
+                  radius={quiet ? QUIET_RADIUS : 12}
+                  pathOptions={{
+                    color: '#fff',
+                    weight: 3,
+                    fillColor: STOP_COLOR[s.type],
+                    fillOpacity: muted ? 0.3 : 1,
+                    opacity: muted ? 0.6 : 1,
+                    interactive: false,
+                  }}
+                />
+              )}
               {number && <HouseTag at={s} text={number} place={away} next={active?.[0] === s.id} />}
             </Fragment>
           )

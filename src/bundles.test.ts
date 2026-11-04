@@ -1,30 +1,51 @@
 import { describe, expect, it } from 'vitest'
 import {
+  awayText,
   BUNDLE_BEHIND_M,
   BUNDLE_STATUS_LABEL,
   bundleAheadText,
+  bundleLeftText,
   bundleLine,
   bundleList,
+  bundleNameOf,
+  bundleRows,
+  bundlesLeft,
   bundleTotals,
   bundleTotalsText,
   canMarkDropped,
+  canMoveBundle,
   bundleStops,
+  distanceText,
+  editorMove,
+  editorRows,
+  isToDo,
   markDropped,
   markMissed,
+  MAX_BUNDLE_ORDER,
+  moveBundle,
   nextBundle,
   nextBundleLine,
   nextBundleSpeech,
+  nextInOrder,
+  normalizeBundleOrder,
+  orderedStops,
   otherPasses,
   papersText,
   passState,
   passStates,
   reconcile,
+  ROW_STATUS_LABEL,
+  rowTotals,
   settleDrops,
+  setupBundles,
   undoDropped,
   UNNAMED_BUNDLE,
   type BundleItem,
+  type BundleRow,
   type BundleStatus,
+  type EditorBundle,
   type PassState,
+  type RowStatus,
 } from './bundles'
 import { approachingOccurrences, occurrences, type Occurrence } from './geo'
 import type { Pt, RoundState, Route, Stop } from './types'
@@ -40,6 +61,8 @@ const bundle = (id: string, at: number, extra: Partial<Stop> = {}, key = id): Oc
 const other = (id: string, type: 'nothrow' | 'request', at: number): Occurrence => ({ ...bundle(id, at), stop: { id, type, lat: -33.87, lng: 151.2, pathIdx: 0 } })
 
 const round = (extra: Partial<RoundState> = {}): RoundState => ({ handledStopIds: [], ...extra })
+/** A place `x` metres east and `y` metres north of the origin, to within a few centimetres at this size. */
+const spot = (x: number, y: number): Pt => ({ lat: -33.87 + y / 111_195, lng: 151.2 + x / (111_195 * Math.cos((33.87 * Math.PI) / 180)) })
 const statuses = (list: BundleItem[]) => list.map((b) => [b.key, b.status])
 const keys = (list: BundleItem[]) => list.map((b) => b.key)
 
@@ -245,7 +268,6 @@ describe('listing the bundle drops', () => {
 
   describe('a street driven twice', () => {
     // North 600 m and back down the same line: x is met going out and coming back, z too, y only at the top.
-    const spot = (x: number, y: number): Pt => ({ lat: -33.87 + y / 111_195, lng: 151.2 + x / (111_195 * Math.cos((33.87 * Math.PI) / 180)) })
     const doubled: Route = {
       points: [spot(0, 0), spot(0, 600), spot(0, 0)],
       sideChanges: [{ idx: 0, side: 'both' }],
@@ -485,25 +507,40 @@ describe('the sheet summary', () => {
 })
 
 describe('what is said after a drop', () => {
-  const next = (ahead: number, extra: Partial<Stop> = {}) => bundleList([bundle('a', ahead, extra)], round(), 0)[0]
+  // The next bundle in the driver's list, and how far it is from the phone in a straight line (null: the phone's position is not known).
+  const next = (distance: number | null, name = 'Co-op') => ({ name, distance })
 
   it('names the next bundle and how far it is', () => {
-    expect(nextBundleSpeech(next(300, { label: 'Co-op' }))).toBe('Next bundle, Co-op, 300 metres')
-    expect(nextBundleSpeech(next(80, { label: 'Co-op' }))).toBe('Next bundle, Co-op, 80 metres')
+    expect(nextBundleSpeech(next(300))).toBe('Next bundle, Co-op, 300 metres')
+    expect(nextBundleSpeech(next(80))).toBe('Next bundle, Co-op, 80 metres')
   })
 
   it('says kilometres a long way off', () => {
-    expect(nextBundleSpeech(next(1500, { label: 'Co-op' }))).toBe('Next bundle, Co-op, 1.5 kilometres')
-    expect(nextBundleSpeech(next(2000, { label: 'Co-op' }))).toBe('Next bundle, Co-op, 2 kilometres')
+    expect(nextBundleSpeech(next(1500))).toBe('Next bundle, Co-op, 1.5 kilometres')
+    expect(nextBundleSpeech(next(2000))).toBe('Next bundle, Co-op, 2 kilometres')
   })
 
   it('goes by the address, or Bundle drop', () => {
-    expect(nextBundleSpeech(next(300, { address: 'Oak Road' }))).toBe('Next bundle, Oak Road, 300 metres')
-    expect(nextBundleSpeech(next(300))).toBe('Next bundle, Bundle drop, 300 metres')
+    expect(nextBundleSpeech(next(300, '3 Oak Road'))).toBe('Next bundle, 3 Oak Road, 300 metres')
+    expect(nextBundleSpeech(next(300, UNNAMED_BUNDLE))).toBe('Next bundle, Bundle drop, 300 metres')
   })
 
   it('leaves the distance out when it is right there', () => {
-    expect(nextBundleSpeech(next(5, { label: 'Co-op' }))).toBe('Next bundle, Co-op')
+    expect(nextBundleSpeech(next(5))).toBe('Next bundle, Co-op')
+    expect(nextBundleSpeech(next(14.9))).toBe('Next bundle, Co-op')
+    expect(nextBundleSpeech(next(15))).toBe('Next bundle, Co-op, 20 metres')
+  })
+
+  it('leaves the distance out while the phone has no position, and still names the bundle', () => {
+    expect(nextBundleSpeech(next(null))).toBe('Next bundle, Co-op')
+  })
+
+  it('names the next in the driver\'s list, wherever it is, from the rows', () => {
+    const occs = [bundle('a', 100, { label: 'Spar' }), bundle('b', 400, { label: 'Co-op', ...spot(0, 2500) })]
+    const rows = bundleRows(occs, markDropped(round(), 'a'), ['b', 'a'], spot(0, 0))
+    const first = nextInOrder(rows)
+    expect(first).not.toBeNull()
+    if (first) expect(nextBundleSpeech(first)).toBe('Next bundle, Co-op, 2.5 kilometres')
   })
 })
 
@@ -866,7 +903,6 @@ describe('a stop the route goes by twice is one delivery', () => {
 
     it('never alerts for a settled pass', () => {
       // Up the road and back: the stop is met going out and again coming back. Drop it going out, and the way back has no alert for it.
-      const spot = (x: number, y: number): Pt => ({ lat: -33.87 + y / 111_195, lng: 151.2 + x / (111_195 * Math.cos((33.87 * Math.PI) / 180)) })
       const route: Route = {
         points: [spot(0, 0), spot(0, 600), spot(0, 0)],
         sideChanges: [{ idx: 0, side: 'both' }],
@@ -1177,5 +1213,820 @@ describe('a stop the route goes by twice is one delivery', () => {
       expect(once.handledStopIds.sort()).toEqual(['garage', 'garage#2', 'garage#3'])
       expect(settleDrops(once, occs)).toEqual(once)
     })
+  })
+})
+
+describe("the driver's order of the stops", () => {
+  const item = (id: string) => ({ id })
+  const items = (...ids: string[]) => ids.map(item)
+  const idsOf = (list: readonly { id: string }[]) => list.map((x) => x.id)
+
+  describe('putting the stops in it', () => {
+    it('puts them in the order given, whatever order they came in', () => {
+      expect(idsOf(orderedStops(items('a', 'b', 'c'), ['c', 'a', 'b']))).toEqual(['c', 'a', 'b'])
+    })
+
+    it('puts the stops that are not in it after those that are, in the order they came in (route order)', () => {
+      expect(idsOf(orderedStops(items('a', 'b', 'c', 'd'), ['c']))).toEqual(['c', 'a', 'b', 'd'])
+      expect(idsOf(orderedStops(items('a', 'b', 'c', 'd'), ['d', 'b']))).toEqual(['d', 'b', 'a', 'c'])
+    })
+
+    it('ignores the id of a stop that is gone', () => {
+      expect(idsOf(orderedStops(items('a', 'b', 'c'), ['x', 'c', 'y', 'a']))).toEqual(['c', 'a', 'b'])
+    })
+
+    it('ignores an id given twice', () => {
+      expect(idsOf(orderedStops(items('a', 'b', 'c'), ['b', 'b', 'a', 'b']))).toEqual(['b', 'a', 'c'])
+    })
+
+    it('gives the stops as they came with no order, or an empty one', () => {
+      expect(idsOf(orderedStops(items('c', 'a', 'b'), undefined))).toEqual(['c', 'a', 'b'])
+      expect(idsOf(orderedStops(items('c', 'a', 'b'), []))).toEqual(['c', 'a', 'b'])
+    })
+
+    it('has nothing for no stops', () => {
+      expect(orderedStops([], ['a', 'b'])).toEqual([])
+    })
+
+    it('hands back the very things it was given, whatever else they hold', () => {
+      const given = [
+        { id: 'a', name: 'Spar' },
+        { id: 'b', name: 'Co-op' },
+      ]
+      const out = orderedStops(given, ['b'])
+      expect(out[0]).toBe(given[1])
+      expect(out[1]).toBe(given[0])
+    })
+
+    it('changes neither the stops nor the order', () => {
+      const stops = items('a', 'b', 'c')
+      const order = ['c', 'x', 'a']
+      orderedStops(stops, order)
+      expect(idsOf(stops)).toEqual(['a', 'b', 'c'])
+      expect(order).toEqual(['c', 'x', 'a'])
+    })
+
+    it('keeps two things with one id together, so none is lost', () => {
+      expect(idsOf(orderedStops(items('a', 'b', 'a'), ['a']))).toEqual(['a', 'a', 'b'])
+    })
+
+    it('always gives every stop once, however stale the order (fuzz)', () => {
+      const pool = ['a', 'b', 'c', 'd', 'e', 'f', 'g']
+      let seed = 7
+      const rnd = () => (seed = (seed * 48271) % 2147483647) / 2147483647
+      for (let i = 0; i < 300; i++) {
+        const stops = pool.filter(() => rnd() < 0.7)
+        const order = Array.from({ length: Math.floor(rnd() * 12) }, () => (rnd() < 0.2 ? `gone${Math.floor(rnd() * 3)}` : pool[Math.floor(rnd() * pool.length)]))
+        const out = idsOf(orderedStops(items(...stops), order))
+        expect([...out].sort()).toEqual([...stops].sort())
+        // The ones in the order come first, in its sequence.
+        const listed = [...new Set(order)].filter((id) => stops.includes(id))
+        expect(out.slice(0, listed.length)).toEqual(listed)
+        // The rest keep their route order.
+        expect(out.slice(listed.length)).toEqual(stops.filter((id) => !listed.includes(id)))
+      }
+    })
+  })
+
+  describe('reading an order that was kept', () => {
+    it('keeps ids, once each, in the order they came', () => {
+      expect(normalizeBundleOrder(['b', 'a', 'b', 'c'])).toEqual(['b', 'a', 'c'])
+    })
+
+    it('leaves out whatever is not an id', () => {
+      expect(normalizeBundleOrder(['a', 7, null, '', {}, ['x'], 'b', undefined])).toEqual(['a', 'b'])
+    })
+
+    it('is empty for anything that is not a list', () => {
+      for (const junk of [undefined, null, 'abc', 5, {}, { 0: 'a' }, true]) expect(normalizeBundleOrder(junk)).toEqual([])
+    })
+
+    it('keeps no more than the most a route can have', () => {
+      const long = Array.from({ length: MAX_BUNDLE_ORDER + 50 }, (_, i) => `s${i}`)
+      expect(normalizeBundleOrder(long)).toHaveLength(MAX_BUNDLE_ORDER)
+      expect(normalizeBundleOrder(long)[0]).toBe('s0')
+    })
+
+    it('does not change what it is given', () => {
+      const given = ['a', 'a']
+      normalizeBundleOrder(given)
+      expect(given).toEqual(['a', 'a'])
+    })
+  })
+
+  describe('moving one', () => {
+    const ids = ['a', 'b', 'c', 'd']
+
+    it('moves it up one place, swapping with the one above', () => {
+      expect(moveBundle(undefined, ids, 'c', -1)).toEqual(['a', 'c', 'b', 'd'])
+    })
+
+    it('moves it down one place, swapping with the one below', () => {
+      expect(moveBundle(undefined, ids, 'b', 1)).toEqual(['a', 'c', 'b', 'd'])
+    })
+
+    it('stays at the top, and stays at the bottom', () => {
+      expect(moveBundle(undefined, ids, 'a', -1)).toEqual(['a', 'b', 'c', 'd'])
+      expect(moveBundle(undefined, ids, 'd', 1)).toEqual(['a', 'b', 'c', 'd'])
+    })
+
+    it('moves within the order that is kept, not the route order', () => {
+      expect(moveBundle(['d', 'c', 'b', 'a'], ids, 'b', -1)).toEqual(['d', 'b', 'c', 'a'])
+      expect(moveBundle(['d', 'c', 'b', 'a'], ids, 'd', 1)).toEqual(['c', 'd', 'b', 'a'])
+    })
+
+    it('keeps the order the driver sees: a stale or short order is put right in what it gives back', () => {
+      // 'x' is gone; 'a' and 'd' are new. Seen as c, b, a, d.
+      expect(moveBundle(['x', 'c', 'b'], ids, 'a', -1)).toEqual(['c', 'a', 'b', 'd'])
+      expect(moveBundle(['x', 'c', 'b'], ids, 'd', -1)).toEqual(['c', 'b', 'd', 'a'])
+    })
+
+    it('does nothing to the order for an id that is not among the bundles', () => {
+      expect(moveBundle(['c', 'b'], ids, 'zzz', -1)).toEqual(['c', 'b', 'a', 'd'])
+    })
+
+    it('moves more than one place for a larger step, and no further than the end', () => {
+      expect(moveBundle(undefined, ids, 'd', -2)).toEqual(['a', 'd', 'b', 'c'])
+      expect(moveBundle(undefined, ids, 'a', 2)).toEqual(['b', 'c', 'a', 'd'])
+      expect(moveBundle(undefined, ids, 'c', -9)).toEqual(['c', 'a', 'b', 'd'])
+      expect(moveBundle(undefined, ids, 'b', 0)).toEqual(['a', 'b', 'c', 'd'])
+    })
+
+    it('hops over bundles that are done instead of counting them', () => {
+      const five = ['a', 'b', 'c', 'd', 'e']
+      const done = new Set(['b', 'c'])
+      // d goes up past c and b to above a; a goes down past b and c to below d.
+      expect(moveBundle(undefined, five, 'd', -1, done)).toEqual(['d', 'a', 'b', 'c', 'e'])
+      expect(moveBundle(undefined, five, 'a', 1, done)).toEqual(['b', 'c', 'd', 'a', 'e'])
+      expect(moveBundle(undefined, five, 'e', -1, new Set(['d']))).toEqual(['a', 'b', 'e', 'c', 'd'])
+    })
+
+    it('stays when everything beyond it is done', () => {
+      expect(moveBundle(undefined, ['a', 'b', 'c'], 'a', 1, new Set(['b', 'c']))).toEqual(['a', 'b', 'c'])
+      expect(moveBundle(undefined, ['a', 'b', 'c'], 'c', -1, new Set(['a', 'b']))).toEqual(['a', 'b', 'c'])
+    })
+
+    it('changes neither the order nor the ids it is given, and gives a new list', () => {
+      const order = ['c', 'a']
+      const given = ['a', 'b', 'c']
+      const out = moveBundle(order, given, 'a', 1)
+      expect(order).toEqual(['c', 'a'])
+      expect(given).toEqual(['a', 'b', 'c'])
+      expect(out).not.toBe(order)
+    })
+
+    it('always gives back every bundle once, whatever is moved (fuzz)', () => {
+      let seed = 11
+      const rnd = () => (seed = (seed * 48271) % 2147483647) / 2147483647
+      const pool = ['a', 'b', 'c', 'd', 'e', 'f']
+      let order: string[] | undefined
+      for (let i = 0; i < 400; i++) {
+        const id = pool[Math.floor(rnd() * pool.length)]
+        const hop = new Set(pool.filter(() => rnd() < 0.3))
+        const out = moveBundle(order, pool, id, rnd() < 0.5 ? -1 : 1, hop)
+        expect([...out].sort()).toEqual([...pool].sort())
+        order = out
+      }
+    })
+
+    it('moves a bundle by one among the ones to do, however many are done between (fuzz)', () => {
+      let seed = 3
+      const rnd = () => (seed = (seed * 48271) % 2147483647) / 2147483647
+      const pool = ['a', 'b', 'c', 'd', 'e', 'f', 'g']
+      for (let i = 0; i < 300; i++) {
+        const done = new Set(pool.filter(() => rnd() < 0.4))
+        const open = pool.filter((id) => !done.has(id))
+        if (open.length < 2) continue
+        const id = open[Math.floor(rnd() * open.length)]
+        const delta = rnd() < 0.5 ? -1 : 1
+        const before = pool.filter((x) => !done.has(x))
+        const after = moveBundle(undefined, pool, id, delta, done).filter((x) => !done.has(x))
+        const at = before.indexOf(id)
+        const want = [...before]
+        const to = at + delta
+        if (to >= 0 && to < before.length) [want[at], want[to]] = [want[to], want[at]]
+        expect(after).toEqual(want)
+      }
+    })
+  })
+
+  describe('whether one can move', () => {
+    const ids = ['a', 'b', 'c']
+
+    it('cannot go up from the top, nor down from the bottom, and can go the other way', () => {
+      expect(canMoveBundle(undefined, ids, 'a', -1)).toBe(false)
+      expect(canMoveBundle(undefined, ids, 'a', 1)).toBe(true)
+      expect(canMoveBundle(undefined, ids, 'c', 1)).toBe(false)
+      expect(canMoveBundle(undefined, ids, 'c', -1)).toBe(true)
+      expect(canMoveBundle(undefined, ids, 'b', -1)).toBe(true)
+      expect(canMoveBundle(undefined, ids, 'b', 1)).toBe(true)
+    })
+
+    it('goes by the order that is kept', () => {
+      expect(canMoveBundle(['c', 'b', 'a'], ids, 'c', -1)).toBe(false)
+      expect(canMoveBundle(['c', 'b', 'a'], ids, 'a', 1)).toBe(false)
+    })
+
+    it('cannot go where only done bundles are', () => {
+      expect(canMoveBundle(undefined, ids, 'a', 1, new Set(['b', 'c']))).toBe(false)
+      expect(canMoveBundle(undefined, ids, 'a', 1, new Set(['b']))).toBe(true)
+    })
+
+    it('says no for an id that is not there', () => {
+      expect(canMoveBundle(undefined, ids, 'zzz', 1)).toBe(false)
+    })
+
+    it('agrees with moving: it can exactly when moving changes the order (fuzz)', () => {
+      let seed = 5
+      const rnd = () => (seed = (seed * 48271) % 2147483647) / 2147483647
+      const pool = ['a', 'b', 'c', 'd', 'e']
+      for (let i = 0; i < 300; i++) {
+        const order = pool.filter(() => rnd() < 0.7).sort(() => rnd() - 0.5)
+        const hop = new Set(pool.filter(() => rnd() < 0.3))
+        const id = pool[Math.floor(rnd() * pool.length)]
+        const delta = rnd() < 0.5 ? -1 : 1
+        const resolved = orderedStops(
+          pool.map((p) => ({ id: p })),
+          order,
+        ).map((x) => x.id)
+        expect(canMoveBundle(order, pool, id, delta, hop), `${order} ${id} ${delta}`).toBe(moveBundle(order, pool, id, delta, hop).join() !== resolved.join())
+      }
+    })
+  })
+})
+
+describe("the driver's list of bundle stops", () => {
+  // Bundles a, b and c along a street, with a at 100 m, b at 400 m and c at 900 m. They stand 300, 600 and 1100 m north of the origin.
+  const a = bundle('a', 100, { label: 'Spar', qty: 6, ...spot(8, 300) })
+  const b = bundle('b', 400, { address: '3 Elm Street', ...spot(8, 600) })
+  const c = bundle('c', 900, { label: 'School', qty: 20, ...spot(8, 1100) })
+  const occs = [a, b, c]
+  const rowsOf = (r: RoundState = round(), order?: string[], here: Pt | null = null, list: Occurrence[] = occs) => bundleRows(list, r, order, here)
+  const ids = (rows: readonly BundleRow[]) => rows.map((r) => r.id)
+  const states = (rows: readonly BundleRow[]) => rows.map((r) => [r.id, r.status])
+
+  describe('which rows, and in what order', () => {
+    it('has a row for each bundle stop, in route order when no order was set', () => {
+      expect(ids(rowsOf())).toEqual(['a', 'b', 'c'])
+      expect(ids(bundleRows([c, a, b], round(), undefined, null))).toEqual(['a', 'b', 'c'])
+    })
+
+    it("follows the driver's order, not the route's", () => {
+      expect(ids(rowsOf(round(), ['c', 'a', 'b']))).toEqual(['c', 'a', 'b'])
+      expect(ids(rowsOf(round(), ['b', 'c', 'a']))).toEqual(['b', 'c', 'a'])
+    })
+
+    it('puts a bundle added since after the ones in the order, in route order', () => {
+      expect(ids(rowsOf(round(), ['b']))).toEqual(['b', 'a', 'c'])
+      expect(ids(rowsOf(round(), ['c', 'b']))).toEqual(['c', 'b', 'a'])
+    })
+
+    it('ignores the id of a bundle that was deleted', () => {
+      expect(ids(rowsOf(round(), ['gone', 'c', 'zzz', 'a']))).toEqual(['c', 'a', 'b'])
+    })
+
+    it('does not change however the round goes: the order never changes by itself', () => {
+      const order = ['c', 'a', 'b']
+      let r = round()
+      const seen: string[][] = [ids(rowsOf(r, order))]
+      r = markDropped(r, 'c')
+      seen.push(ids(rowsOf(r, order)))
+      r = markMissed({ ...r, handledStopIds: [...r.handledStopIds, 'a'] }, ['a'])
+      seen.push(ids(rowsOf(r, order)))
+      seen.push(ids(rowsOf(r, order, spot(0, 0))))
+      seen.push(ids(rowsOf(r, order, spot(8, 1100))))
+      for (const s of seen) expect(s).toEqual(['c', 'a', 'b'])
+    })
+
+    it('lists only the bundle drops, not a no-throw house, a request or an apartment block', () => {
+      const block: Occurrence = { ...bundle('k', 250), stop: { id: 'k', type: 'block', lat: -33.87, lng: 151.2, pathIdx: 0, qty: 12 } }
+      const mixed = [other('n', 'nothrow', 50), a, other('r', 'request', 300), block, b]
+      expect(ids(bundleRows(mixed, round(), ['k', 'n', 'r', 'b'], null))).toEqual(['b', 'a'])
+    })
+
+    it('has nothing for a route with no bundle drops', () => {
+      expect(bundleRows([], round(), ['a'], spot(0, 0))).toEqual([])
+      expect(bundleRows([other('n', 'nothrow', 50)], round(), undefined, null)).toEqual([])
+    })
+
+    it('does not change the occurrences, the round or the order it is given', () => {
+      const given = [c, a, b]
+      const r = markDropped(round(), 'a')
+      const order = ['b', 'a']
+      const copies = structuredClone([given, r, order])
+      bundleRows(given, r, order, spot(0, 0))
+      expect([given, r, order]).toEqual(copies)
+    })
+
+    it('has the name, address and papers of the stop', () => {
+      const [first, second] = rowsOf(round(), ['a', 'b'])
+      expect(first).toMatchObject({ id: 'a', name: 'Spar', address: null, papers: 6 })
+      expect(second).toMatchObject({ id: 'b', name: '3 Elm Street', address: null, papers: null })
+      const both = bundleRows([bundle('x', 10, { label: 'Co-op', address: '12 Oak Road' })], round(), undefined, null)[0]
+      expect(both).toMatchObject({ name: 'Co-op', address: '12 Oak Road' })
+      expect(bundleRows([bundle('y', 10)], round(), undefined, null)[0].name).toBe(UNNAMED_BUNDLE)
+    })
+
+    it('names a stop the way the list of passes does', () => {
+      expect(bundleNameOf({ label: ' Spar ', address: 'x' })).toBe('Spar')
+      expect(bundleNameOf({ label: '  ', address: ' 3 Elm Street ' })).toBe('3 Elm Street')
+      expect(bundleNameOf({})).toBe(UNNAMED_BUNDLE)
+      expect(bundleList(occs, round(), 0).map((x) => x.name)).toEqual(rowsOf().map((x) => x.name))
+    })
+  })
+
+  describe('which is next', () => {
+    it('is the first in the list that is still to do, wherever it is', () => {
+      const rows = rowsOf(round(), ['c', 'a', 'b'], spot(8, 300))
+      expect(nextInOrder(rows)?.id).toBe('c')
+      expect(states(rows)).toEqual([
+        ['c', 'next'],
+        ['a', 'todo'],
+        ['b', 'todo'],
+      ])
+    })
+
+    it('is not the one the driver is at, or the one nearest, when the list says another', () => {
+      // The phone is right at a, and b is the next nearest, but the driver said c comes first.
+      expect(nextInOrder(rowsOf(round(), ['c', 'b', 'a'], spot(8, 300)))?.id).toBe('c')
+    })
+
+    it('is the same wherever the phone is, or if it has no position', () => {
+      for (const here of [null, spot(0, 0), spot(8, 300), spot(8, 1100), spot(5000, -5000)]) expect(nextInOrder(rowsOf(round(), ['b', 'c', 'a'], here))?.id).toBe('b')
+    })
+
+    it('moves down the list as the bundles at the top are dropped, in the list\'s order', () => {
+      const order = ['c', 'a', 'b']
+      let r = round()
+      expect(nextInOrder(rowsOf(r, order))?.id).toBe('c')
+      r = markDropped(r, 'c')
+      expect(nextInOrder(rowsOf(r, order))?.id).toBe('a')
+      r = markDropped(r, 'a')
+      expect(nextInOrder(rowsOf(r, order))?.id).toBe('b')
+      r = markDropped(r, 'b')
+      expect(nextInOrder(rowsOf(r, order))).toBeNull()
+    })
+
+    it('stays the same when a bundle further down is dropped first, as the alert for it came up', () => {
+      const order = ['a', 'b', 'c']
+      const r = markDropped(markDropped(round(), 'c'), 'b')
+      const rows = rowsOf(r, order)
+      expect(nextInOrder(rows)?.id).toBe('a')
+      expect(states(rows)).toEqual([
+        ['a', 'next'],
+        ['b', 'dropped'],
+        ['c', 'dropped'],
+      ])
+    })
+
+    it('is never one that was missed, or skipped over', () => {
+      const missed = markMissed(round({ handledStopIds: ['a'] }), ['a'])
+      expect(nextInOrder(rowsOf(missed, ['a', 'b', 'c']))?.id).toBe('b')
+      const skipped = round({ handledStopIds: ['a', 'b'] })
+      expect(nextInOrder(rowsOf(skipped, ['a', 'b', 'c']))?.id).toBe('c')
+    })
+
+    it('is a bundle not done that the driver has driven past, since where they are does not matter', () => {
+      // The round says nothing is done; the driver is far past a (it never alerted). It is still to do, and first in the list.
+      expect(nextInOrder(rowsOf(round(), ['a', 'b', 'c'], spot(8, 5000)))?.id).toBe('a')
+    })
+
+    it('is nothing once none is left to do', () => {
+      const r = markMissed(markDropped(round({ handledStopIds: ['a', 'b'] }), 'c'), ['a'])
+      const rows = rowsOf(r)
+      expect(nextInOrder(rows)).toBeNull()
+      expect(states(rows)).toEqual([
+        ['a', 'missed'],
+        ['b', 'skipped'],
+        ['c', 'dropped'],
+      ])
+    })
+
+    it('is nothing for no rows', () => {
+      expect(nextInOrder([])).toBeNull()
+    })
+
+    it('is for exactly one row, or none, whatever the round and the order (fuzz)', () => {
+      let seed = 21
+      const rnd = () => (seed = (seed * 48271) % 2147483647) / 2147483647
+      const pool = ['a', 'b', 'c']
+      for (let i = 0; i < 300; i++) {
+        let r = round()
+        for (const id of pool) {
+          const roll = rnd()
+          if (roll < 0.3) r = markDropped(r, id)
+          else if (roll < 0.5) r = markMissed({ ...r, handledStopIds: [...r.handledStopIds, id] }, [id])
+          else if (roll < 0.6) r = { ...r, handledStopIds: [...r.handledStopIds, id] }
+        }
+        const order = [...pool].sort(() => rnd() - 0.5)
+        const rows = rowsOf(r, order)
+        const open = rows.filter((x) => isToDo(x.status))
+        expect(rows.filter((x) => x.status === 'next')).toHaveLength(open.length ? 1 : 0)
+        if (open.length) expect(rows.find((x) => x.status === 'next')?.id).toBe(open[0].id)
+      }
+    })
+  })
+
+  describe('what became of each', () => {
+    it('has next, to do, dropped, missed and skipped apart in one list', () => {
+      const five = [0, 1, 2, 3, 4].map((i) => bundle(`s${i}`, 100 * (i + 1)))
+      const r = markMissed(markDropped(round({ handledStopIds: ['s1', 's2'] }), 's0'), ['s1'])
+      expect(states(bundleRows(five, r, undefined, null))).toEqual([
+        ['s0', 'dropped'],
+        ['s1', 'missed'],
+        ['s2', 'skipped'],
+        ['s3', 'next'],
+        ['s4', 'todo'],
+      ])
+    })
+
+    it('has a word for each', () => {
+      expect(ROW_STATUS_LABEL).toEqual({ next: 'Next', todo: 'To do', dropped: 'Dropped', missed: 'Missed', skipped: 'Skipped' })
+    })
+
+    it('counts the next and the ones to do as still to do, and no other', () => {
+      const todo: Record<RowStatus, boolean> = { next: true, todo: true, dropped: false, missed: false, skipped: false }
+      for (const [status, yes] of Object.entries(todo)) expect(isToDo(status as RowStatus), status).toBe(yes)
+    })
+
+    it('ignores a dropped or missed key that is not done, as the list of passes does', () => {
+      expect(states(rowsOf(round({ handledStopIds: [], dropped: ['a'], missed: ['b'] })))).toEqual([
+        ['a', 'next'],
+        ['b', 'todo'],
+        ['c', 'todo'],
+      ])
+    })
+  })
+
+  describe('how far each is', () => {
+    it('is the straight line from the phone, in metres', () => {
+      const rows = rowsOf(round(), undefined, spot(0, 0))
+      // a is 8 m east and 300 m north, and so on.
+      expect(rows[0].distance).toBeCloseTo(Math.hypot(8, 300), 0)
+      expect(rows[1].distance).toBeCloseTo(Math.hypot(8, 600), 0)
+      expect(rows[2].distance).toBeCloseTo(Math.hypot(8, 1100), 0)
+    })
+
+    it('is a 3-4-5 line across, not along the street', () => {
+      const here = spot(0, 0)
+      const near = bundleRows([bundle('x', 5000, spot(300, 400))], round(), undefined, here)[0]
+      expect(near.distance).toBeCloseTo(500, 0)
+    })
+
+    it('does not depend on how far along the route the stop is, or where the driver is along it', () => {
+      const early = bundleRows([bundle('x', 10, spot(0, 100))], round(), undefined, spot(0, 0))[0]
+      const late = bundleRows([bundle('x', 99_000, spot(0, 100))], round(), undefined, spot(0, 0))[0]
+      expect(early.distance).toBe(late.distance)
+    })
+
+    it('is a stop behind the phone as far as one ahead of it, never negative', () => {
+      const rows = rowsOf(round(), undefined, spot(8, 700))
+      expect(rows[0].distance).toBeCloseTo(400, 0)
+      expect(rows[1].distance).toBeCloseTo(100, 0)
+      expect(rows[2].distance).toBeCloseTo(400, 0)
+    })
+
+    it('is nothing while the phone has no position', () => {
+      expect(rowsOf(round(), undefined, null).map((r) => r.distance)).toEqual([null, null, null])
+    })
+
+    it('is the same for every time the route goes by a stop', () => {
+      const twice = [bundle('s', 100, spot(0, 200), 's'), bundle('s', 900, spot(0, 200), 's#2')]
+      const [row] = bundleRows(twice, round(), undefined, spot(0, 0))
+      expect(row.distance).toBeCloseTo(200, 0)
+    })
+
+    it('is for the nearest road distance to nothing: a phone at the stop is 0', () => {
+      expect(rowsOf(round(), undefined, spot(8, 300))[0].distance).toBeCloseTo(0, 0)
+    })
+  })
+
+  describe('a stop the route goes by twice', () => {
+    // The shop is met at 100 m and again at 900 m; the depot once, at 400 m.
+    const shop = (key: string, at: number) => bundle('shop', at, { label: 'Co-op', qty: 12, ...spot(8, 100) }, key)
+    const depot = bundle('depot', 400, { label: 'Depot', qty: 3, ...spot(8, 400) })
+    const twice = [shop('shop', 100), depot, shop('shop#2', 900)]
+    const twiceRows = (r: RoundState = round(), order?: string[]) => bundleRows(twice, r, order, null)
+
+    it('is one row, with its papers once and how many times the route goes by', () => {
+      const rows = twiceRows()
+      expect(ids(rows)).toEqual(['shop', 'depot'])
+      expect(rows[0]).toMatchObject({ papers: 12, passes: 2 })
+      expect(rows[1].passes).toBe(1)
+      expect(bundlesLeft(rows)).toBe(2)
+    })
+
+    it('is dropped when it was dropped on either pass, and the other pass is not missed', () => {
+      for (const [key, others] of [
+        ['shop', ['shop#2']],
+        ['shop#2', ['shop']],
+      ] as const) {
+        const rows = twiceRows(markDropped(round(), key, others))
+        expect(rows[0].status).toBe('dropped')
+        expect(rows[0].undoKey).toBe(key)
+        expect(rows[0].markKey).toBeNull()
+        expect(rowTotals(rows)).toMatchObject({ dropped: 1, missed: 0 })
+      }
+    })
+
+    it('is dropped for the second pass when the first was missed, and no longer missed', () => {
+      const missed = markMissed(round({ handledStopIds: ['shop'] }), ['shop'])
+      const rows = twiceRows(markDropped(missed, 'shop#2', ['shop']))
+      expect(rows[0].status).toBe('dropped')
+      expect(rowTotals(rows).missed).toBe(0)
+    })
+
+    it('is back as it was after Undo, to do again, or missed again if it was', () => {
+      const before = passStates(round(), ['shop', 'shop#2'])
+      const dropped = markDropped(round(), 'shop', ['shop#2'])
+      expect(twiceRows(undoDropped(dropped, 'shop', before))[0].status).toBe('next')
+      const missed = markMissed(round({ handledStopIds: ['shop', 'shop#2'] }), ['shop', 'shop#2'])
+      const beforeMissed = passStates(missed, ['shop', 'shop#2'])
+      const markedFromList = markDropped(missed, 'shop', ['shop#2'])
+      expect(twiceRows(markedFromList)[0].status).toBe('dropped')
+      expect(twiceRows(undoDropped(markedFromList, 'shop', beforeMissed))[0].status).toBe('missed')
+    })
+
+    it('is not missed while a pass is to come, and missed once none is and none was dropped', () => {
+      const firstMissed = markMissed(round({ handledStopIds: ['shop'] }), ['shop'])
+      expect(twiceRows(firstMissed)[0].status).toBe('next')
+      expect(rowTotals(twiceRows(firstMissed)).missed).toBe(0)
+      const bothMissed = markMissed(round({ handledStopIds: ['shop', 'shop#2'] }), ['shop', 'shop#2'])
+      expect(twiceRows(bothMissed)[0].status).toBe('missed')
+      expect(rowTotals(twiceRows(bothMissed)).missed).toBe(1)
+    })
+
+    it('is skipped when every pass was skipped over', () => {
+      expect(twiceRows(round({ handledStopIds: ['shop', 'shop#2'] }))[0].status).toBe('skipped')
+    })
+
+    it('has the first pass still to come or missed as the one Mark dropped acts on', () => {
+      expect(twiceRows()[0].markKey).toBe('shop')
+      const firstDone = round({ handledStopIds: ['shop'] })
+      expect(twiceRows(firstDone)[0].markKey).toBe('shop#2')
+      const bothMissed = markMissed(round({ handledStopIds: ['shop', 'shop#2'] }), ['shop', 'shop#2'])
+      expect(twiceRows(bothMissed)[0].markKey).toBe('shop')
+    })
+
+    it('has no key to mark for a stop dropped or skipped over, and none to undo unless dropped', () => {
+      const skipped = twiceRows(round({ handledStopIds: ['shop', 'shop#2'] }))[0]
+      expect(skipped).toMatchObject({ markKey: null, undoKey: null })
+      const fresh = twiceRows()[0]
+      expect(fresh.undoKey).toBeNull()
+    })
+
+    it('takes the same place in the list whichever pass it was dropped on', () => {
+      const order = ['depot', 'shop']
+      expect(ids(twiceRows(markDropped(round(), 'shop#2', ['shop']), order))).toEqual(['depot', 'shop'])
+      expect(nextInOrder(twiceRows(round(), order))?.id).toBe('depot')
+    })
+
+    it('is one left, not two, though the route goes by it twice', () => {
+      expect(bundlesLeft(twiceRows(round(), ['shop', 'depot']))).toBe(2)
+      expect(bundlesLeft(twiceRows(markDropped(round(), 'shop', ['shop#2']), ['shop', 'depot']))).toBe(1)
+    })
+  })
+
+  describe('how many are left', () => {
+    it('counts the stops still to do, the next one included', () => {
+      expect(bundlesLeft(rowsOf())).toBe(3)
+      expect(bundlesLeft(rowsOf(markDropped(round(), 'a')))).toBe(2)
+      expect(bundlesLeft(rowsOf(markMissed(markDropped(round({ handledStopIds: ['b'] }), 'a'), ['b'])))).toBe(1)
+    })
+
+    it('counts a bundle driven past with no fix as left, since it is still to do', () => {
+      expect(bundlesLeft(rowsOf(round(), undefined, spot(8, 9999)))).toBe(3)
+    })
+
+    it('is none for no rows, and once everything is done', () => {
+      expect(bundlesLeft([])).toBe(0)
+      expect(bundlesLeft(rowsOf(round({ handledStopIds: ['a', 'b', 'c'] })))).toBe(0)
+    })
+
+    it('does not change when the order is moved about', () => {
+      const r = markDropped(round(), 'b')
+      for (const order of [['a', 'b', 'c'], ['c', 'b', 'a'], ['b']]) expect(bundlesLeft(rowsOf(r, order))).toBe(2)
+    })
+  })
+
+  describe('the totals it gives', () => {
+    it('are those of the list of passes, a stop counted once (fuzz)', () => {
+      let seed = 9
+      const rnd = () => (seed = (seed * 48271) % 2147483647) / 2147483647
+      const route = [shopAt('p', 100, 'p', 5), shopAt('q', 300, 'q'), shopAt('p', 700, 'p#2', 5), shopAt('r', 900, 'r', 8)]
+      for (let i = 0; i < 300; i++) {
+        let r = round()
+        for (const key of ['p', 'q', 'p#2', 'r']) {
+          const roll = rnd()
+          if (roll < 0.25) r = markDropped(r, key, otherPasses(route, key))
+          else if (roll < 0.45) r = markMissed({ ...r, handledStopIds: [...r.handledStopIds, key] }, [key])
+          else if (roll < 0.6) r = { ...r, handledStopIds: [...r.handledStopIds, key] }
+        }
+        const rows = bundleRows(route, r, undefined, null)
+        expect(rowTotals(rows)).toEqual(bundleTotals(bundleList(route, r, 0)))
+        expect(bundlesLeft(rows)).toBe(bundleTotals(bundleList(route, r, 0)).toDrop)
+      }
+    })
+
+    function shopAt(id: string, at: number, key: string, qty?: number): Occurrence {
+      return bundle(id, at, { qty }, key)
+    }
+  })
+})
+
+describe('the words for the driver\'s list', () => {
+  it('says how far for the bar: metres, kilometres, Now, or nothing without a position', () => {
+    expect(distanceText(340)).toBe('340 m')
+    expect(distanceText(1234)).toBe('1.2 km')
+    expect(distanceText(14.9)).toBe('Now')
+    expect(distanceText(0)).toBe('Now')
+    expect(distanceText(null)).toBeNull()
+  })
+
+  it('says how far for the list: away, Here now, or nothing without a position', () => {
+    expect(awayText(340)).toBe('340 m away')
+    expect(awayText(1500)).toBe('1.5 km away')
+    expect(awayText(5)).toBe('Here now')
+    expect(awayText(null)).toBeNull()
+  })
+
+  describe('the header of the list', () => {
+    const totals = (extra: Partial<ReturnType<typeof bundleTotals>>) => ({ total: 0, dropped: 0, missed: 0, skipped: 0, toDrop: 0, droppedPapers: 0, missedPapers: 0, toDropPapers: 0, ...extra })
+
+    it('says how many are left and how many of the whole are dropped', () => {
+      expect(bundleLeftText(totals({ total: 8, dropped: 5, toDrop: 3 }))).toBe('3 bundles left · 5 of 8 dropped')
+      expect(bundleLeftText(totals({ total: 8, dropped: 7, toDrop: 1 }))).toBe('1 bundle left · 7 of 8 dropped')
+      expect(bundleLeftText(totals({ total: 2, dropped: 0, toDrop: 2 }))).toBe('2 bundles left · 0 of 2 dropped')
+    })
+
+    it('says so when every one is dropped', () => {
+      expect(bundleLeftText(totals({ total: 8, dropped: 8 }))).toBe('All 8 bundles dropped')
+      expect(bundleLeftText(totals({ total: 1, dropped: 1 }))).toBe('The bundle is dropped')
+    })
+
+    it('says none are left when the rest were missed or skipped', () => {
+      expect(bundleLeftText(totals({ total: 8, dropped: 6, missed: 1, skipped: 1 }))).toBe('No bundles left · 6 of 8 dropped')
+    })
+
+    it('is empty for no bundles', () => {
+      expect(bundleLeftText(totals({}))).toBe('')
+    })
+  })
+})
+
+describe('the rows of the order editor', () => {
+  const bundles: EditorBundle[] = [
+    { id: 'a', name: 'Spar', qty: 6 },
+    { id: 'b', name: 'Co-op', qty: null },
+    { id: 'c', name: 'School', qty: 1 },
+  ]
+
+  it('are the bundles in the driver\'s order, numbered from 1', () => {
+    const rows = editorRows(bundles, ['c', 'a'])
+    expect(rows.map((r) => [r.place, r.id, r.name])).toEqual([
+      [1, 'c', 'School'],
+      [2, 'a', 'Spar'],
+      [3, 'b', 'Co-op'],
+    ])
+  })
+
+  it('say the papers, and nothing where no amount is set', () => {
+    expect(editorRows(bundles, undefined).map((r) => r.papers)).toEqual(['6 papers', null, '1 paper'])
+  })
+
+  it('have no status in Setup, and the word for it in a round', () => {
+    expect(editorRows(bundles, undefined).map((r) => [r.status, r.statusLabel])).toEqual([[null, null], [null, null], [null, null]])
+    const round: EditorBundle[] = [
+      { id: 'a', name: 'Spar', status: 'dropped' },
+      { id: 'b', name: 'Co-op', status: 'next' },
+      { id: 'c', name: 'School', status: 'todo' },
+    ]
+    expect(editorRows(round, undefined).map((r) => r.statusLabel)).toEqual(['Dropped', 'Next', 'To do'])
+  })
+
+  it('cannot move the top one up or the bottom one down, and can move the others both ways', () => {
+    const rows = editorRows(bundles, undefined)
+    expect(rows.map((r) => [r.canUp, r.canDown])).toEqual([
+      [false, true],
+      [true, true],
+      [true, false],
+    ])
+  })
+
+  it('have no buttons for a bundle already dropped, missed or skipped, and the others hop over it', () => {
+    const round: EditorBundle[] = [
+      { id: 'a', name: 'A', status: 'dropped' },
+      { id: 'b', name: 'B', status: 'missed' },
+      { id: 'c', name: 'C', status: 'next' },
+      { id: 'd', name: 'D', status: 'skipped' },
+      { id: 'e', name: 'E', status: 'todo' },
+    ]
+    const rows = editorRows(round, undefined)
+    expect(rows.map((r) => r.finished)).toEqual([true, true, false, true, false])
+    expect(rows.map((r) => [r.canUp, r.canDown])).toEqual([
+      [false, false],
+      [false, false],
+      [false, true],
+      [false, false],
+      [true, false],
+    ])
+  })
+
+  it('give a move as the whole new order, hopping over the done ones', () => {
+    const round: EditorBundle[] = [
+      { id: 'a', name: 'A', status: 'next' },
+      { id: 'b', name: 'B', status: 'dropped' },
+      { id: 'c', name: 'C', status: 'skipped' },
+      { id: 'd', name: 'D', status: 'todo' },
+    ]
+    expect(editorMove(round, undefined, 'd', -1)).toEqual(['d', 'a', 'b', 'c'])
+    expect(editorMove(round, ['a', 'b', 'c', 'd'], 'a', 1)).toEqual(['b', 'c', 'd', 'a'])
+    // Nothing to hop to: a has only done bundles below it.
+    expect(editorMove(round, ['d', 'a', 'b', 'c'], 'a', 1)).toEqual(['d', 'a', 'b', 'c'])
+    expect(editorMove(bundles, undefined, 'b', -1)).toEqual(['b', 'a', 'c'])
+  })
+
+  it('are none for no bundles', () => {
+    expect(editorRows([], ['a'])).toEqual([])
+  })
+})
+
+describe('the bundle drops of a route, for Setup', () => {
+  const doubled = [
+    bundle('a', 100, { label: 'Co-op', qty: 12 }, 'a'),
+    other('n', 'nothrow', 150),
+    bundle('b', 400, { address: '3 Elm Street' }),
+    bundle('a', 900, { label: 'Co-op', qty: 12 }, 'a#2'),
+    bundle('c', 700, { label: 'School', qty: 1 }),
+  ]
+
+  it('has each bundle stop once, in the order the route first reaches it, with its name and papers', () => {
+    expect(setupBundles(doubled)).toEqual([
+      { id: 'a', name: 'Co-op', qty: 12 },
+      { id: 'b', name: '3 Elm Street', qty: null },
+      { id: 'c', name: 'School', qty: 1 },
+    ])
+  })
+
+  it('has no status, as in Setup every bundle is still to do', () => {
+    for (const b of setupBundles(doubled)) expect('status' in b).toBe(false)
+  })
+
+  it('has nothing for a route with no bundle drops', () => {
+    expect(setupBundles([])).toEqual([])
+    expect(setupBundles([other('n', 'nothrow', 50)])).toEqual([])
+  })
+
+  it('puts a bundle added since last in the editor, as the round would', () => {
+    const rows = editorRows(setupBundles(doubled), ['c'])
+    expect(rows.map((r) => r.id)).toEqual(['c', 'a', 'b'])
+    expect(editorMove(setupBundles(doubled), ['c'], 'b', -1)).toEqual(['c', 'b', 'a'])
+  })
+
+  it('names and orders them as the round does, so the order set in Setup is the order driven', () => {
+    const order = ['c', 'b', 'a']
+    const setup = editorRows(setupBundles(doubled), order).map((r) => [r.id, r.name])
+    const round = bundleRows(doubled, round0(), order, null).map((r) => [r.id, r.name])
+    expect(setup).toEqual(round)
+  })
+
+  function round0(): RoundState {
+    return { handledStopIds: [] }
+  }
+})
+
+describe('the stops, with what a list of them needs to act on', () => {
+  const occs = [bundle('a', 100, { label: 'Co-op', address: '12 Oak Road' }, 'a'), bundle('a', 900, { label: 'Co-op', address: '12 Oak Road' }, 'a#2'), bundle('b', 400)]
+
+  it('has the address, the keys of the passes in route order and how many there are', () => {
+    const [a, b] = bundleStops(bundleList(occs, round(), 0))
+    expect(a).toMatchObject({ stopId: 'a', name: 'Co-op', address: '12 Oak Road', keys: ['a', 'a#2'], passes: 2 })
+    expect(b).toMatchObject({ stopId: 'b', address: null, keys: ['b'], passes: 1 })
+  })
+
+  it('has the key to mark and the key to undo', () => {
+    const fresh = bundleStops(bundleList(occs, round(), 0))
+    expect(fresh.map((s) => [s.markKey, s.undoKey])).toEqual([
+      ['a', null],
+      ['b', null],
+    ])
+    const dropped = bundleStops(bundleList(occs, markDropped(round(), 'a#2', ['a']), 0))
+    expect(dropped.map((s) => [s.markKey, s.undoKey])).toEqual([
+      [null, 'a#2'],
+      ['b', null],
+    ])
+  })
+
+  it('has nothing to mark for a stop skipped over, and the pass missed for one missed', () => {
+    const skipped = bundleStops(bundleList(occs, round({ handledStopIds: ['a', 'a#2', 'b'] }), 0))
+    expect(skipped.map((s) => [s.status, s.markKey])).toEqual([
+      ['skipped', null],
+      ['skipped', null],
+    ])
+    const missed = bundleStops(bundleList(occs, markMissed(round({ handledStopIds: ['a', 'a#2', 'b'] }), ['a#2', 'b']), 0))
+    expect(missed.map((s) => [s.status, s.markKey])).toEqual([
+      ['missed', 'a#2'],
+      ['missed', 'b'],
+    ])
   })
 })

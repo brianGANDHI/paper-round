@@ -12,22 +12,29 @@ import {
   restoreBundle,
   savedRound,
   sheetRow,
+  stopRow,
   unsetAmounts,
+  unsetRows,
 } from './bundleFlow'
 import {
   bundleList,
+  bundleRows,
+  bundlesLeft,
   bundleTotals,
   markDropped,
   markMissed,
   nextBundle,
+  nextInOrder,
   otherPasses,
   passStates,
   reconcile,
+  rowTotals,
   type BundleItem,
+  type BundleRow,
   type PassStates,
 } from './bundles'
 import type { Occurrence } from './geo'
-import type { RoundState, Stop } from './types'
+import type { Pt, RoundState, Stop } from './types'
 
 /** An occurrence `at` metres along the route, by hand so that the distances are exact. */
 const occ = (id: string, at: number, type: Stop['type'] = 'bundle', extra: Partial<Stop> = {}, key = id): Occurrence => ({
@@ -39,6 +46,8 @@ const occ = (id: string, at: number, type: Stop['type'] = 'bundle', extra: Parti
 })
 
 const round = (extra: Partial<RoundState> = {}): RoundState => ({ handledStopIds: [], ...extra })
+/** A place `x` metres east and `y` metres north of the origin, to within a few centimetres at this size. */
+const spot = (x: number, y: number): Pt => ({ lat: -33.87 + y / 111_195, lng: 151.2 + x / (111_195 * Math.cos((33.87 * Math.PI) / 180)) })
 
 describe('keeping the round', () => {
   const prev = round({ handledStopIds: ['a', 'b', 'c'], dropped: ['a'], missed: ['b'], furthest: 500, startM: 100 })
@@ -378,77 +387,229 @@ describe('taking back a drop', () => {
 })
 
 describe('the bar line for bundles', () => {
-  const occs = [occ('a', 100, 'bundle', { label: 'Co-op', qty: 12 }), occ('b', 400, 'bundle', { address: '3 Elm Street' }), occ('c', 900)]
+  // A street running north, with the phone on it: a bundle at 100 m (Co-op, 12 papers), one at 400 m and one at 900 m. The phone is
+  // `y` metres up the street, or has no position (null).
+  const on = (id: string, y: number, extra: Partial<Stop> = {}, key = id): Occurrence => occ(id, y, 'bundle', { ...spot(0, y), ...extra }, key)
+  const occs = [on('a', 100, { label: 'Co-op', qty: 12 }), on('b', 400, { address: '3 Elm Street' }), on('c', 900)]
+  const barAt = (list: Occurrence[], r: RoundState, y: number | null, order?: string[]) => barBundle(bundleRows(list, r, order, y === null ? null : spot(0, y)))
 
   it('is nothing when the route has no bundle drops', () => {
     expect(barBundle([])).toBeNull()
-    expect(barBundle(bundleList([occ('n', 50, 'nothrow')], round(), 0))).toBeNull()
+    expect(barAt([occ('n', 50, 'nothrow')], round(), 0)).toBeNull()
   })
 
-  it('names the next bundle, how far it is and its papers', () => {
-    expect(barBundle(bundleList(occs, round(), 0))).toEqual({ lead: 'Next bundle', name: 'Co-op', distance: '100 m', papers: '12 papers', missed: 0 })
+  it('names the next bundle, how far it is, its papers and how many are left', () => {
+    expect(barAt(occs, round(), 0)).toEqual({ lead: 'Next bundle', name: 'Co-op', distance: '100 m', papers: '12 papers', missed: 0, left: 3 })
   })
 
   it('moves on to the one after when the first is dropped', () => {
-    const list = bundleList(occs, markDropped(round(), 'a'), 120)
-    expect(barBundle(list)).toEqual({ lead: 'Next bundle', name: '3 Elm Street', distance: '280 m', papers: null, missed: 0 })
+    expect(barAt(occs, markDropped(round(), 'a'), 120)).toEqual({ lead: 'Next bundle', name: '3 Elm Street', distance: '280 m', papers: null, missed: 0, left: 2 })
   })
 
   it('says how far in kilometres from a kilometre', () => {
-    const far = bundleList([occ('a', 3200, 'bundle', { label: 'Depot', qty: 1 })], round(), 0)
-    expect(barBundle(far)).toMatchObject({ distance: '3.2 km', papers: '1 paper' })
+    const far = [on('a', 3200, { label: 'Depot', qty: 1 })]
+    expect(barAt(far, round(), 0)).toMatchObject({ distance: '3.2 km', papers: '1 paper' })
   })
 
   it('says it is here when the driver is at it', () => {
-    expect(barBundle(bundleList(occs, round(), 95))?.distance).toBe('Now')
+    expect(barAt(occs, round(), 95)?.distance).toBe('Now')
   })
 
   it('counts the ones missed', () => {
     const r = markMissed(round({ handledStopIds: ['a'] }), ['a'])
-    expect(barBundle(bundleList(occs, r, 150))).toMatchObject({ name: '3 Elm Street', missed: 1 })
+    expect(barAt(occs, r, 150)).toMatchObject({ name: '3 Elm Street', missed: 1, left: 2 })
   })
 
   const two = occs.slice(0, 2)
 
   it('says all are dropped, with no distance, when every bundle is', () => {
     const r = markDropped(markDropped(round(), 'a'), 'b')
-    expect(barBundle(bundleList(two, r, 500))).toEqual({ lead: 'Bundles', name: 'All bundles dropped', distance: null, papers: null, missed: 0 })
+    expect(barAt(two, r, 500)).toEqual({ lead: 'Bundles', name: 'All bundles dropped', distance: null, papers: null, missed: 0, left: 0 })
   })
 
-  it('says none are ahead, with how many were missed, when some were not dropped', () => {
+  it('says none are left, with how many were missed, when some were not dropped', () => {
     const r = markMissed(markDropped(round({ handledStopIds: ['b'] }), 'a'), ['b'])
-    expect(barBundle(bundleList(two, r, 500))).toEqual({ lead: 'Bundles', name: 'No more bundles ahead', distance: null, papers: null, missed: 1 })
+    expect(barAt(two, r, 500)).toEqual({ lead: 'Bundles', name: 'No bundles left', distance: null, papers: null, missed: 1, left: 0 })
   })
 
-  it('says none are ahead when the rest were skipped over', () => {
+  it('says none are left when the rest were skipped over', () => {
     const r = round({ handledStopIds: ['a', 'b'] })
-    expect(barBundle(bundleList(two, r, 500))).toMatchObject({ name: 'No more bundles ahead', missed: 0 })
+    expect(barAt(two, r, 500)).toMatchObject({ name: 'No bundles left', missed: 0, left: 0 })
+  })
+
+  describe("in the driver's order, not by where the driver is", () => {
+    it("shows the first in the driver's list that is still to do, though another is nearer", () => {
+      // The driver is at Co-op, 100 m up the street, but has put the Elm Street bundle first.
+      expect(barAt(occs, round(), 100, ['b', 'a'])).toMatchObject({ name: '3 Elm Street', distance: '300 m', left: 3 })
+    })
+
+    it('still shows a bundle the driver has driven past, if it is the first in the list still to do', () => {
+      // 700 m up the street, the Co-op at 100 m is behind. Nothing is done, and the list starts with it.
+      expect(barAt(occs, round(), 700, ['a', 'b'])).toMatchObject({ name: 'Co-op', distance: '600 m', left: 3 })
+    })
+
+    it('gives the distance as the crow flies, not along the route', () => {
+      // 300 m east and 400 m north, though the route has it at 50 m.
+      const crow = [occ('x', 50, 'bundle', { label: 'Depot', ...spot(300, 400) })]
+      expect(barAt(crow, round(), 0)).toMatchObject({ name: 'Depot', distance: '500 m' })
+    })
+
+    it('shows no distance, but the name and the rest, while the phone has no position', () => {
+      expect(barAt(occs, round(), null)).toEqual({ lead: 'Next bundle', name: 'Co-op', distance: null, papers: '12 papers', missed: 0, left: 3 })
+    })
+
+    it('does not move on when a bundle further down the list is dropped, nor when the driver moves', () => {
+      const dropped = markDropped(round(), 'b')
+      for (const y of [0, 100, 399, 400, 2000]) expect(barAt(occs, dropped, y, ['a', 'b'])).toMatchObject({ name: 'Co-op', left: 2 })
+    })
+
+    it('counts down the bundles left as they are dropped, whatever the order', () => {
+      const three = [...occs.slice(0, 2), on('d', 700, { label: 'School' })]
+      const order = ['d', 'a', 'b']
+      let r = round()
+      const left: number[] = [barAt(three, r, 0, order)?.left ?? -1]
+      for (const id of order) {
+        r = markDropped(r, id)
+        left.push(barAt(three, r, 0, order)?.left ?? -1)
+      }
+      expect(left).toEqual([3, 2, 1, 0])
+    })
   })
 
   describe('for a stop the route goes by twice', () => {
-    const shop = [occ('shop', 100, 'bundle', { label: 'Co-op', qty: 12 }, 'shop'), occ('depot', 400, 'bundle', { label: 'Depot', qty: 3 }), occ('shop', 900, 'bundle', { label: 'Co-op', qty: 12 }, 'shop#2')]
+    const shop = [on('shop', 100, { label: 'Co-op', qty: 12 }, 'shop'), on('depot', 400, { label: 'Depot', qty: 3 }), on('shop', 900, { label: 'Co-op', qty: 12, ...spot(0, 100) }, 'shop#2')]
 
     it('says all are dropped once the stop is dropped on one pass, though the other was never tapped', () => {
       const r = markDropped(markDropped(round(), 'shop', ['shop#2']), 'depot')
-      expect(barBundle(bundleList(shop, r, 1000))).toEqual({ lead: 'Bundles', name: 'All bundles dropped', distance: null, papers: null, missed: 0 })
+      expect(barAt(shop, r, 1000)).toEqual({ lead: 'Bundles', name: 'All bundles dropped', distance: null, papers: null, missed: 0, left: 0 })
     })
 
     it('does not count the first pass missed when the stop is dropped on the second', () => {
       const missed = markMissed(round({ handledStopIds: ['shop'] }), ['shop'])
       const r = markDropped(missed, 'shop#2', ['shop'])
-      expect(barBundle(bundleList(shop, r, 150))).toMatchObject({ name: 'Depot', distance: '250 m', papers: '3 papers', missed: 0 })
-      expect(barBundle(bundleList(shop, missed, 150))).toMatchObject({ name: 'Depot', missed: 0 })
+      expect(barAt(shop, r, 150, ['shop', 'depot'])).toMatchObject({ name: 'Depot', distance: '250 m', papers: '3 papers', missed: 0, left: 1 })
+      expect(barAt(shop, missed, 150, ['depot', 'shop'])).toMatchObject({ name: 'Depot', missed: 0, left: 2 })
     })
 
     it('counts a stop missed once though both passes were', () => {
       const r = markMissed(round({ handledStopIds: ['shop', 'depot', 'shop#2'] }), ['shop', 'shop#2'])
-      expect(barBundle(bundleList(shop, r, 1000))).toEqual({ lead: 'Bundles', name: 'No more bundles ahead', distance: null, papers: null, missed: 1 })
+      expect(barAt(shop, r, 1000)).toEqual({ lead: 'Bundles', name: 'No bundles left', distance: null, papers: null, missed: 1, left: 0 })
     })
 
     it('does not call the stop missed while its second pass is to come', () => {
       const r = markMissed(round({ handledStopIds: ['shop'] }), ['shop'])
-      expect(barBundle(bundleList(shop, r, 150))).toMatchObject({ name: 'Depot', missed: 0 })
+      expect(barAt(shop, r, 150)).toMatchObject({ name: 'Co-op', missed: 0, left: 2 })
     })
+
+    it('counts the stop once in how many are left, though the route goes by it twice', () => {
+      expect(barAt(shop, round(), 0)).toMatchObject({ left: 2 })
+    })
+  })
+})
+
+describe("a row of the driver's list", () => {
+  const on = (id: string, y: number, extra: Partial<Stop> = {}, key = id): Occurrence => occ(id, y, 'bundle', { ...spot(0, y), ...extra }, key)
+  const occs = [on('a', 100, { label: 'Co-op', address: '12 Oak Road', qty: 12 }), on('b', 400), on('c', 900, { label: 'School', qty: 1 }, 'c'), on('c', 1500, { label: 'School', qty: 1, ...spot(0, 900) }, 'c#2')]
+  const rowsFor = (r: RoundState, y: number | null, order?: string[]) => bundleRows(occs, r, order, y === null ? null : spot(0, y)).map((x, i) => stopRow(x, i + 1))
+
+  it('has the venue, the address under it, the papers, how far and its place in the list', () => {
+    const [a] = rowsFor(round(), 0)
+    expect(a).toMatchObject({ id: 'a', place: 1, name: 'Co-op', address: '12 Oak Road', status: 'next', statusLabel: 'Next', papers: '12 papers', where: '100 m away', passes: null })
+  })
+
+  it('has no papers when no amount was set', () => {
+    expect(rowsFor(round(), 0)[1].papers).toBeNull()
+  })
+
+  it('is one row for a street the route goes by more than once, which says how many times', () => {
+    const rows = rowsFor(round(), 0)
+    expect(rows.map((r) => r.id)).toEqual(['a', 'b', 'c'])
+    expect(rows[2].passes).toBe('2 passes')
+    expect(rows[0].passes).toBeNull()
+  })
+
+  it('numbers the rows in the order of the list', () => {
+    expect(rowsFor(round(), 0, ['c', 'b', 'a']).map((r) => [r.place, r.id])).toEqual([
+      [1, 'c'],
+      [2, 'b'],
+      [3, 'a'],
+    ])
+  })
+
+  it('offers Mark dropped on a bundle to do, the next one included, and on one missed', () => {
+    const r = markMissed(round({ handledStopIds: ['a'] }), ['a'])
+    const rows = rowsFor(r, 200)
+    expect(rows.map((x) => [x.status, x.action?.kind ?? null])).toEqual([
+      ['missed', 'mark'],
+      ['next', 'mark'],
+      ['todo', 'mark'],
+    ])
+  })
+
+  it('acts on the pass of the stop that Mark dropped is for', () => {
+    expect(rowsFor(round(), 0)[2].action).toEqual({ kind: 'mark', key: 'c' })
+    expect(rowsFor(round({ handledStopIds: ['c'] }), 0)[2].action).toEqual({ kind: 'mark', key: 'c#2' })
+  })
+
+  it('offers Undo on a bundle dropped, for the pass that was dropped, and nothing on one skipped over', () => {
+    const r = round({ handledStopIds: ['a', 'b'], dropped: ['a'] })
+    const rows = rowsFor(r, 450)
+    expect(rows[0]).toMatchObject({ status: 'dropped', statusLabel: 'Dropped', action: { kind: 'undo', key: 'a' } })
+    expect(rows[1]).toMatchObject({ status: 'skipped', statusLabel: 'Skipped', action: null })
+    expect(rowsFor(markDropped(round(), 'c#2', ['c']), 0)[2].action).toEqual({ kind: 'undo', key: 'c#2' })
+  })
+
+  it('reads a stop dropped on either pass as dropped, with the one button', () => {
+    for (const r of [markDropped(round(), 'c', ['c#2']), markDropped(round(), 'c#2', ['c'])]) {
+      const row = rowsFor(r, 1000)[2]
+      expect(row).toMatchObject({ status: 'dropped', statusLabel: 'Dropped', passes: '2 passes' })
+      expect(row.action?.kind).toBe('undo')
+    }
+  })
+
+  it('says how far as the crow flies, in whichever direction, and Here now at the spot', () => {
+    expect(rowsFor(round(), 700)[0].where).toBe('600 m away')
+    expect(rowsFor(round(), 700)[2].where).toBe('200 m away')
+    expect(rowsFor(round(), 100)[0].where).toBe('Here now')
+  })
+
+  it('says nothing of how far while the phone has no position', () => {
+    expect(rowsFor(round(), null).map((r) => r.where)).toEqual([null, null, null])
+    expect(rowsFor(round(), null)[0].label).toBe('Next. Co-op, 12 papers.')
+  })
+
+  it('reads out in full for a screen reader', () => {
+    const r = markMissed(round({ handledStopIds: ['a'] }), ['a'])
+    const rows = rowsFor(r, 300)
+    expect(rows[0].label).toBe('Missed. Co-op, 12 papers. 200 m away.')
+    expect(rows[2].label).toBe('To do. School, 1 paper, 2 passes. 600 m away.')
+  })
+})
+
+describe('bundles with no amount, in the driver\'s list', () => {
+  const row = (id: string, status: BundleRow['status'], papers: number | null): BundleRow => ({ id, name: id, address: null, papers, passes: 1, status, distance: null, markKey: null, undoKey: null })
+
+  it('counts those that are dropped or still to do', () => {
+    expect(unsetRows([row('a', 'dropped', null), row('b', 'next', null), row('c', 'todo', null)])).toBe(3)
+  })
+
+  it('does not count those that have an amount', () => {
+    expect(unsetRows([row('a', 'dropped', 5), row('b', 'todo', 7)])).toBe(0)
+  })
+
+  it('does not count those missed or skipped, which the papers figures do not cover', () => {
+    expect(unsetRows([row('a', 'missed', null), row('b', 'skipped', null)])).toBe(0)
+  })
+
+  it('is nothing for no bundles', () => {
+    expect(unsetRows([])).toBe(0)
+  })
+
+  it('counts a stop the route goes by twice once, as the list of passes does', () => {
+    const occs = [occ('s', 100, 'bundle', {}, 's'), occ('s', 900, 'bundle', {}, 's#2'), occ('t', 500)]
+    expect(unsetRows(bundleRows(occs, round(), undefined, null))).toBe(2)
+    expect(unsetRows(bundleRows(occs, markDropped(round(), 's', ['s#2']), undefined, null))).toBe(2)
+    expect(unsetRows(bundleRows(occs, round(), undefined, null))).toBe(unsetAmounts(bundleList(occs, round(), 0)))
   })
 })
 
@@ -692,6 +853,13 @@ describe('a round of bundle drops through many changes, one delivery for each st
     expect(totals.dropped, `${where}: dropped stops`).toBe(deliveredStops.length)
     expect(totals.droppedPapers, `${where}: papers dropped once for each stop`).toBe(deliveredStops.reduce((n, id) => n + (papersOf.get(id) ?? 0), 0))
     expect(totals.droppedPapers + totals.missedPapers + totals.toDropPapers, `${where}: papers`).toBeLessThanOrEqual(stops.reduce((n, id) => n + (papersOf.get(id) ?? 0), 0))
+    // The driver's list has a row for each stop, in one state each, and the count left is the stops still to drop.
+    const rows = bundleRows(route, r, undefined, null)
+    expect(rows.map((x) => x.id), `${where}: one row for each stop`).toEqual(stops)
+    expect(bundlesLeft(rows), `${where}: bundles left`).toBe(totals.toDrop)
+    expect(rowTotals(rows), `${where}: the rows add up as the passes do`).toEqual(totals)
+    expect(rows.filter((x) => x.status === 'next').length, `${where}: one next at most`).toBe(totals.toDrop > 0 ? 1 : 0)
+    expect(nextInOrder(rows)?.id, `${where}: the next in a list in route order is the first still to do`).toBe(rows.find((x) => x.status === 'next' || x.status === 'todo')?.id)
     // The next bundle is one still to come, of a stop not dropped.
     const next = nextBundle(list)
     if (next) {
@@ -704,7 +872,7 @@ describe('a round of bundle drops through many changes, one delivery for each st
     }
   }
 
-  it('keeps every stop one delivery and every drop exactly undoable, whatever is done in whatever order', () => {
+  it('keeps every stop one delivery and every drop exactly undoable, whatever is done in whatever order', { timeout: 60_000 }, () => {
     const memos: { key: string; before: PassStates }[] = []
     for (let seed = 1; seed <= 300; seed++) {
       const random = generator(seed)

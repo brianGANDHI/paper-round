@@ -156,6 +156,81 @@ describe('the beeps for a stop', () => {
   })
 })
 
+describe('the beep for an apartment block', () => {
+  const play = (kind: 'bundle' | 'block' | 'request' | 'noThrow' | 'offRoute') => {
+    const f = fakeAudio()
+    const vibrate = vi.fn()
+    vi.stubGlobal('navigator', { vibrate })
+    const s = createSound(f.make, noWait)
+    s.unlock()
+    const seconds = s[kind]()
+    return { seconds, notes: f.log, ctx: f.ctx, vibrate }
+  }
+
+  it('is two short notes of the same pitch', () => {
+    const { notes } = play('block')
+    expect(notes).toHaveLength(2)
+    expect(notes[0].freq).toBe(notes[1].freq)
+    expect(notes[0].freq).toBeGreaterThanOrEqual(300)
+    expect(notes[0].freq).toBeLessThanOrEqual(2000)
+  })
+
+  it('is not taken for any other alert: not a bundle drop, a special request, a no-throw house or being off the route', () => {
+    const block = play('block').notes
+    // A bundle drop's one note, a special request's two going up, a no-throw house's three and the off-route two going down.
+    expect(play('bundle').notes).toHaveLength(1)
+    expect(play('noThrow').notes).toHaveLength(3)
+    const request = play('request').notes
+    expect(request[0].freq).toBeLessThan(request[1].freq)
+    const off = play('offRoute').notes
+    expect(off[0].freq).toBeGreaterThan(off[1].freq)
+    expect(block[0].freq).toBe(block[1].freq)
+    // And its pitch is not the single beep's, nor the no-throw house's.
+    expect(block[0].freq).not.toBe(play('bundle').notes[0].freq)
+    expect(block[0].freq).not.toBe(play('noThrow').notes[0].freq)
+    const lengths = Object.values(ALERT_SECONDS)
+    expect(new Set(lengths).size).toBe(lengths.length)
+  })
+
+  it('says how long it takes, and takes that long: the second note starts after the first and ends at the length', () => {
+    const { seconds, notes, ctx } = play('block')
+    expect(seconds).toBe(ALERT_SECONDS.block)
+    expect(notes[0].start).toBe(ctx.currentTime)
+    expect(notes[1].start).toBeGreaterThanOrEqual(notes[0].stop)
+    expect(Math.max(...notes.map((n) => n.stop)) - ctx.currentTime).toBeCloseTo(ALERT_SECONDS.block, 5)
+  })
+
+  it('is short, so the voice that follows is not kept waiting', () => {
+    expect(ALERT_SECONDS.block).toBeGreaterThan(ALERT_SECONDS.bundle)
+    expect(ALERT_SECONDS.block).toBeLessThan(ALERT_SECONDS.request)
+  })
+
+  it('is as loud as the other alerts', () => {
+    expect(play('block').notes.map((n) => n.gain)).toEqual(play('request').notes.slice(0, 2).map((n) => n.gain))
+  })
+
+  it('buzzes the phone where it can, in a pattern of its own', () => {
+    const { vibrate } = play('block')
+    expect(vibrate).toHaveBeenCalledTimes(1)
+    for (const other of ['bundle', 'request', 'noThrow', 'offRoute'] as const) expect(vibrate.mock.calls[0][0]).not.toEqual(play(other).vibrate.mock.calls[0][0])
+  })
+
+  it('wakes the audio up as it goes, in case it fell asleep, and does nothing before audio is unlocked', () => {
+    const { ctx, calls, make } = fakeAudio('running')
+    vi.stubGlobal('navigator', {})
+    const s = createSound(make, noWait)
+    s.unlock()
+    ctx.state = 'suspended'
+    calls.length = 0
+    s.block()
+    expect(calls).toContain('resume')
+    const early = fakeAudio()
+    const before = createSound(early.make, noWait)
+    expect(() => before.block()).not.toThrow()
+    expect(early.log).toHaveLength(0)
+  })
+})
+
 describe('the tick before a spoken word', () => {
   it('is short and high, and says how long it lasts', () => {
     const { log, make } = fakeAudio()

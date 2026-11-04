@@ -4,6 +4,10 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { AlertBanner } from './AlertBanner'
+import { BundleOrderEditor, BundleOrderList } from './BundleOrderEditor'
+import { BundlesSheet } from './BundlesSheet'
+import { bundleRows, editorRows, type BundleRow, type EditorBundle } from './bundles'
+import type { Occurrence } from './geo'
 import { RoundBar, type NextBundle } from './RoundBar'
 import type { Stop } from './types'
 
@@ -18,7 +22,7 @@ const guidanceCss = sheet('./guidance.css')
 /** The markup a component gives, as text. Nothing is mounted: this is only what the screen would be told to draw. */
 const html = (element: Parameters<typeof renderToStaticMarkup>[0]): string => renderToStaticMarkup(element)
 
-const next = (extra: Partial<NextBundle> = {}): NextBundle => ({ lead: 'Next bundle', name: 'Corner Store', distance: '340 m', papers: '12 papers', missed: 0, ...extra })
+const next = (extra: Partial<NextBundle> = {}): NextBundle => ({ lead: 'Next bundle', name: 'Corner Store', distance: '340 m', papers: '12 papers', missed: 0, left: 3, ...extra })
 
 const bar = (props: Partial<Parameters<typeof RoundBar>[0]> = {}): string =>
   html(
@@ -124,7 +128,9 @@ describe('the bar along the bottom of the round', () => {
   })
 
   it('still reads out the whole lead, whatever is shown', () => {
-    expect(bar({ nextBundle: next({ missed: 1 }) })).toContain('aria-label="Next bundle: Corner Store, 340 m, 12 papers. 1 missed. Tap for the list of bundle drops."')
+    expect(bar({ nextBundle: next({ missed: 1 }) })).toContain(
+      'aria-label="Next bundle: Corner Store, 340 m, 3 bundles left, 12 papers. 1 missed. Tap for the list of bundle drops."',
+    )
   })
 
   it('puts the pill for bundles missed before the papers, so a narrow line leaves off the papers first', () => {
@@ -137,6 +143,51 @@ describe('the bar along the bottom of the round', () => {
     expect(lead).toBeLessThan(dist)
     expect(dist).toBeLessThan(missed)
     expect(missed).toBeLessThan(papers)
+  })
+
+  describe('how many bundle drops are left', () => {
+    it('is on the row above the name, as "3 left", after the distance', () => {
+      const out = bar({ nextBundle: next({ left: 3 }) })
+      expect(out).toContain('<span class="left">3 left</span>')
+      const top = out.slice(out.indexOf('round-bundle-top'), out.indexOf('round-bundle-name'))
+      expect(top).toContain('3 left')
+      expect(out.slice(out.indexOf('round-bundle-name'))).not.toContain('3 left')
+      expect(out.indexOf('class="dist"')).toBeLessThan(out.indexOf('class="left"'))
+    })
+
+    it('says 1 left for one', () => {
+      expect(bar({ nextBundle: next({ left: 1 }) })).toContain('<span class="left">1 left</span>')
+    })
+
+    it('ranks above the pill for bundles missed and the papers, so a narrow line leaves those off first, in the order lead, distance, left, pill, papers', () => {
+      const out = bar({ nextBundle: next({ missed: 2, left: 4 }) })
+      const at = ['class="lead"', 'class="dist"', 'class="left"', 'class="round-missed"', 'class="papers"'].map((c) => out.indexOf(c))
+      expect(at.every((i) => i > -1)).toBe(true)
+      expect([...at].sort((a, b) => a - b)).toEqual(at)
+    })
+
+    it('is not on the line when none are left, which says how the round stands instead', () => {
+      const out = bar({ nextBundle: next({ lead: 'Bundles', name: 'All bundles dropped', distance: null, papers: null, left: 0 }) })
+      expect(out).not.toContain('class="left"')
+      expect(out).toContain('<span class="round-bundle-name">All bundles dropped</span>')
+    })
+
+    it('keeps the name on its own row, and the others on the row above, with the caution button or the pill beside the line', () => {
+      for (const out of [bar({ caution: WAKE }), bar({ nextBundle: next({ missed: 3 }) }), bar()]) {
+        expect(out).toContain('<span class="round-bundle-name">Corner Store</span>')
+        const top = out.slice(out.indexOf('round-bundle-top'), out.indexOf('round-bundle-name'))
+        expect(top).toContain('3 left')
+        expect(top).toContain('340 m')
+      }
+    })
+  })
+
+  it('has no distance while the phone has no position, and still has the name and how many are left', () => {
+    const out = bar({ nextBundle: next({ distance: null }) })
+    expect(out).not.toContain('class="dist"')
+    expect(out).toContain('Corner Store')
+    expect(out).toContain('3 left')
+    expect(out).toContain('aria-label="Next bundle: Corner Store, 3 bundles left, 12 papers. Tap for the list of bundle drops."')
   })
 
   it('takes the whole line for a notice, with Undo, and no caution button over it', () => {
@@ -225,6 +276,34 @@ describe('which is on top at the bottom of the round', () => {
   })
 })
 
+describe('the line of the next bundle on a narrow phone', () => {
+  it('is one row that clips, so what does not fit is left off whole from the end and never squeezes the name', () => {
+    expect(declared(roundBarCss, '.round-bundle-top', 'height')).toBe('16px')
+    expect(declared(roundBarCss, '.round-bundle-top', 'overflow')).toBe('hidden')
+    expect(declared(roundBarCss, '.round-bundle-top', 'flex-wrap')).toBe('wrap')
+    expect(declared(roundBarCss, '.round-bundle-top', 'white-space')).toBe('nowrap')
+    // The first line, and the gap before a second, are taller than the box, so a second line is pushed out of the clip.
+    const rowGap = Number.parseFloat(declared(roundBarCss, '.round-bundle-top', 'gap')?.split(' ')[0] ?? '0')
+    const line = Number.parseFloat(declared(roundBarCss, '.round-bundle-top', 'font-size') ?? '0') * Number.parseFloat(declared(roundBarCss, '.round-bundle-top', 'line-height') ?? '0')
+    expect(line + rowGap).toBeGreaterThan(Number.parseFloat(declared(roundBarCss, '.round-bundle-top', 'height') ?? '0'))
+    expect(declared(roundBarCss, '.round-bundle', 'flex-direction')).toBe('column')
+    expect(declared(roundBarCss, '.round-bundle-name', 'text-overflow')).toBe('ellipsis')
+  })
+
+  it('does not break the count within itself, so it is left off whole rather than wrapped in half', () => {
+    expect(declared(roundBarCss, '.round-bundle-top', 'white-space')).toBe('nowrap')
+    expect(declared(roundBarCss, '.round-missed', 'flex')).toBe('none')
+  })
+
+  it('styles how many are left, with the numbers set to line up', () => {
+    expect(declared(roundBarCss, '.round-bundle-top .left', 'font-variant-numeric')).toBe('tabular-nums')
+  })
+
+  it('keeps the next-bundle line to a tap target of 44 px or more', () => {
+    expect(declared(roundBarCss, '.round-bundle', 'min-height')).toBe('44px')
+  })
+})
+
 describe('the sheets under a Dropped alert', () => {
   const NOT_SIDEWAYS = '@media not all and (orientation: landscape) and (max-height: 600px)'
 
@@ -255,5 +334,240 @@ describe('the side and the next turn on the narrowest phones', () => {
     const at = guidanceCss.indexOf('@media (max-width: 350px)')
     expect(at).toBeGreaterThan(-1)
     expect(guidanceCss.slice(at)).toMatch(/\.map-top \.hud-row \{[^}]*flex-wrap: wrap;/)
+  })
+})
+
+
+/** Every element in a tree that a test would look for, found by walking `props.children`: a component without hooks can be called as a function to get one. */
+type El = { type?: unknown; props?: { className?: string; children?: unknown; onClick?: () => void; disabled?: boolean; 'aria-label'?: string } }
+function find(node: unknown, test: (n: El) => boolean, found: El[] = []): El[] {
+  if (!node || typeof node !== 'object') return found
+  const el = node as El
+  if (test(el)) found.push(el)
+  const kids = el.props?.children
+  for (const kid of Array.isArray(kids) ? kids : [kids]) find(kid, test, found)
+  return found
+}
+
+describe('the bundle drops in the order the driver delivers them', () => {
+  const bundles: EditorBundle[] = [
+    { id: 'a', name: 'Spar', qty: 6 },
+    { id: 'b', name: 'Co-op', qty: null },
+    { id: 'c', name: 'Lakeside Convenience Store', qty: 1 },
+  ]
+
+  describe('the editor, as in Setup', () => {
+    const editor = (order?: string[], list: EditorBundle[] = bundles): string => html(createElement(BundleOrderEditor, { bundles: list, order, onChange: () => undefined }))
+
+    it('lists them in the order kept, numbered, with their papers', () => {
+      const out = editor(['c', 'a'])
+      const names = [...out.matchAll(/class="bundle-order-name">([^<]*)</g)].map((m) => m[1])
+      expect(names).toEqual(['Lakeside Convenience Store', 'Spar', 'Co-op'])
+      expect([...out.matchAll(/class="bundle-order-num" aria-hidden="true">(\d)</g)].map((m) => m[1])).toEqual(['1', '2', '3'])
+      expect(out).toContain('6 papers')
+      expect(out).toContain('1 paper')
+    })
+
+    it('is an ordered list that says what it is', () => {
+      const out = editor()
+      expect(out).toContain('<ol class="bundle-order-list" aria-label="Bundle drops, in the order you deliver them">')
+      expect(out).toContain('It never changes unless you move one.')
+    })
+
+    it('names the bundle on every button, so a screen reader says which one is moved', () => {
+      const out = editor()
+      for (const name of ['Spar', 'Co-op', 'Lakeside Convenience Store']) {
+        expect(out).toContain(`aria-label="Move ${name} up"`)
+        expect(out).toContain(`aria-label="Move ${name} down"`)
+      }
+    })
+
+    it('has the top one unable to go up and the bottom one unable to go down', () => {
+      const out = editor()
+      expect(out).toMatch(/aria-label="Move Spar up" disabled=""/)
+      expect(out).not.toMatch(/aria-label="Move Spar down" disabled=""/)
+      expect(out).toMatch(/aria-label="Move Lakeside Convenience Store down" disabled=""/)
+      expect(out).not.toMatch(/aria-label="Move Co-op (up|down)" disabled=""/)
+    })
+
+    it('says there are none to put in order for a route with no bundle drops', () => {
+      const out = editor(undefined, [])
+      expect(out).toContain('There are no bundle drops yet.')
+      expect(out).not.toContain('bundle-move')
+    })
+
+    it('reads a stale order as it would be read on the round: a gone stop ignored, a new one last', () => {
+      const out = editor(['gone', 'b'])
+      expect([...out.matchAll(/class="bundle-order-name">([^<]*)</g)].map((m) => m[1])).toEqual(['Co-op', 'Spar', 'Lakeside Convenience Store'])
+    })
+
+    it('has a polite note to a screen reader, empty until a bundle is moved', () => {
+      expect(editor()).toContain('<div class="bundle-order-said" role="status"></div>')
+    })
+  })
+
+  describe('in a round', () => {
+    const round: EditorBundle[] = [
+      { id: 'a', name: 'Spar', status: 'dropped' },
+      { id: 'b', name: 'Co-op', status: 'next', qty: 12 },
+      { id: 'c', name: 'School', status: 'todo' },
+      { id: 'd', name: 'Garage', status: 'missed' },
+    ]
+    const out = html(createElement(BundleOrderEditor, { bundles: round, order: undefined, onChange: () => undefined }))
+
+    it('shows where each stands', () => {
+      expect(out).toContain('class="bundle-order-row dropped"')
+      expect(out).toContain('class="bundle-order-row next"')
+      expect(out).toContain('<span class="bundle-order-status">Next</span> · 12 papers')
+      expect(out).toContain('<span class="bundle-order-status">To do</span>')
+      expect(out).toContain('<span class="bundle-order-status">Missed</span>')
+    })
+
+    it('has no buttons for one already dropped or missed, and buttons for the others', () => {
+      expect(out).not.toContain('Move Spar')
+      expect(out).not.toContain('Move Garage')
+      expect(out).toContain('Move Co-op up')
+      expect(out).toContain('Move School down')
+    })
+  })
+
+  describe('what a tap does', () => {
+    const rows = (order?: string[]) => {
+      const calls: [string, number][] = []
+      const tree = BundleOrderList({ rows: editorRows(bundles, order), onMove: (row, delta) => calls.push([row.id, delta]), said: '' })
+      return { tree, calls }
+    }
+    const button = (tree: unknown, label: string) => find(tree, (n) => n.props?.['aria-label'] === label)[0]
+
+    it('moves the bundle on its own row, in the direction of the button', () => {
+      const { tree, calls } = rows()
+      button(tree, 'Move Co-op up').props?.onClick?.()
+      button(tree, 'Move Co-op down').props?.onClick?.()
+      button(tree, 'Move Spar down').props?.onClick?.()
+      expect(calls).toEqual([
+        ['b', -1],
+        ['b', 1],
+        ['a', 1],
+      ])
+    })
+
+    it('has buttons at least 44 px square, with room between them, as the stylesheet has it', () => {
+      for (const selector of ['.bundle-move']) {
+        expect(Number.parseInt(declared(bundlesCss, selector, 'width') ?? '0', 10)).toBeGreaterThanOrEqual(44)
+        expect(Number.parseInt(declared(bundlesCss, selector, 'height') ?? '0', 10)).toBeGreaterThanOrEqual(44)
+      }
+      expect(Number.parseInt(declared(bundlesCss, '.bundle-order-moves', 'gap') ?? '0', 10)).toBeGreaterThanOrEqual(4)
+    })
+
+    it('dims a button that has nowhere to go', () => {
+      expect(declared(bundlesCss, '.bundle-move:disabled', 'opacity')).toBe('0.3')
+    })
+  })
+})
+
+describe("the Bundles list in the driver's order", () => {
+  // Three bundles up a street, the phone at its foot. The Co-op is first in the route and the School first in the list.
+  const at = (id: string, y: number, extra: Partial<Stop> = {}): Occurrence => ({
+    key: id,
+    stop: { id, type: 'bundle', lat: -33.87 + y / 111_195, lng: 151.2, pathIdx: 0, ...extra },
+    idx: 0,
+    at: y,
+    off: 0,
+  })
+  const occs = [at('a', 100, { label: 'Co-op', qty: 12 }), at('b', 400, { label: 'Spar', address: '3 Elm Street', qty: 6 }), at('c', 900, { label: 'School' })]
+  const here = { lat: -33.87, lng: 151.2 }
+  const sheet = (rows: readonly BundleRow[], extra: Partial<Parameters<typeof BundlesSheet>[0]> = {}): string =>
+    html(createElement(BundlesSheet, { rows, onClose: () => undefined, onMark: () => undefined, onUndo: () => undefined, ...extra }))
+  const names = (out: string) => [...out.matchAll(/class="bundle-name">([^<]*)</g)].map((m) => m[1])
+
+  it('has the rows in the order the driver put them in, not the route\'s', () => {
+    const out = sheet(bundleRows(occs, { handledStopIds: [] }, ['c', 'a', 'b'], here))
+    expect(names(out)).toEqual(['School', 'Co-op', 'Spar'])
+  })
+
+  it('says in the header how many are left, and how many of the whole are dropped', () => {
+    const rows = bundleRows(occs, { handledStopIds: ['a'], dropped: ['a'] }, undefined, here)
+    expect(sheet(rows)).toContain('<div class="bundles-count">2 bundles left · 1 of 3 dropped</div>')
+  })
+
+  it('says the status of each, the first still to do being Next whatever its place on the route', () => {
+    const out = sheet(bundleRows(occs, { handledStopIds: ['a'], dropped: ['a'], missed: [] }, ['c', 'b', 'a'], here))
+    expect([...out.matchAll(/class="bundle-status">([^<]*)</g)].map((m) => m[1])).toEqual(['Next', 'To do', 'Dropped'])
+    expect(out).toContain('class="bundle-row next"')
+    expect(out).toContain('class="bundle-row todo"')
+  })
+
+  it('says how far each is from the phone, and the place in the list', () => {
+    const out = sheet(bundleRows(occs, { handledStopIds: [] }, undefined, here))
+    expect(out).toContain('<span class="bundle-where">100 m away</span>')
+    expect(out).toContain('<span class="bundle-where">900 m away</span>')
+    expect([...out.matchAll(/class="bundle-place" aria-hidden="true">(\d)</g)].map((m) => m[1])).toEqual(['1', '2', '3'])
+  })
+
+  it('says nothing of how far while the phone has no position', () => {
+    const out = sheet(bundleRows(occs, { handledStopIds: [] }, undefined, null))
+    expect(out).not.toContain('bundle-where')
+    expect(names(out)).toEqual(['Co-op', 'Spar', 'School'])
+  })
+
+  it('has Mark dropped on each bundle still to do, the next one included, and on one missed, naming the bundle', () => {
+    const rows = bundleRows(occs, { handledStopIds: ['a'], missed: ['a'] }, undefined, here)
+    const out = sheet(rows)
+    expect(out).toContain('aria-label="Mark Co-op as dropped"')
+    expect(out).toContain('aria-label="Mark Spar as dropped"')
+    expect(out).toContain('aria-label="Mark School as dropped"')
+  })
+
+  it('has Undo on a bundle dropped, and no button on one skipped over', () => {
+    const rows = bundleRows(occs, { handledStopIds: ['a', 'b'], dropped: ['a'] }, undefined, here)
+    const out = sheet(rows)
+    expect(out).toContain('aria-label="Undo dropped for Co-op"')
+    expect(out).not.toContain('Mark Spar')
+    expect(out).not.toContain('Undo dropped for Spar')
+    expect(out).toContain('aria-label="Mark School as dropped"')
+  })
+
+  it('has one row for a street the route goes by twice, which says so', () => {
+    const twice = [at('a', 100, { label: 'Co-op' }), { ...at('a', 900, { label: 'Co-op' }), key: 'a#2' }, at('b', 400, { label: 'Spar' })]
+    const out = sheet(bundleRows(twice, { handledStopIds: [] }, undefined, here))
+    expect(names(out)).toEqual(['Co-op', 'Spar'])
+    expect(out).toContain('2 passes')
+    expect(out).toContain('<div class="bundles-count">2 bundles left · 0 of 2 dropped</div>')
+  })
+
+  it('offers Reorder when it can be reordered and two or more are still to do', () => {
+    const rows = bundleRows(occs, { handledStopIds: [] }, undefined, here)
+    expect(sheet(rows, { onOrder: () => undefined, order: undefined })).toContain('>Reorder</button>')
+    expect(sheet(rows)).not.toContain('Reorder')
+  })
+
+  it('does not offer Reorder with fewer than two to do, since there is nothing to move', () => {
+    const one = bundleRows(occs, { handledStopIds: ['a', 'b'], dropped: ['a', 'b'] }, undefined, here)
+    expect(sheet(one, { onOrder: () => undefined })).not.toContain('Reorder')
+    const none = bundleRows(occs, { handledStopIds: ['a', 'b', 'c'], dropped: ['a', 'b', 'c'] }, undefined, here)
+    expect(sheet(none, { onOrder: () => undefined })).not.toContain('Reorder')
+  })
+
+  it('says so when the route has no bundle drops', () => {
+    expect(sheet([])).toContain('This route has no bundle drops.')
+    expect(sheet([])).not.toContain('bundles-count')
+  })
+
+  it('says when some bundles have no amount set', () => {
+    const rows = bundleRows(occs, { handledStopIds: [] }, undefined, here)
+    expect(sheet(rows)).toContain('1 bundle has no amount set, so it adds no papers to these figures.')
+  })
+
+  it('has the three figures of the papers: dropped, to drop and missed', () => {
+    const rows = bundleRows(occs, { handledStopIds: ['a'], dropped: ['a'] }, undefined, here)
+    const out = sheet(rows)
+    expect(out).toContain('<b>12</b><span>Papers dropped</span>')
+    expect(out).toContain('<b>6</b><span>Papers to drop</span>')
+    expect(out).toContain('<b>0</b><span>Missed</span>')
+  })
+
+  it('has a Reorder button of 44 px or more, beside Done', () => {
+    // It has to beat `.btn.small` (34 px) in index.css, so its selector names all three classes.
+    expect(Number.parseInt(declared(bundlesCss, '.btn.small.bundles-reorder', 'min-height') ?? '0', 10)).toBeGreaterThanOrEqual(44)
   })
 })

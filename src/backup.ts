@@ -1,3 +1,4 @@
+import { normalizeBundleOrder } from './bundles'
 import { cleanName, normalizeStreets } from './library'
 import { normalizeSections } from './namedSections'
 import { newStopId, normalizeRoute } from './routeEdit'
@@ -25,14 +26,20 @@ export interface BackupRoute {
   sections?: NamedSection[]
   /** The street names found for the route's turns, if it has any. */
   streets?: TurnStreet[]
+  /**
+   * The order the driver wants the bundle drops delivered in, as stop ids, if they set one. Left out when they did not, and by backups
+   * made before it existed, so restoring over a route that has one leaves it alone.
+   */
+  bundleOrder?: string[]
 }
 
-/** What a saved route puts in a backup: its name, route, named sections and street names, and not its progress. */
-export const toBackupRoute = (r: Pick<SavedRoute, 'name' | 'route' | 'sections' | 'streets'>): BackupRoute => ({
+/** What a saved route puts in a backup: its name, route, named sections, street names and bundle order, and not its progress. */
+export const toBackupRoute = (r: Pick<SavedRoute, 'name' | 'route' | 'sections' | 'streets' | 'bundleOrder'>): BackupRoute => ({
   name: r.name,
   route: r.route,
   sections: r.sections ?? [],
   streets: r.streets ?? [],
+  ...(r.bundleOrder?.length ? { bundleOrder: r.bundleOrder } : {}),
 })
 
 export type ParseResult = { ok: true; routes: BackupRoute[] } | { ok: false; error: string }
@@ -46,7 +53,7 @@ export function makeBackup(routes: BackupRoute[], now = new Date()): string {
     app: BACKUP_APP,
     version: BACKUP_VERSION,
     exportedAt: now.toISOString(),
-    routes: routes.map(({ name, route, sections, streets }) => ({
+    routes: routes.map(({ name, route, sections, streets, bundleOrder }) => ({
       name,
       route: {
         points: route.points.map((p) => ({ lat: round6(p.lat), lng: round6(p.lng) })),
@@ -59,6 +66,8 @@ export function makeBackup(routes: BackupRoute[], now = new Date()): string {
         ? { sections: sections.map(({ id, name: label, lat, lng, pass }) => ({ id, name: label, lat: round6(lat), lng: round6(lng), pass })) }
         : {}),
       ...(streets ? { streets: streets.map(({ lat, lng, out, name: label }) => ({ lat: round6(lat), lng: round6(lng), out, name: label })) } : {}),
+      // Only when the driver set one: there is no telling an empty order from none, and restoring leaves a route's own order alone.
+      ...(bundleOrder?.length ? { bundleOrder: [...bundleOrder] } : {}),
     })),
   }
   return `${HEADER}\n${JSON.stringify(payload)}`
@@ -95,7 +104,7 @@ function parseStops(raw: unknown, label: string): Stop[] | string {
   const seen = new Set<string>()
   const stops: Stop[] = []
   for (const s of raw) {
-    if (!isObject(s) || !isPoint(s) || (s.type !== 'bundle' && s.type !== 'nothrow' && s.type !== 'request')) {
+    if (!isObject(s) || !isPoint(s) || (s.type !== 'bundle' && s.type !== 'nothrow' && s.type !== 'request' && s.type !== 'block')) {
       return `${label} has a stop that isn't valid.`
     }
     const id = typeof s.id === 'string' && s.id && !seen.has(s.id) ? s.id : newStopId()
@@ -107,7 +116,8 @@ function parseStops(raw: unknown, label: string): Stop[] | string {
       lng: s.lng as number,
       pathIdx: typeof s.pathIdx === 'number' && Number.isFinite(s.pathIdx) ? Math.max(0, Math.trunc(s.pathIdx)) : 0,
     }
-    if (typeof s.qty === 'number' && Number.isFinite(s.qty) && s.qty > 0) stop.qty = Math.trunc(s.qty)
+    // The papers of a bundle drop or an apartment block: a whole number, one at least.
+    if (typeof s.qty === 'number' && Number.isFinite(s.qty) && s.qty >= 1) stop.qty = Math.trunc(s.qty)
     if (s.type === 'request' && typeof s.note === 'string' && s.note.trim()) stop.note = s.note.trim().slice(0, 120)
     if (typeof s.label === 'string' && s.label.trim()) stop.label = s.label.trim().slice(0, 120)
     if (typeof s.address === 'string' && s.address.trim()) stop.address = s.address.trim().slice(0, 120)
@@ -145,12 +155,17 @@ function parseRoute(item: unknown, index: number): BackupRoute | string {
   // Named sections and street names are extras: whatever is wrong with them, the route itself is still restored.
   const sections = normalizeSections(item.sections)
   const streets = normalizeStreets(item.streets)
+  // The order is an extra too, and is kept only for bundle drops this route has: an id that is not one (damaged, or a stop of another
+  // kind) is left out. A stop the backup gave no usable id of its own has a new one, which no order can name.
+  const bundles = new Set(parsedStops.filter((s) => s.type === 'bundle').map((s) => s.id))
+  const bundleOrder = normalizeBundleOrder(item.bundleOrder).filter((id) => bundles.has(id))
   return {
     name: cleanName(typeof item.name === 'string' ? item.name : ''),
     route: normalizeRoute({ points: valid, sideChanges: parseSideChanges(sideChanges), stops: parsedStops }),
     // A list that is there and empty says the route has none. One whose every entry was damaged says nothing: the route's own stay.
     ...(Array.isArray(item.sections) && (sections.length > 0 || item.sections.length === 0) ? { sections } : {}),
     ...(Array.isArray(item.streets) && (streets.length > 0 || item.streets.length === 0) ? { streets } : {}),
+    ...(bundleOrder.length ? { bundleOrder } : {}),
   }
 }
 

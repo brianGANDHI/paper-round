@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest'
+import { alertable } from './alerts'
 import { markDropped, otherPasses } from './bundles'
 import { approachingOccurrences, handledUpTo, occurrences, type Occurrence } from './geo'
 import { advance, makeTrack, startProgress } from './progress'
-import { continueFrom, handledForResume, RESUME_SLACK_M, skippedBy, slackFor } from './resume'
+import { continueFrom, handledForResume, normalizeCourtLegs, RESUME_SLACK_M, sameCourtLegs, skippedBy, slackFor, withCourtLegs } from './resume'
+import { appendPoints } from './routeEdit'
 import { upcomingTurn, type Turn } from './turns'
 import type { Pt, RoundState, Stop } from './types'
+import { drawUturn } from './uturnShape'
 
 const M_PER_DEG = (6371000 * Math.PI) / 180
 /** A spot `x` metres east and `y` metres north of a start in Sydney. */
@@ -195,6 +198,36 @@ describe('where a round that is carried on picks up', () => {
   })
 })
 
+describe("where a round that is carried on picks up, after a house at the head of a court closed with 'U-turn here'", () => {
+  // Up 200 m thrown right, the U-turn (on 6 m, across 5 m to the right, back 14 m) and the road back down from 180 m, thrown right. The house
+  // on the east is on the right going in and nearest the way back, where it is on the left; the one on the west is the other way about.
+  const turned = drawUturn(appendPoints({ points: [], sideChanges: [], stops: [] }, [spot(0, 0), spot(0, 100), spot(0, 200)], 'right'), 'right')!.route
+  const east: Stop = { id: 'e', type: 'nothrow', pathIdx: 0, ...spot(12, 185) }
+  const west: Stop = { id: 'w', type: 'nothrow', pathIdx: 0, ...spot(-12, 190) }
+  const route = { ...appendPoints(turned, [spot(0, 180), spot(0, 0)], 'right'), stops: [east, west] }
+  const allOccs = occurrences(route)
+  const occs = alertable(route, allOccs)
+
+  it('is where the way in passes a house done there, not the way back it is nearest', () => {
+    const [e] = allOccs.filter((o) => o.stop.id === 'e')
+    expect(e.at).toBeGreaterThan(220)
+    expect(occs.find((o) => o.key === 'e')?.at).toBeCloseTo(185, 0)
+    expect(continueFrom(round(), allOccs, new Set(['e']))).toBeCloseTo(185, 0)
+    expect(continueFrom(round(), occs, new Set(['e']))).toBeCloseTo(185, 0)
+  })
+
+  it('is no further than the way in for a house done on the way back, which it cannot tell apart, so nothing still to do going in is passed over', () => {
+    expect(occs.find((o) => o.key === 'w')?.at).toBeGreaterThan(220)
+    expect(continueFrom(round(), allOccs, new Set(['w']))).toBeCloseTo(190, 0)
+    expect(continueFrom(round(), occs, new Set(['w']))).toBeCloseTo(190, 0)
+  })
+
+  it('counts a house before a place it is started from as done by where it alerts', () => {
+    // From the turn at 200 m: the east house was thrown going in, so it is done; the west one is on the way back, still to come.
+    expect(handledForResume(occs, 200)).toEqual(['e'])
+  })
+})
+
 describe('where a round that is carried on picks up, when bundle drops were marked dropped', () => {
   const bundleOcc = (key: string, at: number): Occurrence => ({
     key,
@@ -253,6 +286,33 @@ describe('where a round that is carried on picks up, when bundle drops were mark
     for (const [i, y] of [800, 830].entries()) progress = advance(track, progress, { ...spot(0, y), accuracy: 8, time: 5000 * (i + 1), speed: 6 }, null)!
     expect(progress.along).toBeGreaterThan(820)
     expect(progress.furthest).toBeLessThan(900)
+  })
+})
+
+describe('an apartment block, which is done by being passed and is never dropped', () => {
+  const blockOcc = (key: string, at: number): Occurrence => ({
+    key,
+    stop: { id: key.split('#')[0], type: 'block', pathIdx: 0, lat: 0, lng: 0, qty: 12 },
+    idx: 0,
+    at,
+    off: 0,
+  })
+  const occs = [occ('h1', 300), blockOcc('flats', 1000), occ('h2', 1500)]
+
+  it('is done when the round carries on from past it, and live when from before it', () => {
+    expect(handledForResume(occs, 1100)).toEqual(['h1', 'flats'])
+    expect(handledForResume(occs, 1010)).toEqual(['h1'])
+    expect(handledForResume(occs, 1015.01)).toEqual(['h1', 'flats'])
+  })
+
+  it('counts among the stops that skipping gives up, until it is done', () => {
+    expect(skippedBy(occs, new Set(), 1100)).toBe(2)
+    expect(skippedBy(occs, new Set(['flats']), 1100)).toBe(1)
+  })
+
+  it('says where the round got to, like a house: the last stop done, whatever it is', () => {
+    expect(continueFrom({ handledStopIds: ['h1', 'flats'] }, occs, new Set(['h1', 'flats']))).toBe(1000)
+    expect(continueFrom({ handledStopIds: ['h1'] }, occs, new Set(['h1']))).toBe(300)
   })
 })
 
@@ -343,14 +403,20 @@ describe('how far before a place a stop is still ahead, for the alert distances 
   const occs = [occ('a', 488), occ('b', 495), occ('c', 480)]
 
   it('is the usual slack for any alert distance of 15 metres or more', () => {
-    expect(slackFor({ bundle: 40, nothrow: 40, request: 40 })).toBe(RESUME_SLACK_M)
-    expect(slackFor({ bundle: 15, nothrow: 15, request: 15 })).toBe(RESUME_SLACK_M)
-    expect(slackFor({ bundle: 60, nothrow: 20, request: 30 })).toBe(RESUME_SLACK_M)
+    expect(slackFor({ bundle: 40, nothrow: 40, request: 40, block: 40 })).toBe(RESUME_SLACK_M)
+    expect(slackFor({ bundle: 15, nothrow: 15, request: 15, block: 15 })).toBe(RESUME_SLACK_M)
+    expect(slackFor({ bundle: 60, nothrow: 20, request: 30, block: 25 })).toBe(RESUME_SLACK_M)
   })
 
   it('is the smallest alert zone when that is smaller, so no stop is left neither done nor alerting', () => {
-    expect(slackFor({ bundle: 10, nothrow: 10, request: 10 })).toBe(10)
-    expect(slackFor({ bundle: 40, nothrow: 12, request: 40 })).toBe(12)
+    expect(slackFor({ bundle: 10, nothrow: 10, request: 10, block: 10 })).toBe(10)
+    expect(slackFor({ bundle: 40, nothrow: 12, request: 40, block: 40 })).toBe(12)
+  })
+
+  it('counts the alert zone of an apartment block among them, since it alerts like the others', () => {
+    expect(slackFor({ bundle: 40, nothrow: 40, request: 40, block: 11 })).toBe(11)
+    expect(slackFor({ bundle: 40, nothrow: 40, request: 40, block: 12 })).toBe(12)
+    expect(slackFor({ bundle: 40, nothrow: 40, request: 40, block: 16 })).toBe(RESUME_SLACK_M)
   })
 
   it('moves the line a stop must be behind a place to count as done', () => {
@@ -363,5 +429,55 @@ describe('how far before a place a stop is still ahead, for the alert distances 
   it('does the same for what skipping gives up', () => {
     expect(skippedBy(occs, new Set(), 500, 10)).toBe(2)
     expect(skippedBy(occs, new Set(), 500)).toBe(1)
+  })
+})
+
+describe('what a change of side made of the passes at the head of a court, kept with the round', () => {
+  it('is read back from storage as it was kept, the entries that say out or ahead and nothing else', () => {
+    const kept = { W: 'out', 'E#2': 'ahead' } as const
+    expect(normalizeCourtLegs(JSON.parse(JSON.stringify(kept)))).toEqual(kept)
+    expect(normalizeCourtLegs({ W: 'out', E: 'done', F: 1, G: null, H: ['ahead'] })).toEqual({ W: 'out' })
+  })
+
+  it('is none for a round saved before it was kept, and for anything that is not a set of entries', () => {
+    for (const raw of [undefined, null, 'out', 3, true, ['out'], [['W', 'out']]]) expect(normalizeCourtLegs(raw), JSON.stringify(raw)).toEqual({})
+  })
+
+  it('never lets a key reach the prototype', () => {
+    const read = normalizeCourtLegs(JSON.parse('{"__proto__":"out","constructor":"ahead"}'))
+    expect(Object.getPrototypeOf(read)).toBe(Object.prototype)
+    expect(Object.entries(read)).toEqual([
+      ['__proto__', 'out'],
+      ['constructor', 'ahead'],
+    ])
+  })
+
+  it('is kept with the round in place of what it had, and the key left out when there is none', () => {
+    const before = round({ handledStopIds: ['E'], furthest: 300, courtLegs: { X: 'ahead' } })
+    expect(withCourtLegs(before, { W: 'out' })).toEqual({ handledStopIds: ['E'], furthest: 300, courtLegs: { W: 'out' } })
+    for (const none of [{}, undefined]) {
+      const after = withCourtLegs(before, none)
+      expect(after).toEqual({ handledStopIds: ['E'], furthest: 300 })
+      expect('courtLegs' in after).toBe(false)
+    }
+    // What it is given is not changed, nor kept as the same object.
+    const legs = { W: 'out' } as const
+    expect(withCourtLegs(before, legs).courtLegs).not.toBe(legs)
+    expect(before.courtLegs).toEqual({ X: 'ahead' })
+  })
+
+  it('says the same as another with the same entries, none at all being the same as an empty set', () => {
+    expect(sameCourtLegs(undefined, {})).toBe(true)
+    expect(sameCourtLegs({ W: 'out', E: 'ahead' }, { E: 'ahead', W: 'out' })).toBe(true)
+    expect(sameCourtLegs({ W: 'out' }, { W: 'ahead' })).toBe(false)
+    expect(sameCourtLegs({ W: 'out' }, {})).toBe(false)
+    expect(sameCourtLegs(undefined, { W: 'out' })).toBe(false)
+    expect(sameCourtLegs({ W: 'out' }, { W: 'out', E: 'out' })).toBe(false)
+  })
+
+  it('does not move where a round that is carried on picks up', () => {
+    const occs = [occ('A', 100), occ('W', 285)]
+    const plain = round({ handledStopIds: ['A'], furthest: 300 })
+    expect(continueFrom(withCourtLegs(plain, { W: 'out' }), occs, new Set(['A']))).toBe(continueFrom(plain, occs, new Set(['A'])))
   })
 })

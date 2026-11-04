@@ -544,6 +544,30 @@ describe('backing up saved routes', () => {
     })
   })
 
+  describe('with what a change of side made of the passes at the head of a court', () => {
+    const changed = () => setActiveRound(addRoute(createLibrary(), 'Monday', route), { handledStopIds: ['s1'], furthest: 300, courtLegs: { s2: 'out', 's1#2': 'ahead' } })
+
+    it('leaves it out, as it is progress like the stops done', () => {
+      const r = activeRoute(changed())
+      expect(r.round.courtLegs).toEqual({ s2: 'out', 's1#2': 'ahead' })
+      expect(Object.keys(toBackupRoute(r)).sort()).toEqual(['name', 'route', 'sections', 'streets'])
+      const text = makeBackup([toBackupRoute(r)])
+      for (const word of ['courtLegs', '"ahead"', ':"out"']) expect(text, word).not.toContain(word)
+    })
+
+    it('restores a route with a fresh round without it, also over a route that had it, and ignores it written in by hand', () => {
+      const result = parseBackup(makeBackup(changed().routes.map(toBackupRoute)))
+      expect(result.ok).toBe(true)
+      if (!result.ok) return
+      expect(addImported(createLibrary(), result.routes).routes.find((x) => x.name === 'Monday')!.round).toEqual({ handledStopIds: [] })
+      expect(addImported(changed(), result.routes, 5, 'replace').routes.find((x) => x.name === 'Monday')!.round).toEqual({ handledStopIds: [] })
+      const doctored = makeBackup([{ name: 'Monday', route }]).replace('"name":"Monday"', '"name":"Monday","round":{"handledStopIds":[],"courtLegs":{"s2":"out"}},"courtLegs":{"s2":"out"}')
+      const back = ok(doctored)
+      expect(Object.keys(back[0]).sort()).toEqual(['name', 'route'])
+      expect(addImported(createLibrary(), back).routes[0].round).toEqual({ handledStopIds: [] })
+    })
+  })
+
   it('carries the sections and street names all the way: saved, backed up, read back and restored', () => {
     const text = makeBackup(saved().routes.map(toBackupRoute))
     const result = parseBackup(text)
@@ -555,5 +579,198 @@ describe('backing up saved routes', () => {
     expect(r.streets).toEqual(streets)
     expect(r.route.points).toHaveLength(3)
     expect(r.round).toEqual({ handledStopIds: [] })
+  })
+})
+
+describe('an apartment block in a backup', () => {
+  const withBlocks: Route = {
+    ...route,
+    stops: [
+      { id: 'k1', type: 'block', lat: -33.8691, lng: 151.2101, pathIdx: 0, qty: 12, label: 'Harbour View', address: '9 Quay Street', side: 'left' },
+      { id: 'k2', type: 'block', lat: -33.8699, lng: 151.2125, pathIdx: 1 },
+      { id: 'b1', type: 'bundle', lat: -33.8695, lng: 151.211, pathIdx: 1, qty: 6 },
+    ],
+  }
+
+  it('is restored as a block, with its papers, name, address and side kept', () => {
+    const back = ok(makeBackup([{ name: 'Monday Round', route: withBlocks }]))[0].route.stops
+    expect(back.map((s) => s.type)).toEqual(['block', 'block', 'bundle'])
+    expect(back[0]).toMatchObject({ id: 'k1', qty: 12, label: 'Harbour View', address: '9 Quay Street', side: 'left' })
+    expect('qty' in back[1]).toBe(false)
+  })
+
+  it('keeps the papers as a whole number of one or more, for a block as for a bundle', () => {
+    const odd = makeBackup([{ name: 'X', route: withBlocks }]).replace('"qty":12', '"qty":12.9').replace('"qty":6', '"qty":0.4')
+    const back = ok(odd)[0].route.stops
+    expect(back[0].qty).toBe(12)
+    expect('qty' in back[2]).toBe(false)
+    for (const bad of ['0', '-3', '"12"', 'null']) {
+      const text = makeBackup([{ name: 'X', route: withBlocks }]).replace('"qty":12', `"qty":${bad}`)
+      expect('qty' in ok(text)[0].route.stops[0], bad).toBe(false)
+    }
+  })
+
+  it('does not keep a note, which only a special request has', () => {
+    const text = makeBackup([{ name: 'X', route: withBlocks }]).replace('"id":"k1"', '"id":"k1","note":"Buzz 4"')
+    expect('note' in ok(text)[0].route.stops[0]).toBe(false)
+  })
+
+  it('still refuses a stop of a kind it does not know', () => {
+    const text = makeBackup([{ name: 'X', route: withBlocks }]).replace('"type":"block"', '"type":"house"')
+    const result = parseBackup(text)
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error).toContain("has a stop that isn't valid")
+  })
+
+  it('goes all the way: saved, backed up, read back and restored', () => {
+    const lib = addRoute(createLibrary(), 'Monday', withBlocks)
+    const result = parseBackup(makeBackup(lib.routes.map(toBackupRoute)))
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    const restored = addImported(createLibrary(), result.routes).routes.find((x) => x.name === 'Monday')!
+    expect(restored.route.stops).toEqual(withBlocks.stops)
+  })
+})
+
+describe("the driver's order of the bundle drops in a backup", () => {
+  const bundles: Route = {
+    ...route,
+    stops: [
+      { id: 'b1', type: 'bundle', lat: -33.8691, lng: 151.2101, pathIdx: 0, qty: 12, label: 'Co-op' },
+      { id: 'b2', type: 'bundle', lat: -33.8699, lng: 151.2125, pathIdx: 1, qty: 6, label: 'Spar' },
+      { id: 'b3', type: 'bundle', lat: -33.8695, lng: 151.211, pathIdx: 1, label: 'School' },
+      { id: 'n1', type: 'nothrow', lat: -33.8693, lng: 151.2105, pathIdx: 0 },
+      { id: 'k1', type: 'block', lat: -33.8694, lng: 151.2108, pathIdx: 0, qty: 8 },
+    ],
+  }
+  const withOrder = (bundleOrder?: string[]): BackupRoute => ({ name: 'Monday', route: bundles, ...(bundleOrder ? { bundleOrder } : {}) })
+  const orderOf = (text: string) => ok(text)[0].bundleOrder
+
+  describe('writing it', () => {
+    it('writes it with the route when the driver set one', () => {
+      expect(makeBackup([withOrder(['b3', 'b1', 'b2'])])).toContain('"bundleOrder":["b3","b1","b2"]')
+    })
+
+    it('writes nothing when there is none, so a backup of such a route is as it was before', () => {
+      expect(makeBackup([withOrder()])).not.toContain('bundleOrder')
+      expect(makeBackup([{ name: 'Monday', route: bundles, bundleOrder: [] }])).not.toContain('bundleOrder')
+    })
+
+    it('does not change the order it is given', () => {
+      const given = ['b3', 'b1']
+      makeBackup([withOrder(given)])
+      expect(given).toEqual(['b3', 'b1'])
+    })
+  })
+
+  describe('taking it from a saved route', () => {
+    const saved = (order?: string[]) => {
+      let lib = addRoute(createLibrary(), 'Monday', bundles)
+      if (order) lib = { ...lib, routes: lib.routes.map((r) => (r.id === lib.activeId ? { ...r, bundleOrder: order } : r)) }
+      return activeRoute(lib)
+    }
+
+    it('has it when the route has one', () => {
+      expect(toBackupRoute(saved(['b2', 'b1']))).toEqual({ name: 'Monday', route: bundles, sections: [], streets: [], bundleOrder: ['b2', 'b1'] })
+      expect(Object.keys(toBackupRoute(saved(['b2', 'b1']))).sort()).toEqual(['bundleOrder', 'name', 'route', 'sections', 'streets'])
+    })
+
+    it('has no key for it when the route has none', () => {
+      expect('bundleOrder' in toBackupRoute(saved())).toBe(false)
+      expect('bundleOrder' in toBackupRoute({ ...saved(), bundleOrder: [] })).toBe(false)
+    })
+  })
+
+  describe('reading it back', () => {
+    it('is the order that was written', () => {
+      expect(orderOf(makeBackup([withOrder(['b3', 'b1', 'b2'])]))).toEqual(['b3', 'b1', 'b2'])
+    })
+
+    it('keeps it for the routes of a backup it belongs to, each their own', () => {
+      const back = ok(makeBackup([withOrder(['b2']), { name: 'Saturday', route: bundles, bundleOrder: ['b3', 'b2'] }, withOrder()]))
+      expect(back.map((r) => r.bundleOrder)).toEqual([['b2'], ['b3', 'b2'], undefined])
+    })
+
+    it('has none from a backup made before it existed', () => {
+      expect('bundleOrder' in ok(makeBackup([withOrder()]))[0]).toBe(false)
+    })
+
+    it('keeps only the ids of bundle drops this route has, once each, in order', () => {
+      // n1 is a house, k1 an apartment block, 'zzz' is not a stop: none can be put in order.
+      expect(orderOf(makeBackup([withOrder(['n1', 'b3', 'zzz', 'k1', 'b3', 'b1'])]))).toEqual(['b3', 'b1'])
+    })
+
+    it('leaves out whatever is not an id', () => {
+      const text = makeBackup([withOrder(['b1'])]).replace('"bundleOrder":["b1"]', '"bundleOrder":["b2",7,null,"",["b3"],"b1"]')
+      expect(orderOf(text)).toEqual(['b2', 'b1'])
+    })
+
+    it('has none when what is there is not a list, is empty, or names no bundle of the route', () => {
+      for (const junk of ['"b1"', '5', '{"0":"b1"}', 'null', '[]', '["zzz"]', '[1,2,3]', '["n1","k1"]']) {
+        const text = makeBackup([withOrder(['b1'])]).replace('"bundleOrder":["b1"]', `"bundleOrder":${junk}`)
+        expect('bundleOrder' in ok(text)[0], junk).toBe(false)
+      }
+    })
+
+    it('does not refuse the route for a damaged order, as it is an extra like the sections', () => {
+      const text = makeBackup([withOrder(['b1'])]).replace('"bundleOrder":["b1"]', '"bundleOrder":{"a":{"b":1}}')
+      const back = ok(text)
+      expect(back[0].route.stops).toHaveLength(5)
+    })
+
+    it('does not name a stop that was given a new id because its own was no good', () => {
+      const text = makeBackup([withOrder(['b1', 'b2'])]).replace('"id":"b1"', '"id":7')
+      const order = orderOf(text)
+      expect(order).toEqual(['b2'])
+      expect(ok(text)[0].route.stops.map((s) => s.id)).toContain('b2')
+      expect(ok(text)[0].route.stops.some((s) => s.id === 'b1')).toBe(false)
+    })
+
+    it('is bounded by the stops the route has', () => {
+      const flood = JSON.stringify(Array.from({ length: 6000 }, (_, i) => `s${i}`))
+      const text = makeBackup([withOrder(['b1'])]).replace('"bundleOrder":["b1"]', `"bundleOrder":${flood}`)
+      expect('bundleOrder' in ok(text)[0]).toBe(false)
+    })
+  })
+
+  describe('all the way, from the phone and back', () => {
+    const ordered = () => {
+      let lib = addRoute(createLibrary(), 'Monday', bundles)
+      lib = { ...lib, routes: lib.routes.map((r) => (r.id === lib.activeId ? { ...r, bundleOrder: ['b3', 'b1', 'b2'] } : r)) }
+      return lib
+    }
+
+    it('restores it into a library with nothing else', () => {
+      const result = parseBackup(makeBackup(ordered().routes.map(toBackupRoute)))
+      expect(result.ok).toBe(true)
+      if (!result.ok) return
+      const restored = addImported(createLibrary(), result.routes)
+      expect(restored.routes.find((x) => x.name === 'Monday')!.bundleOrder).toEqual(['b3', 'b1', 'b2'])
+      expect(restored.routes.find((x) => x.name === 'Monday')!.round).toEqual({ handledStopIds: [] })
+    })
+
+    it('restores it as a copy when the name is taken, leaving the one here as it is', () => {
+      const result = parseBackup(makeBackup(ordered().routes.map(toBackupRoute)))
+      if (!result.ok) throw new Error(result.error)
+      const lib = ordered()
+      const restored = addImported(lib, result.routes)
+      expect(restored.routes.find((x) => x.name === 'Monday 2')!.bundleOrder).toEqual(['b3', 'b1', 'b2'])
+      expect(restored.routes.find((x) => x.name === 'Monday')!.bundleOrder).toEqual(['b3', 'b1', 'b2'])
+    })
+
+    it('takes the order of the backup over a route of the same name, and keeps its own when the backup has none', () => {
+      const result = parseBackup(makeBackup([withOrder(['b2', 'b3'])]))
+      if (!result.ok) throw new Error(result.error)
+      expect(addImported(ordered(), result.routes, 5, 'replace').routes.find((x) => x.name === 'Monday')!.bundleOrder).toEqual(['b2', 'b3'])
+      const none = parseBackup(makeBackup([withOrder()]))
+      if (!none.ok) throw new Error(none.error)
+      expect(addImported(ordered(), none.routes, 5, 'replace').routes.find((x) => x.name === 'Monday')!.bundleOrder).toEqual(['b3', 'b1', 'b2'])
+    })
+
+    it('does not carry progress with it', () => {
+      const lib = { ...ordered(), routes: ordered().routes.map((r) => ({ ...r, round: { handledStopIds: ['b1'], dropped: ['b1'], furthest: 200 } })) }
+      const text = makeBackup(lib.routes.map(toBackupRoute))
+      for (const word of ['dropped', 'handledStopIds', 'furthest']) expect(text, word).not.toContain(word)
+    })
   })
 })

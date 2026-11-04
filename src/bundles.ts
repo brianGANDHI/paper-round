@@ -1,8 +1,8 @@
 import { plural } from './format'
-import type { Occurrence } from './geo'
+import { haversine, type Occurrence } from './geo'
 import { formatDistance } from './routeEdit'
 import { spokenDistance } from './turns'
-import type { RoundState } from './types'
+import type { Pt, RoundState, Stop } from './types'
 
 /*
  * Bundle drops in a round. A bundle drop is somewhere papers are left in a bundle by hand, so unlike a house on the round it
@@ -22,6 +22,12 @@ import type { RoundState } from './types'
  * other pass of the stop (see `markDropped`): one not done yet becomes done without ever alerting, and one that was missed is not missed
  * any more, and the list shows each as covered by the drop. The papers of a stop are counted once (see `bundleTotals`), and a stop
  * counts as missed only when no pass of it is left to come and none was dropped. Taking the drop back puts every pass as it was.
+ *
+ * Two layers. The list of PASSES (`bundleList`) is in route order and its 'next' and 'later' go by where the driver is along the route:
+ * it is how the rules above are kept, and is not what the driver sees as the next bundle. What the driver sees is the list of STOPS in
+ * THEIR order (`bundleRows`): one row for each bundle stop, in the order the driver put them in (`SavedRoute.bundleOrder`), which never
+ * changes by itself. The next bundle is the first in that order that is still to do, wherever it is, and its distance is the straight
+ * line from the phone. The bar, the list and the voice after a drop all go by the rows.
  */
 
 /** What became of a bundle, or where it is: dropped, missed, skipped over, the one coming next, or one that comes after that. */
@@ -130,7 +136,7 @@ export function bundleList(
     return {
       key: o.key,
       stopId: o.stop.id,
-      name: label ?? address ?? UNNAMED_BUNDLE,
+      name: bundleNameOf(o.stop),
       address: label && address ? address : null,
       papers: o.stop.qty && o.stop.qty > 0 ? o.stop.qty : null,
       at: o.at,
@@ -144,7 +150,10 @@ export function bundleList(
   })
 }
 
-/** The bundle drop coming next, or null when there is none ahead. */
+/**
+ * The pass coming next by where the driver is along the route, or null when there is none ahead. This is the route's own order, kept for
+ * the passes: the bundle the driver is shown as next is `nextInOrder` of `bundleRows`, which goes by the driver's list.
+ */
 export const nextBundle = (list: readonly BundleItem[]): BundleItem | null => list.find((b) => b.status === 'next') ?? null
 
 /** What became of a bundle stop as a whole, however many times the route goes by it: see `bundleStops`. */
@@ -154,9 +163,22 @@ export type StopStatus = 'dropped' | 'missed' | 'skipped' | 'toDrop'
 export interface BundleStop {
   stopId: string
   name: string
+  /** The address to show under the name, when the stop has a name and an address too. */
+  address: string | null
   /** How many papers it gets, once: not once for each pass. Null when no amount was set. */
   papers: number | null
   status: StopStatus
+  /** The keys of every time the route goes by it, in route order. */
+  keys: string[]
+  /** How many times the route goes by it. */
+  passes: number
+  /**
+   * The key "Mark dropped" acts on: the first pass in route order that is still to come or missed. Null when there is nothing to mark
+   * (the stop is dropped, or was skipped over). Dropping that pass settles the others, so one key is enough for the stop.
+   */
+  markKey: string | null
+  /** The key of the pass that was dropped, which "Undo" takes back; null when none was. */
+  undoKey: string | null
 }
 
 /**
@@ -174,7 +196,20 @@ export function bundleStops(list: readonly BundleItem[]): BundleStop[] {
   return [...byStop.values()].map((passes) => {
     const has = (...statuses: BundleStatus[]) => passes.some((b) => statuses.includes(b.status))
     const status: StopStatus = has('dropped') ? 'dropped' : has('next', 'later') ? 'toDrop' : has('missed') ? 'missed' : 'skipped'
-    return { stopId: passes[0].stopId, name: passes[0].name, papers: passes[0].papers, status }
+    const [first] = passes
+    // A pass of a stop dropped on another is covered by it and so skipped, and a stop skipped over has nothing left: neither has one to mark.
+    const markable = passes.find((b) => b.status === 'next' || b.status === 'later' || b.status === 'missed')
+    return {
+      stopId: first.stopId,
+      name: first.name,
+      address: first.address,
+      papers: first.papers,
+      status,
+      keys: passes.map((b) => b.key),
+      passes: passes.length,
+      markKey: markable?.key ?? null,
+      undoKey: passes.find((b) => b.status === 'dropped')?.key ?? null,
+    }
   })
 }
 
@@ -193,12 +228,8 @@ export interface BundleTotals {
   toDropPapers: number
 }
 
-/**
- * What has been dropped, what is missed and what is still to drop, counted a stop at a time (see `bundleStops`): a stop the route goes
- * by twice is one delivery, so its papers are counted once, and dropping it on either pass drops it.
- */
-export function bundleTotals(list: readonly BundleItem[]): BundleTotals {
-  const stops = bundleStops(list)
+/** The totals of stops that each have their papers and what became of them: the one place the counting is done. */
+function totalsOf(stops: readonly Pick<BundleStop, 'papers' | 'status'>[]): BundleTotals {
   const totals: BundleTotals = { total: stops.length, dropped: 0, missed: 0, skipped: 0, toDrop: 0, droppedPapers: 0, missedPapers: 0, toDropPapers: 0 }
   for (const stop of stops) {
     const papers = stop.papers ?? 0
@@ -217,6 +248,12 @@ export function bundleTotals(list: readonly BundleItem[]): BundleTotals {
   return totals
 }
 
+/**
+ * What has been dropped, what is missed and what is still to drop, counted a stop at a time (see `bundleStops`): a stop the route goes
+ * by twice is one delivery, so its papers are counted once, and dropping it on either pass drops it.
+ */
+export const bundleTotals = (list: readonly BundleItem[]): BundleTotals => totalsOf(bundleStops(list))
+
 /** Whether the list offers "Mark dropped" for a bundle: one missed, or one still to come. (Not the one dropped already, nor one skipped over.) */
 export const canMarkDropped = (b: Pick<BundleItem, 'status'>): boolean => b.status === 'missed' || b.status === 'later'
 
@@ -230,15 +267,18 @@ export function bundleAheadText(ahead: number): string {
   return formatDistance(Math.round(ahead / 10) * 10)
 }
 
-/** The line that is always showing for the bundle coming next: "Next bundle: Co-op · 340 m · 12 papers" (no amount, no papers). */
+/**
+ * A line of words for the pass coming next by place on the route (see `nextBundle`): "Next bundle: Co-op · 340 m · 12 papers" (no amount,
+ * no papers). The bar's own line, for the bundle next in the driver's list, is `barBundle` in bundleFlow.ts.
+ */
 export function nextBundleLine(next: BundleItem): string {
   const papers = papersText(next.papers)
   return [`Next bundle: ${next.name}`, bundleAheadText(next.ahead), ...(papers ? [papers] : [])].join(' · ')
 }
 
 /**
- * The line for the round's bar: the next bundle, or when there is none ahead what is left to say ("All bundles dropped", or
- * "No more bundles ahead", with how many were missed). Null when the route has no bundle drops, so the bar shows nothing.
+ * A line of words for the round's bar, by place on the route (see `nextBundleLine`): the next bundle, or when there is none ahead what is
+ * left to say ("All bundles dropped", or "No more bundles ahead", with how many were missed). Null when the route has no bundle drops.
  */
 export function bundleLine(list: readonly BundleItem[]): string | null {
   if (!list.length) return null
@@ -259,9 +299,259 @@ export function bundleTotalsText(totals: BundleTotals): string {
   ].join(' · ')
 }
 
-/** What is said after a bundle is dropped, to name the next: "Next bundle, Co-op, 300 metres". Right here, no distance. */
-export function nextBundleSpeech(next: BundleItem): string {
-  return `Next bundle, ${next.name}${next.ahead >= 15 ? `, ${spokenDistance(next.ahead)}` : ''}`
+/**
+ * What is said after a bundle is dropped, to name the next in the driver's order (see `nextInOrder`): "Next bundle, Co-op, 300 metres".
+ * The distance is the straight line from the phone. Right here, or with the phone's position not known, there is no distance.
+ */
+export function nextBundleSpeech(next: Pick<BundleRow, 'name' | 'distance'>): string {
+  const { distance } = next
+  return `Next bundle, ${next.name}${distance !== null && distance >= 15 ? `, ${spokenDistance(distance)}` : ''}`
+}
+
+/* ------------------------------------------------------------------ *
+ * The driver's order. The list the driver sees has one row for each bundle STOP, in the order the driver put them in (kept with the
+ * route as `SavedRoute.bundleOrder`, a list of stop ids). It never changes by itself: new bundles go after those in it, in route
+ * order, and ids of stops that no longer exist are ignored, all worked out each time it is read (`orderedStops`), so editing the route
+ * never has to touch it.
+ * ------------------------------------------------------------------ */
+
+/** The most ids kept in a bundle order, so damaged data can't fill the phone: as many as a backup holds stops. */
+export const MAX_BUNDLE_ORDER = 5000
+
+/** What the name of a bundle stop is: its name, else its address, else `UNNAMED_BUNDLE`. */
+export const bundleNameOf = (stop: Pick<Stop, 'label' | 'address'>): string => trimmed(stop.label) ?? trimmed(stop.address) ?? UNNAMED_BUNDLE
+
+/** An order read back from storage or a backup, made safe to use: only ids (text), none twice, no more than `MAX_BUNDLE_ORDER`. */
+export function normalizeBundleOrder(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return []
+  const seen = new Set<string>()
+  for (const id of raw) {
+    if (seen.size >= MAX_BUNDLE_ORDER) break
+    if (typeof id === 'string' && id) seen.add(id)
+  }
+  return [...seen]
+}
+
+/**
+ * The stops in the driver's order: those whose id is in `order`, in its sequence, then any that are not (new ones) in the order they are
+ * given, so give them in route order. An id in `order` with no stop is ignored (the stop was deleted), and so is an id twice. Nothing
+ * is changed, and with no order the stops come out as they went in.
+ */
+export function orderedStops<T extends { id: string }>(stops: readonly T[], order: readonly string[] | undefined): T[] {
+  const byId = new Map<string, T[]>()
+  for (const stop of stops) {
+    const same = byId.get(stop.id)
+    if (same) same.push(stop)
+    else byId.set(stop.id, [stop])
+  }
+  const out: T[] = []
+  for (const id of order ?? []) {
+    const same = byId.get(id)
+    if (!same) continue
+    out.push(...same)
+    byId.delete(id)
+  }
+  for (const stop of stops) if (byId.has(stop.id)) out.push(stop)
+  return out
+}
+
+/** The place a bundle would move to going one way from `from`: the nearest that is not one to hop over, or -1 when there is none. */
+function neighbour(list: readonly string[], from: number, step: 1 | -1, hop: ReadonlySet<string> | undefined): number {
+  for (let at = from + step; at >= 0 && at < list.length; at += step) if (!hop?.has(list[at])) return at
+  return -1
+}
+
+/**
+ * The order with the bundle `id` moved `delta` places up (negative) or down (positive), as the whole new order: every id in `ids`
+ * (the bundles there are now), in the driver's order with new ones last (see `orderedStops`), so the order the driver sees is the
+ * order that is kept. One place is a swap with the neighbour. The ids in `hop` (bundles already dropped, missed or skipped, which are
+ * not waiting to be delivered) are hopped over rather than counted, so a bundle moves past the ones that are done in one go. At the top
+ * or the bottom there is nowhere further to go and it stays. An `id` that is not among `ids` changes nothing. A new array is returned.
+ */
+export function moveBundle(order: readonly string[] | undefined, ids: readonly string[], id: string, delta: number, hop?: ReadonlySet<string>): string[] {
+  const list = orderedStops(
+    ids.map((i) => ({ id: i })),
+    order,
+  ).map((s) => s.id)
+  const step = delta < 0 ? -1 : 1
+  let at = list.indexOf(id)
+  for (let places = Math.abs(Math.trunc(delta)); at >= 0 && places > 0; places--) {
+    const to = neighbour(list, at, step, hop)
+    if (to < 0) break
+    list.splice(at, 1)
+    list.splice(to, 0, id)
+    at = to
+  }
+  return list
+}
+
+/** Whether `moveBundle` would move the bundle one place up (`delta` -1) or down (+1), which is whether its button is of any use. */
+export function canMoveBundle(order: readonly string[] | undefined, ids: readonly string[], id: string, delta: number, hop?: ReadonlySet<string>): boolean {
+  const list = orderedStops(
+    ids.map((i) => ({ id: i })),
+    order,
+  ).map((s) => s.id)
+  const at = list.indexOf(id)
+  return at >= 0 && neighbour(list, at, delta < 0 ? -1 : 1, hop) >= 0
+}
+
+/**
+ * Where a bundle stop stands in the driver's list: the one coming next (the first in the list still to do, wherever it is), one to do
+ * after that, dropped, missed (driven past in its zone with no tap), or skipped over.
+ */
+export type RowStatus = 'next' | 'todo' | 'dropped' | 'missed' | 'skipped'
+
+/** The words for each status of a row, as the list shows them. */
+export const ROW_STATUS_LABEL: Record<RowStatus, string> = { next: 'Next', todo: 'To do', dropped: 'Dropped', missed: 'Missed', skipped: 'Skipped' }
+
+/** Whether a bundle is still to do: the next or one after it. Missed and skipped ones are not, and are never the next. */
+export const isToDo = (status: RowStatus): boolean => status === 'next' || status === 'todo'
+
+/** The status of a row as the totals count it: the next and those after it are all still to drop. */
+const stopStatusOf = (status: RowStatus): StopStatus => (status === 'next' || status === 'todo' ? 'toDrop' : status)
+
+/** One bundle stop in the driver's list, however many times the route goes by it. */
+export interface BundleRow {
+  /** The stop's id, which the order is kept by. */
+  id: string
+  /** What the place is called: the stop's name, or else its address, or else `UNNAMED_BUNDLE`. */
+  name: string
+  /** The address to show under the name, when the stop has a name and an address too. */
+  address: string | null
+  /** How many papers, once, or null when no amount was set. */
+  papers: number | null
+  /** How many times the route goes by it. */
+  passes: number
+  status: RowStatus
+  /** The straight line from the phone to the stop, in metres, or null while the phone's position is not known. */
+  distance: number | null
+  /** The key "Mark dropped" acts on (see `BundleStop.markKey`), or null when the row has no such button. */
+  markKey: string | null
+  /** The key "Undo" acts on, the pass that was dropped, or null when the row has no such button. */
+  undoKey: string | null
+}
+
+/**
+ * The driver's list: one row for each bundle stop on the route, in the driver's order (`order`, as kept: stale or missing ids are put
+ * right here, see `orderedStops`), each with what became of it counted as one delivery whichever pass it was made on (see `bundleStops`).
+ * `here` is the phone's position, or null before it is known. The first row still to do is 'next', and the rest still to do 'todo'.
+ * Where the driver is along the route does not matter: the next is the next in the list.
+ */
+export function bundleRows(
+  occs: readonly Occurrence[],
+  round: Pick<RoundState, 'handledStopIds' | 'dropped' | 'missed'>,
+  order: readonly string[] | undefined,
+  here: Pt | null,
+): BundleRow[] {
+  const where = new Map<string, Pt>()
+  for (const o of occs) if (o.stop.type === 'bundle' && !where.has(o.stop.id)) where.set(o.stop.id, o.stop)
+  const stops = bundleStops(bundleList(occs, round, 0)).map((s): BundleRow => {
+    const spot = where.get(s.stopId)
+    return {
+      id: s.stopId,
+      name: s.name,
+      address: s.address,
+      papers: s.papers,
+      passes: s.passes,
+      status: s.status === 'toDrop' ? 'todo' : s.status,
+      distance: here && spot ? haversine(here, spot) : null,
+      markKey: s.markKey,
+      undoKey: s.undoKey,
+    }
+  })
+  const rows = orderedStops(stops, order)
+  const first = rows.findIndex((r) => r.status === 'todo')
+  if (first >= 0) rows[first] = { ...rows[first], status: 'next' }
+  return rows
+}
+
+/** A bundle drop in the order editor: what it is called, its papers and, in a round, where it stands. */
+export interface EditorBundle {
+  /** The stop's id, which the order is kept by. */
+  id: string
+  name: string
+  /** How many papers, when an amount was set. */
+  qty?: number | null
+  /**
+   * Where it stands in a round. Dropped, missed and skipped bundles are shown but have no buttons, as they are not waiting to be delivered,
+   * and a bundle moved past them hops over them. Left out in Setup, where every bundle is still to do.
+   */
+  status?: RowStatus
+}
+
+/** The ids of the bundles in a round that are not waiting to be delivered: dropped, missed or skipped over. */
+const finishedIds = (bundles: readonly EditorBundle[]): Set<string> => new Set(bundles.filter((b) => b.status !== undefined && !isToDo(b.status)).map((b) => b.id))
+
+/** One row of the order editor, as words and flags: what to show, and which of Move up and Move down is of any use. */
+export interface EditorRow {
+  id: string
+  name: string
+  /** Its place in the order, from 1. */
+  place: number
+  status: RowStatus | null
+  statusLabel: string | null
+  /** "12 papers", or null when no amount was set. */
+  papers: string | null
+  /** Already dropped, missed or skipped: shown dimmed, with no buttons. */
+  finished: boolean
+  canUp: boolean
+  canDown: boolean
+}
+
+/** The rows of the order editor: the bundles in the driver's order (see `orderedStops`), each with whether it can move up or down. */
+export function editorRows(bundles: readonly EditorBundle[], order: readonly string[] | undefined): EditorRow[] {
+  const ids = bundles.map((b) => b.id)
+  const hop = finishedIds(bundles)
+  return orderedStops(bundles, order).map((b, i) => ({
+    id: b.id,
+    name: b.name,
+    place: i + 1,
+    status: b.status ?? null,
+    statusLabel: b.status ? ROW_STATUS_LABEL[b.status] : null,
+    papers: papersText(b.qty && b.qty > 0 ? b.qty : null),
+    finished: hop.has(b.id),
+    canUp: !hop.has(b.id) && canMoveBundle(order, ids, b.id, -1, hop),
+    canDown: !hop.has(b.id) && canMoveBundle(order, ids, b.id, 1, hop),
+  }))
+}
+
+/** The whole new order when the editor's bundle `id` is moved up (-1) or down (+1), hopping over those already done. */
+export const editorMove = (bundles: readonly EditorBundle[], order: readonly string[] | undefined, id: string, delta: -1 | 1): string[] =>
+  moveBundle(order, bundles.map((b) => b.id), id, delta, finishedIds(bundles))
+
+/**
+ * The bundle drops of a route for the order editor in Setup, with every one still to do: each stop once, in the order the route first
+ * reaches it, which is where a bundle added since is put in the order (see `orderedStops`). `occs` are the route's occurrences.
+ */
+export const setupBundles = (occs: readonly Occurrence[]): EditorBundle[] =>
+  bundleStops(bundleList(occs, { handledStopIds: [] }, 0)).map((s) => ({ id: s.stopId, name: s.name, qty: s.papers }))
+
+/** The bundle coming next in the driver's list, or null when none is left to do. */
+export const nextInOrder = (rows: readonly BundleRow[]): BundleRow | null => rows.find((r) => r.status === 'next') ?? null
+
+/** How many bundle drops are left to do: stops, so a street driven twice counts once. */
+export const bundlesLeft = (rows: readonly Pick<BundleRow, 'status'>[]): number => rows.filter((r) => isToDo(r.status)).length
+
+/** The totals of the driver's list, counted as `bundleTotals` counts them: a stop once, with its papers once. */
+export const rowTotals = (rows: readonly Pick<BundleRow, 'papers' | 'status'>[]): BundleTotals =>
+  totalsOf(rows.map((r) => ({ papers: r.papers, status: stopStatusOf(r.status) })))
+
+/** How far a bundle is from the phone, for the bar: "340 m", "Now" when it is here, or null while the phone's position is not known. */
+export const distanceText = (distance: number | null): string | null => (distance === null ? null : bundleAheadText(distance))
+
+/** How far a bundle is, for the list: "340 m away", "Here now", or null while the phone's position is not known. */
+export function awayText(distance: number | null): string | null {
+  const text = distanceText(distance)
+  return text === null ? null : text === 'Now' ? 'Here now' : `${text} away`
+}
+
+/** The list's header: how many are left, and how many of the whole are dropped: "3 bundles left · 5 of 8 dropped". Empty for no bundles. */
+export function bundleLeftText(totals: BundleTotals): string {
+  if (!totals.total) return ''
+  const of = `${totals.dropped} of ${totals.total} dropped`
+  if (totals.toDrop > 0) return `${plural(totals.toDrop, 'bundle', 'bundles')} left · ${of}`
+  if (totals.dropped < totals.total) return `No bundles left · ${of}`
+  return totals.total === 1 ? 'The bundle is dropped' : `All ${totals.total} bundles dropped`
 }
 
 const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((s): s is string => typeof s === 'string') : [])

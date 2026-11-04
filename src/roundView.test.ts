@@ -1,8 +1,24 @@
 import { describe, expect, it } from 'vitest'
 import { barBundle } from './bundleFlow'
-import { bundleList } from './bundles'
+import { bundleRows } from './bundles'
 import type { Occurrence } from './geo'
-import { afterUserMove, barCover, barLead, barMiddle, fitPadding, followAnimation, FREE_LOOK_MS, settleZoom, stepZoom, type LookState, type ZoomGoal, type ZoomMap } from './roundView'
+import type { NextBundle } from './RoundBar'
+import {
+  afterUserMove,
+  barBundleSaid,
+  barCover,
+  barLead,
+  barLeft,
+  barMiddle,
+  fitPadding,
+  followAnimation,
+  FREE_LOOK_MS,
+  settleZoom,
+  stepZoom,
+  type LookState,
+  type ZoomGoal,
+  type ZoomMap,
+} from './roundView'
 
 const following: LookState = { overview: false, headingUp: false, freeLook: false }
 const looking: LookState = { ...following, freeLook: true }
@@ -122,7 +138,7 @@ describe('what takes the middle of the bar', () => {
 
 describe('the word the next-bundle line leads with', () => {
   const occ = (id: string, at: number): Occurrence => ({ key: id, stop: { id, type: 'bundle', lat: -33.87, lng: 151.2, pathIdx: 0, label: 'Co-op' }, idx: 0, at, off: 0 })
-  const real = barBundle(bundleList([occ('a', 100)], { handledStopIds: [] }, 0))?.lead ?? ''
+  const real = barBundle(bundleRows([occ('a', 100)], { handledStopIds: [] }, undefined, null))?.lead ?? ''
 
   it('is what the bar really leads with, so the short form cannot drift from it', () => {
     expect(real).toBe('Next bundle')
@@ -139,6 +155,52 @@ describe('the word the next-bundle line leads with', () => {
   it('is left alone when the line says how the round stands instead of what is next', () => {
     expect(barLead('Bundles', true)).toBe('Bundles')
     expect(barLead('Bundles', false)).toBe('Bundles')
+  })
+})
+
+describe('how many bundle drops are left, on the bar', () => {
+  it('says how many are left in a few words', () => {
+    expect(barLeft(3)).toBe('3 left')
+    expect(barLeft(1)).toBe('1 left')
+    expect(barLeft(24)).toBe('24 left')
+  })
+
+  it('says nothing when none are left', () => {
+    expect(barLeft(0)).toBeNull()
+  })
+
+  it('is what the bar really has for the bundles left, so the words cannot drift from it', () => {
+    const rows = bundleRows([occ('a', 100), occ('b', 200)], { handledStopIds: [] }, undefined, null)
+    expect(barLeft(barBundle(rows)?.left ?? 0)).toBe('2 left')
+  })
+
+  function occ(id: string, at: number): Occurrence {
+    return { key: id, stop: { id, type: 'bundle', lat: -33.87, lng: 151.2, pathIdx: 0 }, idx: 0, at, off: 0 }
+  }
+})
+
+describe('what a screen reader hears of the bundle line', () => {
+  const line = (extra: Partial<NextBundle> = {}): NextBundle => ({ lead: 'Next bundle', name: 'Corner Store', distance: '340 m', papers: '12 papers', missed: 0, left: 3, ...extra })
+
+  it('is everything the line has, whatever fits on the screen, with how many are left spelt out', () => {
+    expect(barBundleSaid(line())).toBe('Next bundle: Corner Store, 340 m, 3 bundles left, 12 papers.')
+  })
+
+  it('says 1 bundle left for one', () => {
+    expect(barBundleSaid(line({ left: 1 }))).toBe('Next bundle: Corner Store, 340 m, 1 bundle left, 12 papers.')
+  })
+
+  it('says how many are missed', () => {
+    expect(barBundleSaid(line({ missed: 2 }))).toBe('Next bundle: Corner Store, 340 m, 3 bundles left, 12 papers. 2 missed.')
+  })
+
+  it('leaves out what the line does not have: the distance while the phone has no position, and the papers', () => {
+    expect(barBundleSaid(line({ distance: null, papers: null }))).toBe('Next bundle: Corner Store, 3 bundles left.')
+  })
+
+  it('says how the round stands when none are left', () => {
+    expect(barBundleSaid({ lead: 'Bundles', name: 'No bundles left', distance: null, papers: null, missed: 1, left: 0 })).toBe('Bundles: No bundles left. 1 missed.')
+    expect(barBundleSaid({ lead: 'Bundles', name: 'All bundles dropped', distance: null, papers: null, missed: 0, left: 0 })).toBe('Bundles: All bundles dropped.')
   })
 })
 

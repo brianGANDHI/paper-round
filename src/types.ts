@@ -10,8 +10,11 @@ export interface Pt {
 export const SIDES = ['both', 'left', 'right', 'transit'] as const
 export type Side = (typeof SIDES)[number]
 export const isSide = (v: unknown): v is Side => SIDES.some((s) => s === v)
-/** A bundle drop, a house that doesn't want a paper thrown, or a special request: somewhere that needs something done by hand. */
-export type StopType = 'bundle' | 'nothrow' | 'request'
+/**
+ * A bundle drop, a house that doesn't want a paper thrown, a special request, or an apartment block: somewhere that needs something done
+ * by hand or that is told of ahead. An apartment block takes a number of papers thrown at it (`qty`), and is told of with the side it is on.
+ */
+export type StopType = 'bundle' | 'nothrow' | 'request' | 'block'
 
 /** Side applies from `idx` along the path until the next change. */
 export interface SideChange {
@@ -44,6 +47,12 @@ export interface Route {
   stops: Stop[]
 }
 
+/**
+ * What a change of side part way through a round made of a pass at the head of a court (see `keepAlertsAhead` in alerts.ts): left out,
+ * as it is thrown only on the leg the driver has gone by and is quiet on the leg still ahead, or kept on the leg ahead, where it is thrown.
+ */
+export type CourtLeg = 'out' | 'ahead'
+
 export interface RoundState {
   handledStopIds: string[]
   /** The furthest the round has got along the route, in metres, kept so that carrying on later starts from there. */
@@ -60,6 +69,13 @@ export interface RoundState {
    * A bundle done that is in neither was skipped over (by skipping ahead, carrying on from a spot, or catching up). Left out when none.
    */
   missed?: string[]
+  /**
+   * The passes at the head of a court that a change of side part way through the round left out or kept on the leg ahead of the driver,
+   * by the same keys, so that carrying the round on after the round screen was left (or the app reloaded) puts them back as they were,
+   * with nothing worked out again from where the driver is: see `courtLegsOf` and `resumedLegs` in alerts.ts. Left out when there are
+   * none, and by rounds saved before it existed.
+   */
+  courtLegs?: Record<string, CourtLeg>
 }
 
 /**
@@ -100,6 +116,12 @@ export interface SavedRoute {
   sections?: NamedSection[]
   /** The street names of the route's turns, if looked up. Kept beside the route for the same reason. */
   streets?: TurnStreet[]
+  /**
+   * The order the driver wants the bundle drops delivered in, as stop ids. It never changes by itself: bundles that are not in it (new
+   * ones) come after those that are, in route order, and ids of stops that no longer exist are ignored. Kept beside the route so editing
+   * the route never drops it. Left out until the driver has set one.
+   */
+  bundleOrder?: string[]
 }
 
 /** Everything saved on the phone: every route, and which one is in use. */

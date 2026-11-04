@@ -1,0 +1,362 @@
+/*
+ * Apartment blocks: the teal alert with the number of papers to throw there, the marker on the map, and the choice of kind of stop that
+ * now has four kinds. The alert's own rules are in
+ * index.css; these add to them for a block. A block is done by being passed, so its alert has no button and, like every alert, takes
+ * no touch: touches go straight through it to the map.
+ */
+
+/* ------------------------------------------------------------------ *
+ * The alert. Teal, so it is not taken for a bundle drop's blue, a no-throw house's red or a special request's purple, and deep enough
+ * for white type (5.3 to 1; a shade deeper in dark mode). Its details are across the top, as a bundle drop's with a button are, and
+ * the papers are in a panel of their own under them, as big as the Dropped button is.
+ * ------------------------------------------------------------------ */
+.stop-alert.teal {
+  --teal: #00796b;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  padding: 8px 12px 10px;
+  background: var(--teal);
+}
+
+@media (prefers-color-scheme: dark) {
+  .stop-alert.teal {
+    --teal: #00695c;
+  }
+}
+
+.block-body {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.stop-alert.teal .stop-alert-side {
+  width: 58px;
+  height: 54px;
+}
+
+/* A size under the other alerts' bigger ones, so "Apartment block" (the longest title there is) still fits whole beside the distance and a waiting count. */
+.stop-alert.teal .stop-alert-title {
+  font-size: 18px;
+}
+
+.stop-alert.teal .stop-alert-dist {
+  font-size: 18px;
+}
+
+/* The house number's plate is white with the banner's colour on it, as on the other banners. */
+.stop-alert.teal .stop-alert-num {
+  color: var(--teal);
+}
+
+.stop-alert.teal .stop-alert-name {
+  font-size: 18px;
+  font-weight: 800;
+  line-height: 1.15;
+}
+
+/*
+ * How many papers to throw: the count is what the driver is looking for, so it is the biggest thing in the banner. A pale panel like
+ * the side's, across the width, with the number large and the word beside it. Nothing to tap, so nothing in it looks like a button.
+ */
+.block-papers {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 8px;
+  padding: 2px 14px 6px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.2);
+  white-space: nowrap;
+}
+
+.block-count {
+  font-size: 44px;
+  font-weight: 800;
+  line-height: 1.05;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+}
+
+.block-unit {
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+/* On the narrowest phones (up to 360 px wide, which takes in 320) the type is a size down, and the title still fits in full beside the distance. */
+@media (max-width: 360px) {
+  .stop-alert.teal {
+    padding: 8px 10px 10px;
+  }
+
+  .block-body {
+    gap: 8px;
+  }
+
+  .stop-alert.teal .stop-alert-side {
+    width: 50px;
+    height: 50px;
+  }
+
+  .stop-alert.teal .stop-alert-title {
+    font-size: 16px;
+  }
+
+  .stop-alert.teal .stop-alert-dist {
+    font-size: 16px;
+  }
+
+  .stop-alert.teal .stop-alert-name {
+    font-size: 16px;
+  }
+
+  .block-count {
+    font-size: 38px;
+  }
+
+  .block-unit {
+    font-size: 20px;
+  }
+}
+
+/* A phone on its side has little height: the banner is a little tighter. */
+@media (orientation: landscape) and (max-height: 600px) {
+  .stop-alert.teal {
+    gap: 4px;
+    padding: 6px 10px 8px;
+  }
+
+  .stop-alert.teal .stop-alert-name {
+    font-size: 17px;
+  }
+
+  .block-papers {
+    padding: 0 14px 4px;
+  }
+
+  .block-count {
+    font-size: 34px;
+  }
+
+  .block-unit {
+    font-size: 19px;
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * A block still to come while another stop is the alert: a no-throw house, a bundle drop or a special request. That stop outranks it,
+ * so its banner keeps its own details (the house's row of plates, the request's note, the bundle's Dropped button), and a teal strip under
+ * them says the block is there, with its papers and its side, so the count is not hidden while the other stop is up. The banner's details
+ * go across the top, as the block's own banner has them, and the strip across the width under them; a bundle drop's Dropped button stays
+ * under the strip. The strip is the block's teal, which does not flash with the red, and has the papers big and the side at its edge, as
+ * the block's own banner does. A request's purple only colours the banner, so it takes the strip as the red does.
+ * ------------------------------------------------------------------ */
+.stop-alert.with-block {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  padding: 8px 12px 10px;
+}
+
+/* A bundle drop's banner is already a column (bundles.css), with a wider gap: with a strip it keeps the strip's, whichever sheet comes first. */
+.stop-alert.ask.with-block {
+  gap: 6px;
+}
+
+.block-strip {
+  --teal: #00796b;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 52px;
+  padding: 4px 6px;
+  border-radius: 14px;
+  background: var(--teal);
+  white-space: nowrap;
+}
+
+@media (prefers-color-scheme: dark) {
+  .block-strip {
+    --teal: #00695c;
+  }
+}
+
+.block-strip-side {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 50px;
+  height: 44px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.24);
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.1;
+}
+
+.block-strip-glyph {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.24);
+}
+
+/* The title takes the room left, and is cut with an ellipsis only as a last resort (four figures of papers on the narrowest phone). */
+.block-strip-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+/* The count is what the driver looks for, so it is the biggest thing in the strip, with the word under it to keep the strip narrow. */
+.block-strip-papers {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 0 4px;
+  line-height: 1;
+}
+
+.block-strip-count {
+  font-size: 28px;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+}
+
+.block-strip-unit {
+  font-size: 12px;
+  font-weight: 800;
+}
+
+@media (max-width: 360px) {
+  .stop-alert.with-block {
+    padding: 8px 10px 10px;
+  }
+
+  .stop-alert.ask.with-block {
+    padding: 8px 10px 10px;
+  }
+
+  .block-strip-title {
+    font-size: 14px;
+  }
+
+  .block-strip-count {
+    font-size: 26px;
+  }
+}
+
+@media (orientation: landscape) and (max-height: 600px) {
+  .stop-alert.with-block {
+    gap: 4px;
+    padding: 6px 10px 8px;
+  }
+
+  .stop-alert.ask.with-block {
+    gap: 4px;
+    padding: 6px 10px 8px;
+  }
+
+  .block-strip {
+    min-height: 44px;
+  }
+
+  .block-strip-side {
+    height: 38px;
+  }
+
+  .block-strip-glyph {
+    width: 38px;
+    height: 38px;
+  }
+
+  .block-strip-count {
+    font-size: 24px;
+  }
+}
+
+/*
+ * The list of bundle drops and the menu come up from the bottom over a dimmed map, with the alerts above the dimming. Opened while this
+ * alert, or another stop's with a block in it, is up they stay below it, as they do under a bundle drop's Dropped button, so their headers
+ * are not under the banner. A bundle drop's banner with the strip as well is the tallest there is, the strip's height and its gap more than
+ * the room kept under a Dropped button, so they keep that much more. That is anywhere but a phone on its side, where the alert is at the
+ * left and they are at the right.
+ */
+@media not all and (orientation: landscape) and (max-height: 600px) {
+  .screen:has(.stop-alert.teal) .bundles-sheet,
+  .screen:has(.stop-alert.teal) .round-menu,
+  .screen:has(.block-strip) .bundles-sheet,
+  .screen:has(.block-strip) .round-menu {
+    max-height: calc(100% - 330px);
+  }
+
+  .screen:has(.stop-alert.ask.with-block) .bundles-sheet,
+  .screen:has(.stop-alert.ask.with-block) .round-menu {
+    max-height: calc(100% - 390px);
+  }
+}
+
+/* On a short portrait screen that leaves little room for the list, so the three figures give way to it. */
+@media (orientation: portrait) and (max-height: 720px) {
+  .screen:has(.stop-alert.teal) .bundles-summary,
+  .screen:has(.block-strip) .bundles-summary {
+    display: none;
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * The marker on the map: a rounded square, not the circle of the other stops, in the block's teal with a building in it, in the colours
+ * of the other stops' markers (a white edge, so it reads on any map). The map is turned to the driver's heading, so the building is
+ * turned back (--unrot, set by the map) to stay upright. One that is done is faded, like the other stops.
+ * ------------------------------------------------------------------ */
+.block-mark > span {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 3px solid #fff;
+  border-radius: 9px;
+  color: #fff;
+  background: #00897b;
+  transform: rotate(var(--unrot, 0deg));
+}
+
+.block-mark.done > span {
+  opacity: 0.45;
+}
+
+.block-mark svg {
+  display: block;
+}
+
+/* ------------------------------------------------------------------ *
+ * The kinds of stop to add. With an apartment block there are four, and their labels are wider than a phone has for one row, so the choice
+ * sits two by two, each at least 42 px tall (more specific than the control's own rules for four or more choices, which keep a label on
+ * one line).
+ * ------------------------------------------------------------------ */
+.stop-types .segmented {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px;
+}
+
+.stop-types .segmented.many button {
+  min-height: 42px;
+  padding: 0 8px;
+  font-size: 15px;
+  white-space: normal;
+}

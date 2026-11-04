@@ -15,7 +15,35 @@ export const SIDE_LABEL: Record<Side, string> = { both: 'Both Sides', left: 'Lef
 /** The same in a word, for where there is little room. */
 export const SIDE_SHORT: Record<Side, string> = { both: 'Both', left: 'Left', right: 'Right', transit: 'Transit' }
 
-export const STOP_COLOR = { bundle: '#007aff', nothrow: '#ff3b30', request: '#af52de' } as const
+/**
+ * The colour of each kind of stop on the map and in the list. An apartment block is a blue-green teal: not the blue of a bundle drop, the
+ * red of a no-throw house, the purple of a request, nor the green of the left side (that one is a yellower green, and a line). It is drawn as
+ * a rounded square with a building in it, not a circle, so it is told by its shape as well as its colour.
+ */
+export const STOP_COLOR = { bundle: '#007aff', nothrow: '#ff3b30', request: '#af52de', block: '#00897b' } as const
+
+/**
+ * An apartment block's glyph, as SVG shapes on the 24-unit grid of `Icon`, which has no building: a tall block with a window or two on
+ * each floor and a door. The alert (when the side can't be told) and the map marker both draw it, as lines in the colour of the text.
+ */
+export const BLOCK_GLYPH =
+  '<rect x="5" y="3" width="14" height="18" rx="1.5"/><path d="M8.5 7.5h1.5M14 7.5h1.5M8.5 11.5h1.5M14 11.5h1.5"/><path d="M10 21v-4h4v4"/>'
+
+/** The class of an apartment block's marker on the map (see `block.css`): faded once the block is done. */
+export const blockMarkClass = (done: boolean): string => (done ? 'block-mark done' : 'block-mark')
+
+/** What is inside an apartment block's marker: a box (`.block-mark > span`, the rounded square) with the building in it, as lines in the colour of the text. */
+export const BLOCK_MARK_HTML = `<span><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${BLOCK_GLYPH}</svg></span>`
+
+/** How big the marker's box is, in pixels (it is `.block-mark > span` in `block.css`): the icon is anchored at its middle. */
+export const BLOCK_MARK_PX = 28
+
+/**
+ * The pane the apartment blocks' markers are drawn in: over the route's lines, and under the overlay pane with the other stops, the
+ * driver's dot and the guide line, so the dot is never hidden by a block as the driver passes it. (They are markers and not circles to
+ * have a shape and a glyph, which a circle can't, and so are not in the overlay pane.)
+ */
+export const BLOCK_PANE = { name: 'block-marks', zIndex: 390 } as const
 
 /** How a section is drawn: a white casing under a coloured line, so the line reads on any map background. */
 export interface LineStyle {

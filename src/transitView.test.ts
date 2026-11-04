@@ -84,6 +84,19 @@ describe('the card to show', () => {
       expect(guidanceToShow(both, ctx(900, { transit: false, heading: 0 }))).toEqual({ kind: 'turn', turn: both[0], ahead: 100 })
       expect(guidanceToShow(both, ctx(900, { transit: false, after: 1000 }))).toEqual({ kind: 'turn', turn: both[1], ahead: 160 })
     })
+
+    it('goes through the turns of a short court in order, and never back to one the furthest reached is through', () => {
+      // In, round at the end 10 m on and out 7.5 m after that, the turn out a swing over two pieces: as routeTurns reads a court 8 m deep.
+      const court = [turnAt(1000, 90, 0), turnAt(1010, 180, 90), { ...turnAt(1017.5, 90, 270), from: 1015, to: 1020 }]
+      expect(guidanceToShow(court, ctx(999, { transit: false }))).toEqual({ kind: 'turn', turn: court[0], ahead: 1 })
+      expect(guidanceToShow(court, ctx(1004, { transit: false }))).toEqual({ kind: 'turn', turn: court[1], ahead: 6 })
+      expect(guidanceToShow(court, ctx(1012, { transit: false }))).toEqual({ kind: 'turn', turn: court[2], ahead: 5.5 })
+      // A fix that slips back into the court after the turn out brings the U-turn back only for a driver not known to have got as far as it.
+      expect(guidanceToShow(court, ctx(1006, { transit: false, reached: 1009 }))).toEqual({ kind: 'turn', turn: court[1], ahead: 4 })
+      expect(guidanceToShow(court, ctx(1006, { transit: false, reached: 1012 }))).toEqual({ kind: 'turn', turn: court[2], ahead: 11.5 })
+      // The same on a stretch of transit.
+      expect(guidanceToShow(court, ctx(1006, { reached: 1012 }))).toEqual({ kind: 'turn', turn: court[2], ahead: 11.5 })
+    })
   })
 
   describe('on a stretch of transit', () => {

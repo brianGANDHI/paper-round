@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { alertable } from './alerts'
+import { alertable, quietReachFor } from './alerts'
 import { EXTENT_MERGE_M, EXTENT_MIN_M, sideChangeNote, sideChangeSentence, sideExtents, type ExtentKey } from './driveEdit'
 import { occurrences } from './geo'
 import { paintMetres, sections, setSectionSide } from './routeEdit'
@@ -631,6 +631,27 @@ describe('what a change of side does to the no-throw houses', () => {
   it('does not count a house that is far from the road, which is never quiet', () => {
     const far = withHouses(house('far', 2000, 'nothrow', 90))
     expect(sideChangeNote(far, paintMetres(far, 1200, 2800, 'transit')!)).toBeNull()
+  })
+
+  it('goes by how far from the route a house can be and still be quiet, as it is told', () => {
+    // A house 55 m back on the east of a road thrown to the left: on the side that is not thrown, but further back than the least reach (40 m).
+    const road = withHouses(house('e', 2000, 'nothrow', 55))
+    const right = paintMetres(road, 1200, 2800, 'right')!
+    const transit = paintMetres(road, 1200, 2800, 'transit')!
+    // At the least reach it alerts whatever is thrown, so nothing changes.
+    expect(sideChangeNote(road, right)).toBeNull()
+    expect(sideChangeNote(road, transit)).toBeNull()
+    expect(sideChangeSentence(road, right)).toBe('')
+    // At the reach for the alert distance of 40 m (70 m) it is quiet on the left and wakes when the right is thrown.
+    expect(sideChangeNote(road, right, 70)).toBe('1 no-throw house will now alert')
+    expect(sideChangeSentence(road, right, 70)).toBe('1 no-throw house will now alert.')
+    expect(sideChangeNote(right, road, 70)).toBe('1 no-throw house will now stay quiet')
+    expect(sideChangeSentence(right, road, 70)).toBe('1 no-throw house will now stay quiet. A no-throw house only alerts on a side you throw.')
+    // Quiet on both the left and on transit.
+    expect(sideChangeNote(road, transit, 70)).toBeNull()
+    // And beyond that reach it never changes.
+    expect(sideChangeNote(road, right, 50)).toBeNull()
+    expect(sideChangeNote(road, right, quietReachFor(60))).toBe('1 no-throw house will now alert')
   })
 
   it('says nothing for a route with no houses, or no route', () => {

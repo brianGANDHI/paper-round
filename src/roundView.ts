@@ -1,7 +1,9 @@
+import type { NextBundle } from './RoundBar'
+
 /**
  * How the driver looks at the round's map, kept apart from the screen so it can be tested: free look (the map left where the driver
  * put it, instead of following them), how much of the map the bar along the bottom covers, the room kept round the whole route when
- * it is fitted, what the zoom buttons do to the map, and what takes the middle of the bar.
+ * it is fitted, what the zoom buttons do to the map, what takes the middle of the bar, and the words of the next-bundle line in it.
  */
 
 /** Free look ends this long after the driver last touched the map, in milliseconds. */
@@ -80,6 +82,18 @@ export function barMiddle(has: { problem: boolean; located: boolean; bundle: boo
 /** The word the next-bundle line leads with. "Next bundle" gives way to "Next" when the line is `crowded` (the pill that counts the bundles missed is on it, or the caution button takes room beside it), so the rest of the line keeps its room. */
 export function barLead(lead: string, crowded: boolean): string {
   return crowded && lead === 'Next bundle' ? 'Next' : lead
+}
+
+/** How many bundle drops are left to do, as the bar's line says it: "3 left". Null when there are none, so nothing is shown. */
+export const barLeft = (left: number): string | null => (left > 0 ? `${left} left` : null)
+
+/**
+ * What a screen reader hears of the bar's bundle line, whatever of it fits on the screen: "Next bundle: Co-op, 340 m, 3 bundles left,
+ * 12 papers. 1 missed." The distance is left out while the phone's position is not known.
+ */
+export function barBundleSaid(bundle: NextBundle): string {
+  const left = bundle.left > 0 ? `, ${bundle.left} ${bundle.left === 1 ? 'bundle' : 'bundles'} left` : ''
+  return `${bundle.lead}: ${bundle.name}${bundle.distance ? `, ${bundle.distance}` : ''}${left}${bundle.papers ? `, ${bundle.papers}` : ''}${bundle.missed > 0 ? `. ${bundle.missed} missed` : ''}.`
 }
 
 /** The part of a Leaflet map that the zoom buttons use. */

@@ -8,7 +8,7 @@
  */
 
 /** How long each stop alert's beeps last, in seconds: the voice waits this long to follow one. */
-export const ALERT_SECONDS = { bundle: 0.15, request: 0.37, nothrow: 0.95, offRoute: 0.4 } as const
+export const ALERT_SECONDS = { bundle: 0.15, block: 0.27, request: 0.37, nothrow: 0.95, offRoute: 0.4 } as const
 
 /** How long the tone that confirms a bundle drop lasts, in seconds. */
 export const DROPPED_SECONDS = 0.18
@@ -76,6 +76,19 @@ export function createSound(makeContext: () => AudioContext, sleep: (ms: number)
     beep(880, 0, 0.15)
     navigator.vibrate?.(200)
     return ALERT_SECONDS.bundle
+  }
+
+  /**
+   * An apartment block: two short notes of the same pitch, a little lower than a bundle drop's single beep, to tell it from that, from a
+   * special request's two going up and from a no-throw house's three low ones. A block has nothing to tap, unlike a bundle drop, so the
+   * driver can tell by ear which it is.
+   */
+  function block(): number {
+    void ctx?.resume()
+    beep(740, 0, 0.1)
+    beep(740, 0.17, 0.1)
+    navigator.vibrate?.([100, 70, 100])
+    return ALERT_SECONDS.block
   }
 
   /** A special request: two notes going up, to tell it from a bundle drop's single beep and a no-throw house's three. */
@@ -155,7 +168,7 @@ export function createSound(makeContext: () => AudioContext, sleep: (ms: number)
     keep = null
   }
 
-  return { unlock, ready, bundle, request, noThrow, offRoute, dropped, tick, startKeepAlive, stopKeepAlive, keepingAlive: () => keep !== null }
+  return { unlock, ready, bundle, block, request, noThrow, offRoute, dropped, tick, startKeepAlive, stopKeepAlive, keepingAlive: () => keep !== null }
 }
 
 /** The sound of the app, on the phone's own audio. */

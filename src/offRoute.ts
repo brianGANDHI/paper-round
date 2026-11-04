@@ -9,7 +9,11 @@ import type { Pt } from './types'
  * is sure, reminds while it lasts, and says when the driver is back. Coming back at the place the route was left is nothing to
  * remark on; coming back somewhere else, further on or earlier, is the driver's to choose, since carrying on from there skips
  * stops, and going back for them is a decision, not a guess. So is a jump to another part of the route that the tracker made
- * without the phone ever being far enough away to call it off (a cross street between two streets of the route).
+ * without the phone ever being far enough away to call it off (a cross street between two streets of the route), and a big one
+ * that it made with the phone on the route all the time (a turn missed into a loop that comes back to the street, or one onto a
+ * street already driven). A court passed by, which the route goes into and out of again, is not that: it is skipped in silence. Nor is
+ * a big jump that the phone made unseen (no fix to go by, for a while), if the time since the place last followed can explain it; nor
+ * one on the way to where the round was started, skipped to or carried on from, which is the driver's own way there.
  *
  * It is a plain function from one state and one fix to the next state, and what should be told to the driver (if
  * anything), so that a drive can be played through it in a test.
@@ -42,6 +46,24 @@ export const REMIND_MOVE_M = 50
 export const AWAY_M = 30
 /** A move along the route that this many metres exceeds the ground between the two places is a jump, not driving. */
 export const LEAP_M = 150
+/**
+ * A jump bigger than this, in metres (as LEAP_M measures it), is a wrong turn onto another part of the route even when the phone was never away
+ * from it: a turn missed into a loop that comes back to the street, or one onto a street already driven. A smaller one is a court, or a street
+ * driven out and back, that the driver went by without driving, up to 150 m deep (twice that of route, and the 25 to 35 m the tracker holds
+ * its junction for once the car has driven on past it): the driver is on the route all the time, and that is not to be asked about. Nor is a
+ * bigger one that the phone made unseen, when the time since the place last followed explains it (see BLIND_MPS), or one on the way to where
+ * the round was started, skipped to or carried on from (see `RouteFix.approaching`).
+ */
+export const BIG_LEAP_M = 2 * 150 + LEAP_M
+/**
+ * Unseen for a while (see `RouteFix.blind`), the phone may have driven the route at up to this many metres a second (72 km/h) in between: a jump
+ * along the route from the place last followed that the time since then explains at this pace is the driver having followed it, not a wrong turn.
+ */
+export const BLIND_MPS = 20
+/** The phone is unseen once no fix it could go by (OFF_MAX_ACCURACY_M or better) has come for more than this many milliseconds. */
+export const BLIND_GAP_MS = 10_000
+/** On the way to where the round was started, skipped to or carried on from, the phone is there once it is on the route within this many metres along it of that spot, or past it. */
+export const ARRIVE_NEAR_M = 100
 /** Being taken back, the round carries on from here by itself when the driver is this many metres further from the place left than they got. */
 export const RETURN_GIVE_UP_M = 500
 
@@ -73,6 +95,19 @@ export interface RouteFix {
    * it is read the same way: a lost fix with a gap of a few metres can only be this.)
    */
   doubt?: boolean
+  /**
+   * True when the screen had no fix it could go by (none at all, or none of OFF_MAX_ACCURACY_M or better) for more than BLIND_GAP_MS since the
+   * place last followed, or did not ask the machine about one (beside a stop away from the route): the place last followed is stale, and a jump
+   * from it that the time since explains (see BLIND_MPS) is the driver having driven the route unseen. Left out, it is false. (See `OffWatch`.)
+   */
+  blind?: boolean
+  /**
+   * True on the way to where the round was started, skipped to or carried on from, until the phone has been on the route within ARRIVE_NEAR_M
+   * along it of that spot, or past it. A jump along the route bigger than BIG_LEAP_M without straying is then the tracker following the driver's
+   * own way there, past a loop or a street driven out and back that lies before the spot: it is taken up without a word. Left out, it is false.
+   * (See `OffWatch`.)
+   */
+  approaching?: boolean
 }
 
 export type OffPhase = 'on' | 'off' | 'returning' | 'rejoined'
@@ -92,6 +127,11 @@ export interface OffState {
   phase: OffPhase
   /** Where the route was last followed (null before the first fix on it). Kept while off. */
   left: LeftAt | null
+  /**
+   * When the fix that gave the place last followed was taken (ms), on the route: how long the phone has had to drive on from it, unseen. Null
+   * when that is not known (a place from a button, or nowhere), and then no jump is put down to that.
+   */
+  followedAt: number | null
   /** Fixes in a row far from the route, and when the first was (ms), while counting towards 'off'. */
   far: { fixes: number; since: number | null }
   /**
@@ -100,7 +140,7 @@ export interface OffState {
    */
   near: number
   nearFrom: Pt | null
-  /** While on the route: whether any fix since the place last followed was away from it (lost, or beyond AWAY_M), which a jump needs. */
+  /** While on the route: whether any fix since the place last followed was away from it (lost, or beyond AWAY_M), which a jump needs unless it is bigger than BIG_LEAP_M. */
   away: boolean
   /** When the driver was last reminded (ms), and where they were, while off. */
   remindedAt: number | null
@@ -115,13 +155,16 @@ export interface OffState {
 const noFar: OffState['far'] = Object.freeze({ fixes: 0, since: null })
 
 /** Nothing seen yet: on the route, with nowhere left behind. Shared, so frozen. */
-export const startOffRoute: OffState = Object.freeze({ phase: 'on', left: null, far: noFar, near: 0, nearFrom: null, away: false, remindedAt: null, remindedFrom: null, rejoin: null })
+export const startOffRoute: OffState = Object.freeze({ phase: 'on', left: null, followedAt: null, far: noFar, near: 0, nearFrom: null, away: false, remindedAt: null, remindedFrom: null, rejoin: null })
 
 /** What the driver should be told: the moment they went off, a reminder, the moment they are back, back but elsewhere, or that the round carried on by itself. */
 export type OffEvent = 'went-off' | 'remind' | 'back' | 'rejoined-elsewhere' | 'carried-on' | null
 
-/** On the route, with the place last followed (and whether the fix it came from was away from it). Everything that was being counted is forgotten. */
-const onAt = (left: LeftAt | null, away = false): OffState => ({ ...startOffRoute, left, away })
+/**
+ * On the route, with the place last followed (whether the fix it came from was away from it, and when it was taken, if that is known).
+ * Everything that was being counted is forgotten.
+ */
+const onAt = (left: LeftAt | null, away = false, time: number | null = null): OffState => ({ ...startOffRoute, left, away, followedAt: time })
 
 /** Off the route, with the place it was left, reminding from `time` and from where the driver is. */
 const offFrom = (left: LeftAt | null, time: number | null, at: Pt): OffState => ({ ...startOffRoute, phase: 'off', left, remindedAt: time, remindedFrom: at })
@@ -183,11 +226,23 @@ function going(state: OffState, fix: RouteFix): boolean {
 /** Whether a near fix is at the place the route was left, or near enough to it: always, when there is nowhere it was left. */
 const nearLeft = (left: LeftAt | null, fix: RouteFix): boolean => left === null || Math.abs(fix.along - left.along) <= REJOIN_NEAR_M
 
-/** Whether a fix is on the route much further along it than the ground from the place last followed can explain. */
-const leapt = (left: LeftAt, fix: RouteFix): boolean => Math.abs(fix.along - left.along) - haversine(left.at, fix.at) > LEAP_M
+/**
+ * How much further along the route a fix is than the ground from the place last followed can explain, in metres (either way along it): more
+ * than LEAP_M is a jump, and more than BIG_LEAP_M a big one.
+ */
+const leap = (left: LeftAt, fix: RouteFix): number => Math.abs(fix.along - left.along) - haversine(left.at, fix.at)
 
 /** Whether the fixes near the route have covered ground enough to be driving along it rather than across it. */
 const ranFar = (from: Pt | null, fix: RouteFix): boolean => from === null || !(haversine(from, fix.at) < REJOIN_RUN_M)
+
+/**
+ * Whether a move along the route from the place last followed is the driver having driven it unseen (see `RouteFix.blind`): the time since that
+ * place was followed explains it, at BLIND_MPS. Not when that time is not known.
+ */
+function drivenUnseen(state: OffState, fix: RouteFix): boolean {
+  const span = elapsed(state.followedAt, timeOf(fix))
+  return fix.blind === true && state.left !== null && span !== null && Math.abs(fix.along - state.left.along) <= (span / 1000) * BLIND_MPS
+}
 
 /**
  * One more far fix in a run of them, and whether the run is long enough to be off the route. A run whose fixes are far apart in time
@@ -209,20 +264,24 @@ type Step = { state: OffState; event: OffEvent }
 /**
  * On the route: count the fixes far from it, and go off when there have been enough, for long enough. A jump along the route after straying
  * (a fix on the route much further along it than the ground from the place last followed explains) is held back like a rejoining: told once it
- * has gone on for some distance, since a street crossed would otherwise be told too, and until then the place last followed is kept.
+ * has gone on for some distance, since a street crossed would otherwise be told too, and until then the place last followed is kept. So is a
+ * jump bigger than BIG_LEAP_M without straying, and the run it starts goes on to the end, as one after straying does: but not on the way to where
+ * the round was started, skipped to or carried on from (`approaching`), nor when the phone was unseen and the time since the place last followed
+ * explains it (`blind`), which are the driver's own way along the route.
  */
 function stepOn(state: OffState, fix: RouteFix, reading: Reading): Step {
   const time = timeOf(fix)
   if (reading === 'near') {
     const here = placeOf(fix)!
-    if (state.away && state.left && leapt(state.left, fix)) {
+    const jump = state.left ? leap(state.left, fix) : 0
+    if (jump > LEAP_M && (state.away || state.near > 0 || (jump > BIG_LEAP_M && !fix.approaching && !drivenUnseen(state, fix)))) {
       const near = state.near + 1
       const nearFrom = state.near === 0 ? fix.at : state.nearFrom
       // (A single fix covers no ground, so this is never the first.)
       if (ranFar(nearFrom, fix)) return { state: rejoinedAt(state.left, here, time), event: 'rejoined-elsewhere' }
       return { state: { ...state, far: noFar, near, nearFrom }, event: null }
     }
-    return { state: onAt(here, fix.gap > AWAY_M), event: null }
+    return { state: onAt(here, fix.gap > AWAY_M, time), event: null }
   }
   const away = state.away || strays(fix)
   const quiet = state.far.fixes === 0 && state.near === 0 && away === state.away
@@ -238,7 +297,7 @@ function stepOff(state: OffState, fix: RouteFix, reading: Reading): Step {
   const near = reading === 'near' ? state.near + 1 : 0
   const nearFrom = near === 0 ? null : near === 1 ? fix.at : state.nearFrom
   if (near >= BACK_FIXES) {
-    if (nearLeft(state.left, fix)) return { state: onAt(placeOf(fix)), event: 'back' }
+    if (nearLeft(state.left, fix)) return { state: onAt(placeOf(fix), false, time), event: 'back' }
     // Somewhere else on the route: not a street crossed, but driven along.
     if (ranFar(nearFrom, fix)) return { state: rejoinedAt(state.left, placeOf(fix)!, time), event: 'rejoined-elsewhere' }
   }
@@ -262,7 +321,7 @@ function clocked(state: OffState, time: number | null): OffState {
 /** Back on the route in a new place, waiting to hear what to do: back if they return to where it was left, off again if they stray, on by itself after a while. */
 function stepRejoined(state: OffState, fix: RouteFix, reading: Reading): Step {
   const time = timeOf(fix)
-  if (reading === 'near' && nearLeft(state.left, fix)) return { state: onAt(placeOf(fix)), event: 'back' }
+  if (reading === 'near' && nearLeft(state.left, fix)) return { state: onAt(placeOf(fix), false, time), event: 'back' }
   const ticking = clocked(state, time)
   if (reading === 'far') {
     const counted = countFar(ticking.far, time)
@@ -273,7 +332,7 @@ function stepRejoined(state: OffState, fix: RouteFix, reading: Reading): Step {
   // The clock is of time on the new part of the route, so a fix that is not near doesn't stop it. But the round carries on from
   // a place that is on the route, and from a driver who is going somewhere, so it waits for a fix that has both.
   const driven = elapsed(calm.rejoin?.time ?? null, time)
-  if (driven !== null && driven >= CARRY_ON_SECONDS * 1000 && reading === 'near' && moving(fix)) return { state: onAt(placeOf(fix)), event: 'carried-on' }
+  if (driven !== null && driven >= CARRY_ON_SECONDS * 1000 && reading === 'near' && moving(fix)) return { state: onAt(placeOf(fix), false, time), event: 'carried-on' }
   return { state: calm, event: null }
 }
 
@@ -293,14 +352,14 @@ function stepReturning(state: OffState, fix: RouteFix, reading: Reading): Step {
     const here = placeOf(fix)!
     if (nearLeft(state.left, fix)) {
       const near = calm.near + 1
-      if (near >= BACK_FIXES) return { state: onAt(here), event: 'back' }
+      if (near >= BACK_FIXES) return { state: onAt(here, false, time), event: 'back' }
       return { state: { ...calm, near }, event: null }
     }
     // On the new part of the route, going to where it was left: nothing changes, unless they are getting nowhere.
     const away = Math.abs(fix.along - state.left!.along)
     const closest = calm.rejoin ? Math.abs(calm.rejoin.along - state.left!.along) : null
     if (closest === null || away < closest) return { state: { ...calm, rejoin: { ...here, time } }, event: null }
-    if (away - closest >= RETURN_GIVE_UP_M) return { state: onAt(here), event: 'carried-on' }
+    if (away - closest >= RETURN_GIVE_UP_M) return { state: onAt(here, false, time), event: 'carried-on' }
     return { state: calm, event: null }
   }
   return { state: calm.near === 0 ? calm : { ...calm, near: 0 }, event: null }
@@ -345,6 +404,64 @@ export function takeMeBack(state: OffState): OffState {
   // Where they came back onto the route is where they are nearest, so far, to where it was left.
   return { ...startOffRoute, phase: 'returning', left: state.left, rejoin: state.phase === 'rejoined' ? state.rejoin : null }
 }
+
+/**
+ * What the Round screen keeps beside the machine's state, from fix to fix, to tell it what a fix alone does not: whether the phone has been
+ * unseen since the place last followed (`RouteFix.blind`), and whether it is still on its way to where the round was started, skipped to or
+ * carried on from (`RouteFix.approaching`). It is kept by the plain functions below, so that a drive played through the machine in a test keeps
+ * it just as the screen does.
+ */
+export interface OffWatch {
+  /** When the last fix that the machine could go by (OFF_MAX_ACCURACY_M or better) was taken, in milliseconds, or null before the first. */
+  goodAt: number | null
+  /** The phone has been unseen since the place last followed: more than BLIND_GAP_MS without a fix to go by, or a fix the machine was not asked about. */
+  blind: boolean
+  /** The phone has been on the route within ARRIVE_NEAR_M along it of where the round was started, skipped to or carried on from, or past it. */
+  arrived: boolean
+}
+
+/** Nothing seen yet, and on the way to where the round starts. Shared, so frozen. */
+export const startOffWatch: OffWatch = Object.freeze({ goodAt: null, blind: false, arrived: false })
+
+/**
+ * Every fix the phone gives, before the tracker has it, whatever it makes of it (taken in, set aside, or standing still). One the machine could go
+ * by, more than BLIND_GAP_MS after the last, leaves the phone unseen since the place last followed, until the machine follows the route from a new
+ * place (`stepWatched`): a phone in the background, or under poor sky, has had time to drive on unseen. A fix with no time to go by changes nothing.
+ */
+export function watchFix(watch: OffWatch, fix: { accuracy: number; time?: number | null }): OffWatch {
+  const time = typeof fix.time === 'number' && real(fix.time) ? fix.time : null
+  if (time === null || !(fix.accuracy >= 0 && fix.accuracy <= OFF_MAX_ACCURACY_M)) return watch
+  const since = elapsed(watch.goodAt, time)
+  const blind = watch.blind || (since !== null && since > BLIND_GAP_MS)
+  return { ...watch, goodAt: time, blind }
+}
+
+/**
+ * Ask the machine about a fix, as the Round screen does once the route has been reached, telling it what the watch knows: whether the phone has
+ * been unseen, and whether it is still on its way to `from` (how far along the route the round was started, skipped to or carried on from). That
+ * goes by the fixes before this one, so that a jump that lands at the spot or past it is taken up as well. The watch comes back with this fix in
+ * it: there, once the phone is on the route within ARRIVE_NEAR_M along it of the spot or past it; and seen again, once the machine follows the
+ * route from a new place (its doubting fixes, which keep the old place, keep the phone unseen). And the fix as the machine was given it.
+ */
+export function stepWatched(watch: OffWatch, state: OffState, fix: RouteFix, from: number): { watch: OffWatch; state: OffState; event: OffEvent; fix: RouteFix } {
+  const told: RouteFix = { ...fix, blind: watch.blind, approaching: !watch.arrived }
+  const step = stepOffRoute(state, told)
+  const arrived = watch.arrived || (read(fix) === 'near' && fix.along >= from - ARRIVE_NEAR_M)
+  const blind = watch.blind && !(step.state.phase === 'on' && step.state.left !== state.left)
+  return { ...step, watch: arrived === watch.arrived && blind === watch.blind ? watch : { ...watch, arrived, blind }, fix: told }
+}
+
+/**
+ * A fix the machine would have been asked about, and was not (the phone is beside a stop away from the route, on the app's own errand): the place
+ * last followed is not kept up to date by it, so the phone is as good as unseen.
+ */
+export const unasked = (watch: OffWatch): OffWatch => (watch.blind ? watch : { ...watch, blind: true })
+
+/**
+ * The round was started, skipped to or carried on from somewhere (the machine starting afresh with it): on the way there, with no place followed
+ * yet. When the last fix to go by was taken is the phone's, and is kept.
+ */
+export const restartWatch = (watch: OffWatch): OffWatch => ({ goodAt: watch.goodAt, blind: false, arrived: false })
 
 /** Which way, as it is said to a driver. */
 export type GuideWhere = 'ahead' | 'behind' | 'on your left' | 'on your right'

@@ -178,8 +178,9 @@ button.round-bundle:active {
 
 /*
  * One row, never two: the box is one line high and clips, and the row-gap pushes a second line out of it, so whatever does not fit
- * wraps out of sight whole, the last first (the papers, after the pill for what was missed), instead of being squeezed or cut in
- * half. It never takes room from the venue's name under it. Nothing in it breaks within itself, or it would wrap in half.
+ * wraps out of sight whole, the last first (the papers, then the pill for what was missed, then how many are left), instead of being
+ * squeezed or cut in half. It never takes room from the venue's name under it. Nothing in it breaks within itself, or it would wrap
+ * in half. The order in the markup is the order of rank: the lead, the distance, how many are left, the pill, the papers.
  */
 .round-bundle-top {
   flex: none;
@@ -200,6 +201,12 @@ button.round-bundle:active {
 .round-bundle-top .dist {
   color: var(--label);
   font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* How many bundle drops are still to do, "3 left": ranked above the papers, so it is the papers that give way on a narrow line. */
+.round-bundle-top .left {
+  color: var(--label);
   font-variant-numeric: tabular-nums;
 }
 

@@ -290,6 +290,7 @@ export const APPROACH_RADIUS: Record<Stop['type'], number> = {
   bundle: 150,
   nothrow: 100,
   request: 150,
+  block: 150,
 }
 
 /** A stop as met along the route: once for every time the route passes it. */
@@ -297,27 +298,129 @@ export interface Occurrence {
   /** Key in a run's progress: the stop's id for the first pass, then `id#2`, `id#3` and so on. */
   key: string
   stop: Stop
-  /** The route segment that passes it most closely this time. */
+  /**
+   * The route segment that passes it most closely this time. (A no-throw house at the turn-round of a court is put on the other leg of its
+   * pass by `alertable` when its alert is for that leg: see there.)
+   */
   idx: number
   /** How far along the route that closest point is, in metres. */
   at: number
   /** How far the stop is from the route, in metres: the same for every time the route passes it. */
   off: number
+  /**
+   * Where the route turns right back on itself within this pass (a court, a hairpin or a U-turn near the stop), the nearest segment on
+   * the other leg: the stop is passed on both legs, once by this occurrence, so it is judged on `idx` and on this. Left out where the
+   * pass is one way only.
+   */
+  alt?: number
+  /**
+   * How far along the route the closest point of `alt` is, in metres: where the stop is passed on the other leg. Set with `alt` and only
+   * with it. `alertable` uses it to time a no-throw house on the leg it alerts on, which need not be the leg nearest it (see there).
+   */
+  altAt?: number
 }
 
 /** A pass counts as passing a stop if it comes within this much of it, or 1.5 times its closest pass. */
 const PASS_MIN_M = 30
 const PASS_FACTOR = 1.5
+/** A segment more than this many degrees off the way of the segment that passes a stop is the route coming back the other way. */
+const TURN_BACK_DEG = 135
+/** A segment shorter than this, in metres, has no way to speak of. */
+const NO_WAY_M = 0.5
 /** How finely the route is walked to tell one pass of a stop from the next. */
 const WALK_STEP_M = 5
 /** Two segments this close in distance from a stop, in metres, are equally near it: the earlier is taken. */
 const TIE_M = 0.01
+/**
+ * A piece of the route no longer than this, in metres, square to the leg before it and with the leg after it running back the other way,
+ * is the way across the middle of a U-turn (see `legOffAcross`). The U-turn button draws it 5 m long (`UTURN_ACROSS_M`); this leaves room
+ * for a wider one, but a block's cross street (15 m or more) keeps its own way.
+ */
+const ACROSS_MAX_M = 12
+/** The way across a U-turn is within this many degrees of square to the leg into it. */
+const ACROSS_SQUARE_DEG = 30
+/** A stop nearer than this to the line of the road has no side worth showing. */
+const SIDE_MIN_M = 3
 
 /** One time the route goes past a spot: the segment it is on, how far along the route that is, and how near the route comes (the nearest of all its passes). */
 export interface PathPass {
   idx: number
   at: number
   off: number
+  /** The nearest segment on the other leg where the route turns back within this pass, and how far along the route it passes: see `Occurrence.alt`. */
+  alt?: number
+  altAt?: number
+}
+
+/** The compass bearing of segment `i` of a path in local metres, or null for one too short to have one. */
+function wayOf(xy: [number, number][], i: number): number | null {
+  const dx = xy[i + 1][0] - xy[i][0]
+  const dy = xy[i + 1][1] - xy[i][1]
+  return Math.hypot(dx, dy) < NO_WAY_M ? null : (Math.atan2(dx, dy) * 180) / Math.PI
+}
+
+/**
+ * Where a pass of a stop takes in the route coming back the other way (the turn-round of a court, a hairpin, a U-turn within reach
+ * of the stop), the nearest segment of the pass that runs the other way to `seg`, the one that passes it most closely. Undefined where
+ * the pass is one way only. An equally near one goes to the earlier segment.
+ */
+function otherLeg(xy: [number, number][], p: [number, number], from: number, to: number, seg: number): number | undefined {
+  const way = wayOf(xy, seg)
+  if (way === null) return undefined
+  let found: number | undefined
+  let nearest = Infinity
+  for (let i = from; i <= to; i++) {
+    const here = wayOf(xy, i)
+    if (here === null || angleBetween(here, way) <= TURN_BACK_DEG) continue
+    const { dist } = distToSegment(p, xy[i], xy[i + 1])
+    if (dist < nearest - TIE_M) {
+      found = i
+      nearest = dist
+    }
+  }
+  return found
+}
+
+/**
+ * Where `seg`, the segment that passes a stop most closely, is the short way across the middle of a U-turn (no longer than `ACROSS_MAX_M`,
+ * about square to the leg into it, and the leg out of it running back the other way), the one of those two legs nearer the stop (the leg
+ * into it when they are as near). Undefined for any other segment. A house at the head of a court closed with the U-turn button, straight
+ * ahead or ahead to one side, is nearest the way across, which runs square to both legs, so `otherLeg` finds no leg running the other way
+ * to it and the house would be judged on the way across alone: on its left whichever side it is of the court. It is passed on both legs,
+ * so it is judged on those, like a house at an exact reversal. Only the short piece across a U counts: a block's cross street between two
+ * streets driven opposite ways keeps its own way, and the houses beside it their side of it.
+ *
+ * A house between the two legs of a way across wider than the U-turn button draws (one tapped by hand, or with its points moved apart),
+ * `SIDE_MIN_M` or more from each, is on the same side of both: the right of a right-hand U-turn's way in and of its way back. Judged on
+ * those it would be quiet thrown left both ways, though it is on the left as the car swings round across it, outside the turn. So for
+ * such a house this is undefined: it keeps the way across, and is judged on the side it is on as the car crosses. (On the 5 m way across
+ * the button draws no house can be that far from both legs.)
+ */
+function legOffAcross(xy: [number, number][], p: [number, number], from: number, to: number, seg: number): number | undefined {
+  const way = wayOf(xy, seg)
+  if (way === null || Math.hypot(xy[seg + 1][0] - xy[seg][0], xy[seg + 1][1] - xy[seg][1]) > ACROSS_MAX_M) return undefined
+  let before = seg - 1
+  while (before >= from && wayOf(xy, before) === null) before--
+  let after = seg + 1
+  while (after <= to && wayOf(xy, after) === null) after++
+  if (before < from || after > to) return undefined
+  const into = wayOf(xy, before) as number
+  if (angleBetween(into, wayOf(xy, after) as number) <= TURN_BACK_DEG || Math.abs(angleBetween(into, way) - 90) > ACROSS_SQUARE_DEG) return undefined
+  const beside = sideOff(xy, before, p)
+  if (beside !== 0 && beside === sideOff(xy, after, p)) return undefined
+  return distToSegment(p, xy[after], xy[after + 1]).dist < distToSegment(p, xy[before], xy[before + 1]).dist - TIE_M ? after : before
+}
+
+/**
+ * Which side of the line of segment `i` of a path in local metres a spot is: 1 on its left, -1 on its right, 0 nearer the line than
+ * `SIDE_MIN_M`. The same cross product as `stopSide`, on the whole line of the segment rather than the piece of it.
+ */
+function sideOff(xy: [number, number][], i: number, p: [number, number]): -1 | 0 | 1 {
+  const [ax, ay] = xy[i]
+  const [bx, by] = xy[i + 1]
+  const len = Math.hypot(bx - ax, by - ay)
+  const offset = ((bx - ax) * (p[1] - ay) - (by - ay) * (p[0] - ax)) / len
+  return Math.abs(offset) < SIDE_MIN_M ? 0 : offset > 0 ? 1 : -1
 }
 
 /** Each time the route goes past a spot, in route order, given the route's points in local metres, how far along each is, and the spot in local metres. */
@@ -364,7 +467,18 @@ function passesOf(xy: [number, number][], cum: number[], p: [number, number]): P
         best = d
       }
     }
-    return { idx: seg, at: alongPath(cum, seg, best.t), off: nearest }
+    let alt = otherLeg(xy, p, from, to, seg)
+    if (alt === undefined) {
+      const leg = legOffAcross(xy, p, from, to, seg)
+      if (leg !== undefined) {
+        seg = leg
+        best = distToSegment(p, xy[seg], xy[seg + 1])
+        alt = otherLeg(xy, p, from, to, seg)
+      }
+    }
+    const at = alongPath(cum, seg, best.t)
+    if (alt === undefined) return { idx: seg, at, off: nearest }
+    return { idx: seg, at, off: nearest, alt, altAt: alongPath(cum, alt, distToSegment(p, xy[alt], xy[alt + 1]).t) }
   })
 }
 
@@ -389,7 +503,8 @@ export function occurrences(route: Pick<Route, 'points' | 'stops'>): Occurrence[
   const out: Occurrence[] = []
   for (const stop of stops) {
     passesOf(xy, cum, project(stop, refLat)).forEach((pass, n) => {
-      out.push({ key: n === 0 ? stop.id : `${stop.id}#${n + 1}`, stop, idx: pass.idx, at: pass.at, off: pass.off })
+      const key = n === 0 ? stop.id : `${stop.id}#${n + 1}`
+      out.push({ key, stop, idx: pass.idx, at: pass.at, off: pass.off, ...(pass.alt === undefined ? {} : { alt: pass.alt, altAt: pass.altAt }) })
     })
   }
   return out.sort((a, b) => a.at - b.at)
@@ -435,9 +550,14 @@ export const awayFromRoad = (points: Pt[], stop: Pt): Place => quarter(awayBeari
 /** Which side of a stop, on the screen of a map turned so `heading` is up, a compass bearing from the stop lies. */
 export const screenPlace = (bearing: number, heading: number): Place => quarter(bearing - heading)
 
-/** How far along the route a round has got, going by the stops already done: where one that is carried on picks up. 0 when none is. */
-export const handledUpTo = (occs: Occurrence[], handled: ReadonlySet<string>): number =>
-  occs.reduce((far, o) => (handled.has(o.key) ? Math.max(far, o.at) : far), 0)
+/**
+ * How far along the route a round has got, going by the stops already done: where one that is carried on picks up. 0 when none is.
+ * A stop at the turn-round of a court is passed on both legs by one pass (see `Occurrence.alt`), and being done says only that the
+ * driver got to the earlier of them: its alert may be timed on either (see `alertable`), and a round carried on from the later leg
+ * would never come back for the stops still to do on the way in.
+ */
+export const handledUpTo = (occs: readonly Occurrence[], handled: ReadonlySet<string>): number =>
+  occs.reduce((far, o) => (handled.has(o.key) ? Math.max(far, Math.min(o.at, o.altAt ?? o.at)) : far), 0)
 
 /** How far behind the driver a stop may be and still count, to forgive GPS jitter. */
 const PASSED_M = 20
@@ -488,9 +608,6 @@ export function approachingOccurrences(
     })
     .sort((a, b) => haversine(pos, a.stop) - haversine(pos, b.stop))
 }
-
-/** A stop nearer than this to the line of the road has no side worth showing. */
-const SIDE_MIN_M = 3
 
 /**
  * Which side of the road a stop is on, as the route goes past it: the left or right of the way you

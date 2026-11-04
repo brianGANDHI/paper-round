@@ -20,9 +20,10 @@ import {
   setActiveRound,
   setActiveSections,
   setActiveStreets,
+  setBundleOrder,
   uniqueName,
 } from './library'
-import type { Library, NamedSection, RoundState, Route, TurnStreet } from './types'
+import type { Library, NamedSection, RoundState, Route, Stop, TurnStreet } from './types'
 
 const drawn = (n = 3): Route => ({
   points: Array.from({ length: n }, (_, i) => ({ lat: -33.87 + i * 0.001, lng: 151.2 })),
@@ -827,6 +828,294 @@ describe('the bundles dropped and missed in a round', () => {
     it('is the same read twice', () => {
       const once = read({ handledStopIds: ['a', 'b'], dropped: ['a', 'zz'], missed: ['a', 'b'], furthest: 20 })
       expect(read(JSON.parse(JSON.stringify(once)))).toEqual(once)
+    })
+  })
+})
+
+// What a change of side part way through the round made of the passes at the head of a court goes with the round, so Continue Round
+// after a reload puts them back as they were (see `RoundState.courtLegs` and `resumedLegs`).
+describe('what a change of side made of the passes at the head of a court', () => {
+  const read = (round: unknown) => normalizeLibrary(JSON.parse(JSON.stringify({ routes: [{ id: 'x', name: 'A', route: doubled(), round, updatedAt: 0 }] })))!.routes[0].round
+  const started = (round: RoundState) => setActiveRound(addRoute(createLibrary(), 'Saturday', doubled()), round)
+
+  it('is read back with the round after a reload', () => {
+    const round: RoundState = { handledStopIds: ['E'], furthest: 300, courtLegs: { W: 'out', 'X#2': 'ahead' } }
+    expect(read(round)).toEqual(round)
+    expect(read(read(round))).toEqual(round)
+  })
+
+  it('has no key for a round saved before it was kept, or with none', () => {
+    for (const round of [{ handledStopIds: ['E'], furthest: 300 }, { handledStopIds: ['E'], courtLegs: {} }, { handledStopIds: ['E'], courtLegs: 'out' }]) {
+      const back = read(round)
+      expect(back, JSON.stringify(round)).toEqual({ handledStopIds: ['E'], ...('furthest' in round ? { furthest: 300 } : {}) })
+      expect('courtLegs' in back, JSON.stringify(round)).toBe(false)
+    }
+  })
+
+  it("keeps only the entries that say 'out' or 'ahead'", () => {
+    expect(read({ handledStopIds: [], courtLegs: { W: 'gone', V: 'out', __x: 3 } }).courtLegs).toEqual({ V: 'out' })
+    expect('courtLegs' in read({ handledStopIds: [], courtLegs: { W: 'gone' } })).toBe(false)
+  })
+
+  it('is kept while the round is kept or the route adjusted, and goes when the route is edited or copied', () => {
+    const lib = started({ handledStopIds: ['a'], furthest: 300, courtLegs: { a: 'out' } })
+    expect(activeRoute(lib).round.courtLegs).toEqual({ a: 'out' })
+    expect(activeRoute(adjustActiveRoute(lib, { ...doubled(), sideChanges: [{ idx: 0, side: 'right' }] }, 1)).round.courtLegs).toEqual({ a: 'out' })
+    expect(activeRoute(editActiveRoute(lib, doubled(), 1)).round).toEqual({ handledStopIds: [] })
+    expect(activeRoute(duplicateRoute(lib, lib.activeId)).round).toEqual({ handledStopIds: [] })
+  })
+})
+
+describe("the driver's order of the bundle drops", () => {
+  // A route with three bundle stops. The order is kept beside the route as stop ids.
+  const withBundles = (): Route => ({
+    ...doubled(),
+    stops: [
+      { id: 'a', type: 'bundle', lat: -33.869, lng: 151.2, pathIdx: 0, label: 'Co-op', qty: 12 },
+      { id: 'b', type: 'bundle', lat: -33.8695, lng: 151.2, pathIdx: 0, label: 'Spar', qty: 6 },
+      { id: 'c', type: 'bundle', lat: -33.87, lng: 151.2, pathIdx: 0, label: 'School', qty: 2 },
+    ],
+  })
+  const ordered = () => {
+    let lib = addRoute(createLibrary(), 'Saturday', withBundles())
+    lib = setBundleOrder(lib, lib.activeId, ['c', 'a', 'b'])
+    return lib
+  }
+
+  describe('setting it', () => {
+    it('keeps it with the route, and leaves the route and its round alone', () => {
+      let lib = addRoute(createLibrary(), 'Saturday', withBundles())
+      lib = setActiveRound(lib, { handledStopIds: ['a'], dropped: ['a'], furthest: 300, startM: 120 })
+      const before = activeRoute(lib)
+      lib = setBundleOrder(lib, lib.activeId, ['c', 'a', 'b'])
+      const after = activeRoute(lib)
+      expect(after.bundleOrder).toEqual(['c', 'a', 'b'])
+      expect(after.route).toBe(before.route)
+      expect(after.round).toBe(before.round)
+      expect(after.updatedAt).toBe(before.updatedAt)
+      expect(after.name).toBe('Saturday')
+    })
+
+    it('sets it for the route it is given, whichever is in use, and no other', () => {
+      let lib = addRoute(addRoute(createLibrary(), 'Monday', withBundles()), 'Tuesday', withBundles())
+      const monday = lib.routes.find((r) => r.name === 'Monday')!
+      lib = setBundleOrder(lib, monday.id, ['b', 'a'])
+      expect(lib.routes.find((r) => r.name === 'Monday')!.bundleOrder).toEqual(['b', 'a'])
+      expect('bundleOrder' in lib.routes.find((r) => r.name === 'Tuesday')!).toBe(false)
+      expect(lib.activeId).not.toBe(monday.id)
+    })
+
+    it('replaces an order set before', () => {
+      let lib = ordered()
+      lib = setBundleOrder(lib, lib.activeId, ['b', 'c'])
+      expect(activeRoute(lib).bundleOrder).toEqual(['b', 'c'])
+    })
+
+    it('keeps it as given: a stop that is gone or one not in it is put right when it is read, not here', () => {
+      const lib = addRoute(createLibrary(), 'Saturday', withBundles())
+      expect(activeRoute(setBundleOrder(lib, lib.activeId, ['gone', 'c'])).bundleOrder).toEqual(['gone', 'c'])
+    })
+
+    it('keeps ids only, once each', () => {
+      let lib = addRoute(createLibrary(), 'Saturday', withBundles())
+      lib = setBundleOrder(lib, lib.activeId, ['a', 'a', '', 'b'] as string[])
+      expect(activeRoute(lib).bundleOrder).toEqual(['a', 'b'])
+    })
+
+    it('takes it off when the order is empty, leaving no key', () => {
+      let lib = ordered()
+      lib = setBundleOrder(lib, lib.activeId, [])
+      expect('bundleOrder' in activeRoute(lib)).toBe(false)
+    })
+
+    it('changes nothing for a route that is not here', () => {
+      const lib = ordered()
+      expect(setBundleOrder(lib, 'nope', ['a'])).toBe(lib)
+    })
+
+    it('does not change the library or the order it is given', () => {
+      const lib = ordered()
+      const copy = structuredClone(lib)
+      const given = ['b', 'a']
+      setBundleOrder(lib, lib.activeId, given)
+      expect(lib).toEqual(copy)
+      expect(given).toEqual(['b', 'a'])
+    })
+
+    it('does not share the order it is given', () => {
+      const given = ['b', 'a']
+      let lib = addRoute(createLibrary(), 'Saturday', withBundles())
+      lib = setBundleOrder(lib, lib.activeId, given)
+      given.push('c')
+      expect(activeRoute(lib).bundleOrder).toEqual(['b', 'a'])
+    })
+  })
+
+  describe('keeping it through what happens to the route', () => {
+    it('keeps it when the route is edited, which starts the round over but is not the driver\'s progress', () => {
+      const lib = editActiveRoute(ordered(), { ...withBundles(), stops: withBundles().stops.slice(0, 2) }, 5)
+      expect(activeRoute(lib).bundleOrder).toEqual(['c', 'a', 'b'])
+      expect(activeRoute(lib).round).toEqual({ handledStopIds: [] })
+    })
+
+    it('keeps it unrewritten when a stop is deleted or added, so the order is worked out when it is read', () => {
+      let lib = ordered()
+      const added: Stop = { id: 'd', type: 'bundle', lat: -33.871, lng: 151.2, pathIdx: 0 }
+      lib = editActiveRoute(lib, { ...withBundles(), stops: [...withBundles().stops, added].filter((x) => x.id !== 'c') })
+      expect(activeRoute(lib).bundleOrder).toEqual(['c', 'a', 'b'])
+    })
+
+    it('keeps it when the route is adjusted while driving', () => {
+      const lib = adjustActiveRoute(ordered(), { ...withBundles(), sideChanges: [{ idx: 0, side: 'right' }] }, 1)
+      expect(activeRoute(lib).bundleOrder).toEqual(['c', 'a', 'b'])
+    })
+
+    it('keeps it when the round is started over, reset or carried on: it is the driver\'s list, not progress', () => {
+      let lib = ordered()
+      lib = setActiveRound(lib, { handledStopIds: ['a', 'c'], dropped: ['a'], missed: ['c'], furthest: 200, startM: 50 })
+      expect(activeRoute(lib).bundleOrder).toEqual(['c', 'a', 'b'])
+      lib = setActiveRound(lib, { handledStopIds: [] })
+      expect(activeRoute(lib).bundleOrder).toEqual(['c', 'a', 'b'])
+      expect(activeRoute(lib).round).toEqual({ handledStopIds: [] })
+    })
+
+    it('keeps it when sections or street names are set', () => {
+      let lib = setActiveSections(ordered(), [named('s1')])
+      lib = setActiveStreets(lib, [street('Oak Road')])
+      expect(activeRoute(lib).bundleOrder).toEqual(['c', 'a', 'b'])
+      lib = setActiveSections(lib, [])
+      expect(activeRoute(lib).bundleOrder).toEqual(['c', 'a', 'b'])
+    })
+
+    it('keeps it when the route is renamed or another is chosen and chosen again', () => {
+      let lib = ordered()
+      const id = lib.activeId
+      lib = renameRoute(lib, id, 'Sunday')
+      lib = selectRoute(selectRoute(lib, lib.routes[0].id), id)
+      expect(activeRoute(lib).name).toBe('Sunday')
+      expect(activeRoute(lib).bundleOrder).toEqual(['c', 'a', 'b'])
+    })
+  })
+
+  describe('copying a route', () => {
+    it('copies it, independently of the original, with the same stop ids to name', () => {
+      let lib = ordered()
+      const original = lib.activeId
+      lib = duplicateRoute(lib, original)
+      const copy = activeRoute(lib)
+      expect(copy.id).not.toBe(original)
+      expect(copy.bundleOrder).toEqual(['c', 'a', 'b'])
+      expect(copy.route.stops.map((x) => x.id)).toEqual(['a', 'b', 'c'])
+      lib = setBundleOrder(lib, copy.id, ['a', 'b', 'c'])
+      expect(lib.routes.find((r) => r.id === original)!.bundleOrder).toEqual(['c', 'a', 'b'])
+      expect(lib.routes.find((r) => r.id === original)!.bundleOrder).not.toBe(copy.bundleOrder)
+    })
+
+    it('has no key for a route with no order', () => {
+      const lib = addRoute(createLibrary(), 'Saturday', withBundles())
+      const copy = activeRoute(duplicateRoute(lib, lib.activeId))
+      expect(copy.name).toBe('Saturday copy')
+      expect('bundleOrder' in copy).toBe(false)
+    })
+
+    it('copies it along with sections and street names', () => {
+      let lib = setActiveStreets(setActiveSections(ordered(), [named('s1')]), [street('Oak Road')])
+      lib = duplicateRoute(lib, lib.activeId)
+      const copy = activeRoute(lib)
+      expect(copy.bundleOrder).toEqual(['c', 'a', 'b'])
+      expect(copy.sections).toEqual([named('s1')])
+      expect(copy.streets).toEqual([street('Oak Road')])
+    })
+  })
+
+  describe('reading it back from the phone', () => {
+    const read = (bundleOrder: unknown) => normalizeLibrary({ routes: [{ id: 'x', name: 'A', route: withBundles(), round: { handledStopIds: [] }, updatedAt: 0, bundleOrder }] })!.routes[0]
+
+    it('keeps an order that was saved', () => {
+      expect(read(['c', 'a', 'b']).bundleOrder).toEqual(['c', 'a', 'b'])
+    })
+
+    it('keeps it as it was, with ids of stops that are gone, for the same reason as when it is set', () => {
+      expect(read(['gone', 'c']).bundleOrder).toEqual(['gone', 'c'])
+    })
+
+    it('has none when there was none, or when it is nothing usable', () => {
+      for (const junk of [undefined, null, 'c,a', 5, {}, [], [1, null, '']]) expect('bundleOrder' in read(junk), String(junk)).toBe(false)
+    })
+
+    it('keeps only the ids, once each, from a damaged list', () => {
+      expect(read(['a', 7, 'a', null, 'b']).bundleOrder).toEqual(['a', 'b'])
+    })
+
+    it('reads a route saved before the order existed as one with none', () => {
+      const lib = normalizeLibrary({ routes: [{ id: 'x', name: 'A', route: withBundles(), round: { handledStopIds: [] }, updatedAt: 0 }] })!
+      expect('bundleOrder' in lib.routes[0]).toBe(false)
+    })
+
+    it('survives being written out and read back', () => {
+      const lib = normalizeLibrary(JSON.parse(JSON.stringify(ordered())))!
+      expect(activeRoute(lib).bundleOrder).toEqual(['c', 'a', 'b'])
+    })
+  })
+
+  describe('adding routes from a backup', () => {
+    it('adds a route with its order, and one without as before', () => {
+      const lib = addImported(createLibrary(), [
+        { name: 'Monday', route: withBundles(), bundleOrder: ['b', 'a'] },
+        { name: 'Tuesday', route: withBundles() },
+      ])
+      expect(lib.routes.find((r) => r.name === 'Monday')!.bundleOrder).toEqual(['b', 'a'])
+      expect('bundleOrder' in lib.routes.find((r) => r.name === 'Tuesday')!).toBe(false)
+    })
+
+    it('adds it as a new route in keep mode, leaving the one here with its own', () => {
+      let here = addRoute(createLibrary(), 'Monday', withBundles())
+      here = setBundleOrder(here, here.activeId, ['c', 'a', 'b'])
+      const lib = addImported(here, [{ name: 'Monday', route: withBundles(), bundleOrder: ['b'] }], 9, 'keep')
+      expect(lib.routes.find((r) => r.name === 'Monday')!.bundleOrder).toEqual(['c', 'a', 'b'])
+      expect(lib.routes.find((r) => r.name === 'Monday 2')!.bundleOrder).toEqual(['b'])
+    })
+
+    describe('over a route of the same name', () => {
+      const here = () => {
+        let lib = addRoute(createLibrary(), 'Monday', withBundles())
+        lib = setBundleOrder(lib, lib.activeId, ['c', 'a', 'b'])
+        return setActiveRound(lib, { handledStopIds: ['a'], dropped: ['a'], furthest: 100 })
+      }
+      const monday = (lib: Library) => lib.routes.find((r) => r.name === 'Monday')!
+
+      it('takes the one in the backup, starting the round over', () => {
+        const lib = addImported(here(), [{ name: 'monday', route: withBundles(), bundleOrder: ['b', 'a', 'c'] }], 9, 'replace')
+        expect(monday(lib).bundleOrder).toEqual(['b', 'a', 'c'])
+        expect(monday(lib).round).toEqual({ handledStopIds: [] })
+      })
+
+      it('keeps its own when the backup has none, as a backup made before it existed has none', () => {
+        const lib = addImported(here(), [{ name: 'Monday', route: withBundles() }], 9, 'replace')
+        expect(monday(lib).bundleOrder).toEqual(['c', 'a', 'b'])
+        expect(monday(lib).round).toEqual({ handledStopIds: [] })
+      })
+
+      it('keeps its place in the list and its sections', () => {
+        let lib = setActiveSections(here(), [named('mine')])
+        lib = addRoute(lib, 'Tuesday', withBundles())
+        const out = addImported(lib, [{ name: 'Monday', route: withBundles(), bundleOrder: ['a'] }], 9, 'replace')
+        expect(out.routes.map((r) => r.name)).toEqual(['My Round', 'Monday', 'Tuesday'])
+        expect(monday(out).sections).toEqual([named('mine')])
+      })
+    })
+
+    it('replaces the blank starter with a route that has an order', () => {
+      const lib = addImported(createLibrary(), [{ name: 'Monday', route: withBundles(), bundleOrder: ['c', 'b'] }])
+      expect(lib.routes).toHaveLength(1)
+      expect(activeRoute(lib).bundleOrder).toEqual(['c', 'b'])
+    })
+
+    it('does not share the order it is given', () => {
+      const given = ['c', 'b']
+      const lib = addImported(createLibrary(), [{ name: 'Monday', route: withBundles(), bundleOrder: given }])
+      given.push('a')
+      expect(activeRoute(lib).bundleOrder).toEqual(['c', 'b'])
     })
   })
 })

@@ -1,6 +1,6 @@
 import type { Ref } from 'react'
 import { Icon } from './Icon'
-import { barLead, barMiddle } from './roundView'
+import { barBundleSaid, barLead, barLeft, barMiddle } from './roundView'
 import './roundBar.css'
 
 /** A message the bar shows in place of its usual line for a while, with a way to take back what it tells of when there is one. */
@@ -10,17 +10,21 @@ export interface Notice {
 }
 
 /**
- * The bar's line for bundle drops, as it shows it. Usually the next one: `distance` and `papers` are already words ("340 m", "12 papers"),
- * and `missed` is how many have been driven past without being dropped. When none is ahead it says how the round stands instead:
- * `lead` is then "Bundles", `name` the sentence ("All bundles dropped"), and there is no distance or papers.
+ * The bar's line for bundle drops, as it shows it. Usually the next one in the driver's list: `distance` (the straight line from the
+ * phone, or null while its position is not known) and `papers` are already words ("340 m", "12 papers"), `left` is how many bundle drops
+ * are still to do (the next one included) and `missed` how many have been driven past without being dropped. When none is left to do it
+ * says how the round stands instead: `lead` is then "Bundles", `name` the sentence ("All bundles dropped"), and there is no distance,
+ * papers or `left` (0).
  */
 export interface NextBundle {
-  /** What the line leads with: "Next bundle" or, with none ahead, "Bundles". */
+  /** What the line leads with: "Next bundle" or, with none left to do, "Bundles". */
   lead: string
   name: string
   distance: string | null
   papers: string | null
   missed: number
+  /** How many bundle drops are still to do, the next one included. */
+  left: number
 }
 
 interface BarProps {
@@ -87,11 +91,12 @@ function Count({ remaining }: { remaining: number }) {
 }
 
 /**
- * The line for the next bundle drop: where it is and how far, and the papers for it. The whole line takes a tap when there is somewhere
- * for it to go. The venue's name has a row to itself, the full width of the line, since it is what the driver wants to see. Above it
- * are the lead, the distance, the pill for bundles missed and the papers, on one row that never wraps into the name: whatever does not
- * fit is left off, the papers first (they are on the alert and in the list). `crowded` is when the line has less room than usual, with
- * the pill for bundles missed or the caution button beside it: the lead is then "Next" rather than "Next bundle".
+ * The line for the next bundle drop: where it is and how far, how many are left and the papers for it. The whole line takes a tap when
+ * there is somewhere for it to go. The venue's name has a row to itself, the full width of the line, since it is what the driver wants
+ * to see. Above it are the lead, the distance, how many are left ("3 left"), the pill for bundles missed and the papers, on one row that
+ * never wraps into the name: whatever does not fit is left off whole, the last first, so the papers (they are on the alert and in the
+ * list) go before the pill for bundles missed, and that before how many are left. `crowded` is when the line has less room than usual,
+ * with the pill for bundles missed or the caution button beside it: the lead is then "Next" rather than "Next bundle".
  */
 function BundleLine({ bundle, crowded, onBundles }: { bundle: NextBundle; crowded: boolean; onBundles?: () => void }) {
   const body = (
@@ -99,13 +104,14 @@ function BundleLine({ bundle, crowded, onBundles }: { bundle: NextBundle; crowde
       <span className="round-bundle-top">
         <span className="lead">{barLead(bundle.lead, crowded || bundle.missed > 0)}</span>
         {bundle.distance && <span className="dist">{bundle.distance}</span>}
+        {barLeft(bundle.left) && <span className="left">{barLeft(bundle.left)}</span>}
         {bundle.missed > 0 && <span className="round-missed">{bundle.missed} missed</span>}
         {bundle.papers && <span className="papers">{bundle.papers}</span>}
       </span>
       <span className="round-bundle-name">{bundle.name}</span>
     </>
   )
-  const said = `${bundle.lead}: ${bundle.name}${bundle.distance ? `, ${bundle.distance}` : ''}${bundle.papers ? `, ${bundle.papers}` : ''}${bundle.missed > 0 ? `. ${bundle.missed} missed` : ''}.`
+  const said = barBundleSaid(bundle)
   return onBundles ? (
     <button className="round-bundle" aria-label={`${said} Tap for the list of bundle drops.`} onClick={onBundles}>
       {body}

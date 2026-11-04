@@ -1,4 +1,4 @@
-import { alertable } from './alerts'
+import { alertable, QUIET_REACH_M } from './alerts'
 import { plural } from './format'
 import { occurrences } from './geo'
 import { formatDistance, PAINT_MIN_M, sections } from './routeEdit'
@@ -122,19 +122,19 @@ export function sideExtents(
 }
 
 /** How many times each no-throw house alerts: once for every pass of it that is not quiet. A house that never alerts has no entry. */
-function alertsByHouse(route: Route): Map<string, number> {
+function alertsByHouse(route: Route, reachM: number): Map<string, number> {
   const counts = new Map<string, number>()
-  for (const o of alertable(route, occurrences(route))) {
+  for (const o of alertable(route, occurrences(route), reachM)) {
     if (o.stop.type === 'nothrow') counts.set(o.stop.id, (counts.get(o.stop.id) ?? 0) + 1)
   }
   return counts
 }
 
 /** What a change of side does to the no-throw houses, in words, and whether any of it is houses going quiet. */
-function sideChangeWords(before: Route, after: Route): { note: string; quiets: boolean } | null {
+function sideChangeWords(before: Route, after: Route, reachM: number): { note: string; quiets: boolean } | null {
   const noun = (n: number) => plural(n, 'no-throw house', 'no-throw houses')
-  const was = alertsByHouse(before)
-  const now = alertsByHouse(after)
+  const was = alertsByHouse(before, reachM)
+  const now = alertsByHouse(after, reachM)
   // The houses that alerted somewhere and now never do, and the houses that now alert and never did.
   let quieter = 0
   let louder = 0
@@ -164,17 +164,20 @@ function sideChangeWords(before: Route, after: Route): { note: string; quiets: b
  * its left and wakes the ones on its right, and those are counted apart, each house on its own, not as a net number. A
  * house on a street that is driven more than once can lose or gain an alert on one pass and still have the others, and
  * those are counted apart too, as houses that stay quiet or alert on a pass. Null when it makes no difference.
+ *
+ * Which houses are quiet depends on how far from the route they can be (`reachM`, see `quietReachFor`): give it for the driver's alert
+ * distance, so the note agrees with what the round does.
  */
-export const sideChangeNote = (before: Route, after: Route): string | null => sideChangeWords(before, after)?.note ?? null
+export const sideChangeNote = (before: Route, after: Route, reachM: number = QUIET_REACH_M): string | null => sideChangeWords(before, after, reachM)?.note ?? null
 
 /** Said after houses go quiet, for a driver who has not met the rule. */
 const QUIET_REASON = 'A no-throw house only alerts on a side you throw.'
 
 /**
  * `sideChangeNote` as sentences for a notice: with its full stop, and when houses go quiet the reason (they are on the side that
- * is not thrown, or on transit). Empty when the change makes no difference to the houses.
+ * is not thrown, or on transit). Empty when the change makes no difference to the houses. `reachM` is as for `sideChangeNote`.
  */
-export function sideChangeSentence(before: Route, after: Route): string {
-  const words = sideChangeWords(before, after)
+export function sideChangeSentence(before: Route, after: Route, reachM: number = QUIET_REACH_M): string {
+  const words = sideChangeWords(before, after, reachM)
   return words ? `${words.note}.${words.quiets ? ` ${QUIET_REASON}` : ''}` : ''
 }

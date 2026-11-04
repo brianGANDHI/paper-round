@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { alertable, offRouteNote, sideNote, stopsWithoutSide } from './alerts'
+import { addedOffRouteNote } from './addedStops'
+import { alertable, quietReachFor, sideNote, stopsWithoutSide } from './alerts'
 import { useDialogs } from './confirm'
 import { useGps } from './device'
 import { sideChangeSentence } from './driveEdit'
@@ -23,6 +24,7 @@ import {
   deleteSection,
   deleteWarning,
   formatDistance,
+  hasPapers,
   insertPoint,
   movePoint,
   nearestOnRoute,
@@ -46,7 +48,7 @@ import { SidePopover } from './SidePopover'
 import { SectionsTab } from './SectionsTab'
 import { SidesTab } from './SidesTab'
 import { StopsTab } from './StopsTab'
-import { loadFollowRoads, saveFollowRoads } from './storage'
+import { loadAlertDistance, loadFollowRoads, saveFollowRoads } from './storage'
 import { transitNotice, type TransitResult } from './transit'
 import { TransitDialog } from './TransitDialog'
 import { Banner, RouteChip, Segmented, Sheet } from './ui'
@@ -79,10 +81,13 @@ interface Props {
   /** The street names found for the route's turns, and a change to them. */
   streets: readonly TurnStreet[]
   onStreets: (next: TurnStreet[], forPoints?: Pt[]) => void
+  /** The order the driver drops the bundles in (stop ids), and a change to it. It is not part of the route, so editing the route keeps it. */
+  bundleOrder?: readonly string[]
+  onBundleOrder: (order: string[]) => void
   onGoRoutes: () => void
 }
 
-export function Setup({ route, routeName, onChange, sections: named, onSections, streets, onStreets, onGoRoutes }: Props) {
+export function Setup({ route, routeName, onChange, sections: named, onSections, streets, onStreets, bundleOrder, onBundleOrder, onGoRoutes }: Props) {
   const [tab, setTab] = useState<Tab>('route')
   const [tool, setTool] = useState<Tool>('none')
   const [expanded, setExpanded] = useState(false)
@@ -109,6 +114,8 @@ export function Setup({ route, routeName, onChange, sections: named, onSections,
   const [drag, setDrag] = useState<{ index: number; pos: Pt } | null>(null)
   /** Where the stretch being painted starts, once its first end is tapped. */
   const [paintStart, setPaintStart] = useState<Pt | null>(null)
+  /** How far from the route a no-throw house can be kept quiet, as on the round: it goes with the alert distance chosen there (see `quietReachFor`). */
+  const [reachM] = useState(() => quietReachFor(loadAlertDistance()))
   const { fix, error } = useGps(true)
   /** The named section picked, in the list or on the map. */
   const [sectionFocus, setSectionFocus] = useState<string | null>(null)
@@ -159,9 +166,9 @@ export function Setup({ route, routeName, onChange, sections: named, onSections,
   // The named sections as they lie along the route now, and how many stops are along each.
   const resolved = useMemo(() => resolveSections(route.points, named), [route.points, named])
   const stopCounts = useMemo(() => {
-    const occs = alertable(route, occurrences(route))
+    const occs = alertable(route, occurrences(route), reachM)
     return new Map(sectionStatus(resolved.list, occs, new Set()).map((s) => [s.id, s.total]))
-  }, [route, resolved])
+  }, [route, resolved, reachM])
   const focused = resolved.list.find((s) => s.id === sectionFocus)
   const marks = useMemo(
     () => resolved.list.filter((s) => !s.lead).map((s) => ({ pos: sectionPoint(route.points, s), label: s.name, on: s.id === sectionFocus })),
@@ -324,7 +331,7 @@ export function Setup({ route, routeName, onChange, sections: named, onSections,
     const next = { ...route, sideChanges: setSectionSide(route, index, side) }
     onChange(next)
     // A no-throw house only alerts for a side that is thrown: on transit none are, and on Left or Right the ones on the other side of the road stay quiet. Say how many change, rather than let it be a surprise.
-    const note = sideChangeSentence(route, next)
+    const note = sideChangeSentence(route, next, reachM)
     setNotice(note || null)
     return note
   }
@@ -425,7 +432,7 @@ export function Setup({ route, routeName, onChange, sections: named, onSections,
     // Sections have been renumbered, so no section stays picked.
     setFocus(null)
     const length = routeLength(result.route.points.slice(result.from, result.to + 1))
-    const quiet = sideChangeSentence(route, result.route)
+    const quiet = sideChangeSentence(route, result.route, reachM)
     setNotice(`Painted ${formatDistance(length)} for ${SIDE_LABEL[brush].toLowerCase()}.${quiet ? ` ${quiet}` : ''}`)
   }
 
@@ -518,7 +525,7 @@ export function Setup({ route, routeName, onChange, sections: named, onSections,
   const addStops = (stops: Stop[]) => {
     const next = { ...route, stops: [...route.stops, ...stops] }
     onChange(next)
-    return sideNote(stopsWithoutSide(next, stops).length)
+    return sideNote(stopsWithoutSide(next, stops, reachM).length)
   }
 
   /** Which side of the road a stop is on, picked by hand: for when the map can't say, or has it wrong. */
@@ -545,13 +552,14 @@ export function Setup({ route, routeName, onChange, sections: named, onSections,
     const next = { ...route, stops }
     onChange(next)
     // The side a house is on decides whether it alerts on a stretch thrown to one side: say if this pick makes it quiet, or wakes it.
-    setNotice(sideChangeSentence(route, next) || null)
+    setNotice(sideChangeSentence(route, next, reachM) || null)
   }
 
   const placeStop = (p: Pt) => {
-    const problem = stopType === 'bundle' ? qtyProblem(stopQty) : null
+    // A bundle drop and an apartment block both have a number of papers.
+    const problem = hasPapers(stopType) ? qtyProblem(stopQty) : null
     if (problem) return setNotice(problem)
-    const qty = stopType === 'bundle' ? parseQty(stopQty) : undefined
+    const qty = hasPapers(stopType) ? parseQty(stopQty) : undefined
     const request = stopType === 'request'
     const hit = stopAt(route, p, stopType, {
       label: request ? undefined : cleanLabel(stopLabel),
@@ -560,8 +568,9 @@ export function Setup({ route, routeName, onChange, sections: named, onSections,
       note: request ? cleanNote(stopNote) : undefined,
     })
     if (!hit) return setNotice('Draw your route first.')
-    // A stop can go anywhere: one a long way from the route alerts by where you are, and the note says so.
-    const note = [offRouteNote([hit.offM]), addStops([hit.stop])].filter(Boolean).join(' ')
+    // A stop can go anywhere: one a long way from the route alerts by where you are, and the note says so (not of a house that is quiet all
+    // the same, as it never alerts).
+    const note = [addedOffRouteNote(route, [hit], reachM), addStops([hit.stop])].filter(Boolean).join(' ')
     setStopLabel('')
     setStopAddress('')
     setStopNote('')
@@ -650,6 +659,8 @@ export function Setup({ route, routeName, onChange, sections: named, onSections,
             follow={follow}
             onFollow={changeFollow}
             finding={roads.finding !== null}
+            canUturnHere={roads.canUturnHere}
+            onUturnHere={roads.uturnHere}
             canUturn={roads.canUturn}
             uturn={roads.uturn}
             onUturn={roads.setUturn}
@@ -711,6 +722,8 @@ export function Setup({ route, routeName, onChange, sections: named, onSections,
             onRemove={(id) => onChange({ ...route, stops: route.stops.filter((s) => s.id !== id) })}
             onFocus={(p) => goTo({ center: p, zoom: 18 })}
             onNotice={setNotice}
+            bundleOrder={bundleOrder}
+            onBundleOrder={onBundleOrder}
             onBack={() => switchTab('route')}
             onNext={() => switchTab('sections')}
           />

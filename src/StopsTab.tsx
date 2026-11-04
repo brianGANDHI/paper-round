@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { offRouteNote, onlyInTransit, quietHouseIds, quietNote, quietText, stopOffRoute, stopQuietReasons, stopRoadSides, type RoadSide } from './alerts'
+import { addedOffRouteNote } from './addedStops'
+import { onlyInTransit, quietHouseIds, quietNote, quietReachFor, quietText, sideGuessed, stopOffRoute, stopQuietReasons, stopRoadSides, type RoadSide } from './alerts'
+import { BundleOrderEditor } from './BundleOrderEditor'
+import { setupBundles } from './bundles'
 import { STOP_COLOR } from './colors'
 import { occurrences } from './geo'
 import { lookupAddress, shortPlaceName, type Match } from './geocode'
@@ -9,6 +12,7 @@ import {
   cleanLabel,
   cleanNote,
   formatDistance,
+  hasPapers,
   MAX_ADDRESS,
   MAX_LABEL,
   MAX_NOTE,
@@ -21,8 +25,10 @@ import {
   stopWhere,
 } from './routeEdit'
 import { StopDialog } from './StopDialog'
+import { loadAlertDistance } from './storage'
 import { Empty, Segmented } from './ui'
 import type { Pt, Route, Stop, StopType } from './types'
+import './block.css'
 
 /** Matches closer than this to the route are ticked automatically. */
 const AUTO_SELECT_M = 120
@@ -31,17 +37,18 @@ const TYPE_OPTIONS: { value: StopType; label: string }[] = [
   { value: 'nothrow', label: 'No-Throw' },
   { value: 'bundle', label: 'Bundle Drop' },
   { value: 'request', label: 'Special Request' },
+  { value: 'block', label: 'Apartment Block' },
 ]
 
 /** What each kind of stop is called when it is counted: "Add 2 Bundle Drops". */
-const NOUN: Record<StopType, string> = { nothrow: 'No-Throw House', bundle: 'Bundle Drop', request: 'Special Request' }
+const NOUN: Record<StopType, string> = { nothrow: 'No-Throw House', bundle: 'Bundle Drop', request: 'Special Request', block: 'Apartment Block' }
 
 interface Row {
   line: string
   status: 'waiting' | 'looking' | 'found' | 'none' | 'error'
   match?: Match
   selected: boolean
-  /** What it is called, how many papers a bundle drop gets and what a special request says, as typed. The address is the line that was looked up. */
+  /** What it is called, how many papers a bundle drop gets or are thrown at an apartment block and what a special request says, as typed. The address is the line that was looked up. */
   name: string
   qty: string
   note: string
@@ -71,6 +78,9 @@ interface Props {
   onRemove: (id: string) => void
   onFocus: (p: Pt) => void
   onNotice: (message: string | null) => void
+  /** The order the driver drops the bundles in (stop ids), and a change to it: set under the list of stops, once there are two or more. Left out, the order isn't shown. */
+  bundleOrder?: readonly string[]
+  onBundleOrder?: (order: string[]) => void
   onBack: () => void
   /** On to naming parts of the route, the last step. */
   onNext: () => void
@@ -118,7 +128,12 @@ export function StopsTab(p: Props) {
   const [editing, setEditing] = useState<string | null>(null)
   const abort = useRef<AbortController | null>(null)
   const isBundle = p.type === 'bundle'
+  const isBlock = p.type === 'block'
   const isRequest = p.type === 'request'
+  // A bundle drop and an apartment block both have a number of papers.
+  const counted = hasPapers(p.type)
+  // The distance from the route at which a no-throw house is met by where the driver is and not along the route, so is never quiet: it goes with the alert distance, which is set on the round.
+  const [reachM] = useState(() => quietReachFor(loadAlertDistance()))
   // A stop on a road driven twice is passed on more than one side, so the list shows each.
   const occs = useMemo(() => occurrences(p.route), [p.route])
   // What the list says of each stop, worked out once per route and not on every keystroke in the boxes above it: the side
@@ -126,23 +141,34 @@ export function StopsTab(p: Props) {
   const listed = useMemo(
     () =>
       new Map(
-        p.route.stops.map((s) => [
-          s.id,
-          {
-            sides: stopRoadSides(p.route, occs, s.id),
-            reasons: stopQuietReasons(p.route, occs, s.id),
-            // Nothing is thrown where it is only transit, so a no-throw house there never alerts and needs no side.
-            transitOnly: s.type === 'nothrow' && onlyInTransit(p.route, occs, s.id),
-            // A stop off the route has no side of the route's to be on: its alert comes up when you are near it.
-            off: stopOffRoute(occs, s.id),
-            offM: occs.find((o) => o.stop.id === s.id)?.off ?? 0,
-          },
-        ]),
+        p.route.stops.map((s) => {
+          const guessed = sideGuessed(p.route, occs, s.id)
+          return [
+            s.id,
+            {
+              // A no-throw house on the line of the road alerts as if it were on the side thrown, but the map can't say which side it is on:
+              // the list says so, and asks for a side, on a Left or Right stretch as on Both, instead of showing the side thrown as its own.
+              sides: stopRoadSides(p.route, occs, s.id).map((side, i) => (guessed[i] ? null : side)),
+              reasons: stopQuietReasons(p.route, occs, s.id, reachM),
+              // Nothing is thrown where it is only transit, so a no-throw house there never alerts and needs no side.
+              transitOnly: s.type === 'nothrow' && onlyInTransit(p.route, occs, s.id, reachM),
+              // A stop off the route is told so, with how far off it is.
+              off: stopOffRoute(occs, s.id),
+              offM: occs.find((o) => o.stop.id === s.id)?.off ?? 0,
+              // One further than the reach is met by where the driver is, at the alert distance in use: it has no side of the route's
+              // to be on, and its alert comes up when you are near it. One within it, even more than 60 m out, is met along the route,
+              // and has the side its alert shows (and that keeps a no-throw house quiet or not) to set.
+              far: occs.some((o) => o.stop.id === s.id && o.off > reachM),
+            },
+          ]
+        }),
       ),
-    [p.route, occs],
+    [p.route, occs, reachM],
   )
   // The no-throw houses that never alert, as they are in transit or on the side that isn't thrown.
-  const quietCount = useMemo(() => quietHouseIds(p.route, occs).size, [p.route, occs])
+  const quietCount = useMemo(() => quietHouseIds(p.route, occs, reachM).size, [p.route, occs, reachM])
+  // The bundle drops, each once in the order the route first reaches it, for putting them in the order they are delivered.
+  const bundles = useMemo(() => setupBundles(occs), [occs])
   const noun = NOUN[p.type]
 
   // Leaving the tab mid-lookup must not keep calling the address service.
@@ -198,7 +224,7 @@ export function StopsTab(p: Props) {
   const chosen = rows.filter((r) => r.selected && r.match)
   const finished = rows.filter((r) => r.status !== 'waiting' && r.status !== 'looking').length
   // A stop is added with the name (and papers) typed beside it, and the address that was looked up.
-  const badQty = isBundle && chosen.some((r) => qtyProblem(r.qty))
+  const badQty = counted && chosen.some((r) => qtyProblem(r.qty))
   const editingStop = editing ? p.route.stops.find((s) => s.id === editing) : undefined
 
   const addChosen = () => {
@@ -206,14 +232,15 @@ export function StopsTab(p: Props) {
       const hit = stopAt(p.route, r.match!.place, p.type, {
         label: isRequest ? undefined : cleanLabel(r.name),
         address: cleanAddress(r.line),
-        qty: isBundle ? parseQty(r.qty) : undefined,
+        qty: counted ? parseQty(r.qty) : undefined,
         note: isRequest ? cleanNote(r.note) : undefined,
       })
       return hit ? [hit] : []
     })
     const stops = hits.map((h) => h.stop)
-    // Stops a long way from the route are added as they are: they alert by where you are, and the note says so.
-    const note = [p.onAdd(stops), offRouteNote(hits.map((h) => h.offM))].filter(Boolean).join(' ')
+    // Stops a long way from the route are added as they are, and the note says how they alert: by where you are beyond the reach, as you
+    // drive past nearer than that (not of a house that is quiet all the same, as it never alerts).
+    const note = [p.onAdd(stops), addedOffRouteNote(p.route, hits, reachM)].filter(Boolean).join(' ')
     const added = new Set(chosen.map((r) => r.line))
     setRows((rs) => rs.filter((r) => !added.has(r.line)))
     setText((t) => t.split('\n').filter((l) => !added.has(l.trim())).join('\n'))
@@ -222,7 +249,9 @@ export function StopsTab(p: Props) {
 
   return (
     <>
-      <Segmented label="Type of stop" value={p.type} options={TYPE_OPTIONS} onChange={p.onType} />
+      <div className="stop-types">
+        <Segmented label="Type of stop" value={p.type} options={TYPE_OPTIONS} onChange={p.onType} />
+      </div>
 
       <div className="section-label">Add by address</div>
       <div className="group">
@@ -241,9 +270,11 @@ export function StopsTab(p: Props) {
         One address per line. Include the town or postcode for the best match.{' '}
         {isBundle
           ? 'Once one is found, give it a business name and the number of papers it gets: the alert shows both, with the address under the name.'
-          : isRequest
-            ? 'Once one is found, add a note saying what to do, such as Blue gate, deliver by hand: the alert shows the note, with the house number beside it.'
-            : 'Once one is found you can give it a name too: the alert shows it, with the address under it.'}
+          : isBlock
+            ? 'Once one is found, add how many papers to throw there, and a name if you like: the alert shows the count and which side of the road it is on, with the address under the name.'
+            : isRequest
+              ? 'Once one is found, add a note saying what to do, such as Blue gate, deliver by hand: the alert shows the note, with the house number beside it.'
+              : 'Once one is found you can give it a name too: the alert shows it, with the address under it.'}
       </p>
 
       {busy ? (
@@ -310,7 +341,7 @@ export function StopsTab(p: Props) {
                           onChange={(e) => patch(i, { name: e.target.value })}
                         />
                       )}
-                      {isBundle && (
+                      {counted && (
                         <input
                           className="mini-input qty"
                           value={r.qty}
@@ -346,7 +377,7 @@ export function StopsTab(p: Props) {
               value={p.label}
               maxLength={MAX_LABEL}
               onChange={(e) => p.onLabel(e.target.value)}
-              placeholder={isBundle ? "e.g. Joe's Cafe" : 'Optional'}
+              placeholder={isBundle ? "e.g. Joe's Cafe" : isBlock ? 'e.g. Lakeside Apartments' : 'Optional'}
               autoCapitalize="words"
               autoCorrect="off"
               spellCheck={false}
@@ -378,7 +409,7 @@ export function StopsTab(p: Props) {
             />
           </label>
         )}
-        {isBundle && (
+        {counted && (
           <label className="row field">
             <span className="title">Papers</span>
             <input
@@ -415,7 +446,7 @@ export function StopsTab(p: Props) {
           <div className="section-label">On your route</div>
           <ul className="group">
             {p.route.stops.map((s) => {
-              const { sides, reasons, transitOnly, off, offM } = listed.get(s.id)!
+              const { sides, reasons, transitOnly, off, offM, far } = listed.get(s.id)!
               const unknown = sides.every((x) => x === null)
               // Why a no-throw house won't alert, on every pass or on some: in transit, or on the side that isn't thrown.
               const why = quietText(reasons)
@@ -428,12 +459,13 @@ export function StopsTab(p: Props) {
                     {/* The address is under the name only when there is a name: with none, the address is the name. */}
                     {stopWhere(s) && <div className="sub">{stopWhere(s)}</div>}
                     <div className="sub">
-                      {/* A bundle drop with no amount, or a request with no note, says so, since its alert can't say what to do. */}
+                      {/* A bundle drop or apartment block with no amount, or a request with no note, says so, since its alert can't say what to do. */}
                       <span className={stopIncomplete(s) ? 'warn-text' : undefined}>{stopDetail(s)}</span> ·{' '}
-                      {off ? `off the route (${formatDistance(offM)})` : quietAll ? why : why ? `${sidesText(sides)}, ${why}` : sidesText(sides)}
+                      {/* A house that is quiet is told so before it is told to be off the route: it can be a little further than the route's width and still be kept quiet. */}
+                      {quietAll ? why : off ? `off the route (${formatDistance(offM)})` : why ? `${sidesText(sides)}, ${why}` : sidesText(sides)}
                     </div>
                   </button>
-                  {!off && (
+                  {!far && (
                     <button
                       className="chip-btn"
                       data-warn={(unknown && !transitOnly) || undefined}
@@ -443,7 +475,7 @@ export function StopsTab(p: Props) {
                       {unknown ? 'Set side' : SIDE_WORD[sides.find((x) => x) as RoadSide]}
                     </button>
                   )}
-                  <button className={off ? 'icon-btn edit solo' : 'icon-btn edit'} aria-label={`Edit ${stopName(s)}`} onClick={() => setEditing(s.id)}>
+                  <button className={far ? 'icon-btn edit solo' : 'icon-btn edit'} aria-label={`Edit ${stopName(s)}`} onClick={() => setEditing(s.id)}>
                     <Icon name="edit" size={20} />
                   </button>
                   <button className="icon-btn" aria-label={`Delete ${stopName(s)}`} onClick={() => p.onRemove(s.id)}>
@@ -454,6 +486,13 @@ export function StopsTab(p: Props) {
             })}
           </ul>
           {quietCount > 0 && <p className="footnote">{quietNote(quietCount)}</p>}
+        </>
+      )}
+
+      {bundles.length > 1 && p.onBundleOrder && (
+        <>
+          <div className="section-label">Order of bundle drops</div>
+          <BundleOrderEditor bundles={bundles} order={p.bundleOrder} onChange={p.onBundleOrder} />
         </>
       )}
 

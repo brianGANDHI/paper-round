@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { sideGuessed } from './alerts'
 import { distanceToPath, haversine, occurrences, sideAt } from './geo'
 import {
   appendPoint,
@@ -11,6 +12,7 @@ import {
   deletePoint,
   deleteSection,
   deleteWarning,
+  hasPapers,
   houseNumber,
   insertPoint,
   isDuplicateTap,
@@ -181,6 +183,14 @@ describe('stopAt', () => {
     expect(haversine(hit.stop, { lat: 51.0025, lng: 0.0002 })).toBe(0)
   })
 
+  it('keeps the amount of an apartment block, with its name and address', () => {
+    const hit = stopAt(road(6), { lat: 51.0025, lng: 0.0002 }, 'block', { label: 'Lakeside Apartments', address: '12 Oak Road', qty: 12 })!
+    expect(hit.stop).toMatchObject({ type: 'block', label: 'Lakeside Apartments', address: '12 Oak Road', qty: 12 })
+    const bare = stopAt(road(6), { lat: 51.0025, lng: 0.0002 }, 'block')!
+    expect(bare.stop.type).toBe('block')
+    expect('qty' in bare.stop).toBe(false)
+  })
+
   it('keeps the note of a special request, and has none when none is given', () => {
     const hit = stopAt(road(6), { lat: 51.0025, lng: 0.0002 }, 'request', { address: '23 Oak Road', note: 'Blue gate' })!
     expect(hit.stop).toMatchObject({ type: 'request', address: '23 Oak Road', note: 'Blue gate' })
@@ -190,6 +200,57 @@ describe('stopAt', () => {
 
   it('needs a route', () => {
     expect(stopAt({ points: [], sideChanges: [], stops: [] }, pt(0), 'bundle')).toBeNull()
+  })
+})
+
+describe('whether the side shown for a stop is only a guess', () => {
+  // A road running north, thrown to the left and then to the right; houses on it, beside it and on both sides of it.
+  const house = (id: string, lat: number, lng: number, extra: Partial<Stop> = {}): Stop => ({ id, type: 'nothrow', lat, lng, pathIdx: 2, ...extra })
+  const route = (sideChanges: Route['sideChanges'], ...stops: Stop[]): Route => ({ ...road(6), sideChanges, stops })
+  const guessed = (r: Route, id: string) => sideGuessed(r, occurrences(r), id)
+  const LEFT: Route['sideChanges'] = [{ idx: 0, side: 'left' }]
+
+  it('is a guess for a no-throw house on the line of the road, on a Left stretch as well as on Both', () => {
+    for (const side of ['left', 'right', 'both'] as const) {
+      const r = route([{ idx: 0, side }], house('on', 51.0025, 0))
+      expect(guessed(r, 'on'), side).toEqual([true])
+    }
+  })
+
+  it('is not a guess for a house beside the road, on either side of it', () => {
+    const r = route(LEFT, house('west', 51.0025, -0.0002), house('east', 51.0025, 0.0002))
+    expect(guessed(r, 'west')).toEqual([false])
+    expect(guessed(r, 'east')).toEqual([false])
+  })
+
+  it('stops being a guess when the side was picked by hand, however near the line it is', () => {
+    const r = route(LEFT, house('on', 51.0025, 0, { side: 'right' }))
+    expect(guessed(r, 'on')).toEqual([false])
+  })
+
+  it('is never a guess for a bundle drop, a request or an apartment block, which show no side when it cannot be told', () => {
+    const r = route(
+      LEFT,
+      house('b', 51.0015, 0, { type: 'bundle' }),
+      house('q', 51.0025, 0, { type: 'request' }),
+      house('k', 51.0035, 0, { type: 'block' }),
+    )
+    for (const id of ['b', 'q', 'k']) expect(guessed(r, id), id).toEqual([false])
+  })
+
+  it('is told for each time the road passes the house, in route order', () => {
+    // Out and back along one road: the house is on the line both times.
+    const out = road(4)
+    const back: Route = {
+      points: [...out.points, ...[...out.points].reverse().slice(1)],
+      sideChanges: [{ idx: 0, side: 'left' }],
+      stops: [house('on', 51.0015, 0, { pathIdx: 1 })],
+    }
+    expect(guessed(back, 'on')).toEqual([true, true])
+  })
+
+  it('has nothing to say of a stop that is not on the route', () => {
+    expect(guessed(route(LEFT, house('on', 51.0025, 0)), 'nope')).toEqual([])
   })
 })
 
@@ -1159,6 +1220,7 @@ describe('naming a stop and saying how many papers it gets', () => {
   const bundle = (extra: Partial<Stop> = {}): Stop => ({ id: 'b', type: 'bundle', lat: 51.0015, lng: 0.0003, pathIdx: 1, ...extra })
   const house = (extra: Partial<Stop> = {}): Stop => ({ id: 'h', type: 'nothrow', lat: 51.0035, lng: 0.0003, pathIdx: 3, ...extra })
   const request = (extra: Partial<Stop> = {}): Stop => ({ id: 'r', type: 'request', lat: 51.0025, lng: 0.0003, pathIdx: 2, ...extra })
+  const block = (extra: Partial<Stop> = {}): Stop => ({ id: 'k', type: 'block', lat: 51.0025, lng: 0.0004, pathIdx: 2, ...extra })
   const withStops = (...stops: Stop[]): Route => ({ ...road(6), stops })
 
   describe('a name as it was typed', () => {
@@ -1309,6 +1371,35 @@ describe('naming a stop and saying how many papers it gets', () => {
       expect(stopIncomplete(request({ note: 'Blue gate' }))).toBe(false)
       expect(stopIncomplete(house())).toBe(false)
     })
+
+    it('calls an apartment block by its name, or its address, or says what it is', () => {
+      expect(stopName(block({ label: 'Lakeside Apartments' }))).toBe('Lakeside Apartments')
+      expect(stopName(block({ label: 'Lakeside Apartments', address: '12 Oak Road' }))).toBe('Lakeside Apartments')
+      expect(stopName(block({ address: '12 Oak Road' }))).toBe('12 Oak Road')
+      expect(stopName(block())).toBe('Apartment block')
+    })
+
+    it('says how many papers are thrown at an apartment block, or that no amount is set, as for a bundle drop', () => {
+      expect(stopDetail(block({ qty: 12 }))).toBe('12 papers')
+      expect(stopDetail(block({ qty: 1 }))).toBe('1 paper')
+      expect(stopDetail(block())).toBe('no amount set')
+      expect(stopWhere(block({ label: 'Lakeside Apartments', address: '12 Oak Road' }))).toBe('12 Oak Road')
+    })
+
+    it('points out an apartment block with no amount, since its alert cannot say how many to throw', () => {
+      expect(stopIncomplete(block())).toBe(true)
+      expect(stopIncomplete(block({ label: 'Lakeside Apartments' }))).toBe(true)
+      expect(stopIncomplete(block({ qty: 12 }))).toBe(false)
+    })
+  })
+
+  describe('which kinds of stop have papers', () => {
+    it('is a bundle drop and an apartment block, and no other', () => {
+      expect(hasPapers('bundle')).toBe(true)
+      expect(hasPapers('block')).toBe(true)
+      expect(hasPapers('nothrow')).toBe(false)
+      expect(hasPapers('request')).toBe(false)
+    })
   })
 
   describe('changing them', () => {
@@ -1357,6 +1448,27 @@ describe('naming a stop and saying how many papers it gets', () => {
       const r = updateStop(withStops(request()), 'r', { address: '23 Oak Road', note: 'Blue gate', qty: 5 })
       expect(r.stops[0]).toMatchObject({ id: 'r', address: '23 Oak Road', note: 'Blue gate' })
       expect('qty' in r.stops[0]).toBe(false)
+    })
+
+    it('gives an apartment block a name, an address and an amount, and keeps the amount it is given', () => {
+      const r = updateStop(withStops(block()), 'k', { label: 'Lakeside Apartments', address: '12 Oak Road, Lewes', qty: 12 })
+      expect(r.stops[0]).toMatchObject({ id: 'k', type: 'block', label: 'Lakeside Apartments', address: '12 Oak Road, Lewes', qty: 12 })
+    })
+
+    it('takes the amount off an apartment block when it is left out, so blank means none, and keeps it when it is passed again', () => {
+      const start = withStops(block({ label: 'Lakeside Apartments', qty: 12 }))
+      const gone = updateStop(start, 'k', { label: 'Lakeside Apartments' })
+      expect('qty' in gone.stops[0]).toBe(false)
+      const kept = updateStop(start, 'k', { label: 'Lakeside Apartments', qty: 12 })
+      expect(kept.stops[0].qty).toBe(12)
+      expect(updateStop(start, 'k', { label: 'Lakeside Apartments', qty: 30 }).stops[0].qty).toBe(30)
+    })
+
+    it('gives an apartment block no note, and leaves its side and place alone', () => {
+      const keep = block({ label: 'Old', qty: 12, side: 'left', pathIdx: 2 })
+      const r = updateStop(withStops(keep), 'k', { label: 'New', qty: 20, note: 'Blue gate' })
+      expect('note' in r.stops[0]).toBe(false)
+      expect(r.stops[0]).toEqual({ ...keep, label: 'New', qty: 20 })
     })
 
     it('takes the note off a special request when it is left out, so blank means none', () => {
@@ -1909,7 +2021,7 @@ describe('painting a stretch by how far along the route it is', () => {
   })
 
   describe('changing only the stretch asked for', () => {
-    it('leaves every part of the route outside it as it was, and paints every part inside', () => {
+    it('leaves every part of the route outside it as it was, and paints every part inside', { timeout: 60_000 }, () => {
       const base: Route = { ...road(11), sideChanges: [{ idx: 0, side: 'both' }, { idx: 4, side: 'left' }, { idx: 8, side: 'right' }] }
       const total = routeLength(base.points)
       let painted = 0

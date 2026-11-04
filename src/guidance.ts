@@ -58,7 +58,7 @@ export const TRANSIT_HEADING_TOLERANCE = 120
  * is `then` after a straight of `ahead` metres, to carry on. With no turn left at all the straight runs to the end of the route.
  * The turns may be named turns: the one given back is the same object.
  *
- * The heading and `after` count as in `upcomingTurn`: a turn for the other way along a street driven twice, or one already passed,
+ * The heading, `after` and `reached` count as in `upcomingTurn`: a turn for the other way along a street driven twice, or one already passed,
  * is not the next. The turn the plain card would show (within `TURN_SHOW_M`, and the heading within 60 degrees of the way it comes up)
  * is the one shown. Otherwise the next turn is the first the heading is within `TRANSIT_HEADING_TOLERANCE` of, so that a turn is not
  * lost because the road bends on the way to it, and a turn close by that the heading is only part against is not set aside for one

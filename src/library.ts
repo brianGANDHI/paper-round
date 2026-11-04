@@ -1,7 +1,8 @@
-import { reconcile } from './bundles'
+import { normalizeBundleOrder, reconcile } from './bundles'
 import { occurrences } from './geo'
 import { normalizeSections, tidyText } from './namedSections'
 import { normalizeRoute } from './routeEdit'
+import { normalizeCourtLegs, withCourtLegs } from './resume'
 import type { Library, NamedSection, RoundState, Route, SavedRoute, TurnStreet } from './types'
 
 export const MAX_NAME = 40
@@ -88,6 +89,12 @@ function withExtras(r: SavedRoute, sections: readonly NamedSection[] | undefined
   return { ...rest, ...(sections?.length ? { sections: [...sections] } : {}), ...(streets?.length ? { streets: [...streets] } : {}) }
 }
 
+/** A route with its bundle order set; the key is left out when there is none. */
+const withOrder = (r: SavedRoute, order: readonly string[] | undefined): SavedRoute => {
+  const { bundleOrder: _order, ...rest } = r
+  return { ...rest, ...(order?.length ? { bundleOrder: [...order] } : {}) }
+}
+
 /** Give the route in use its named sections. Nothing else about it changes, as naming a part does not alter the route. */
 export function setActiveSections(lib: Library, sections: readonly NamedSection[]): Library {
   return mapRoute(lib, lib.activeId, (r) => withExtras(r, sections, r.streets))
@@ -96,6 +103,19 @@ export function setActiveSections(lib: Library, sections: readonly NamedSection[
 /** Give the route in use the street names found for its turns. Nothing else about it changes. */
 export function setActiveStreets(lib: Library, streets: readonly TurnStreet[]): Library {
   return mapRoute(lib, lib.activeId, (r) => withExtras(r, r.sections, streets))
+}
+
+/**
+ * Give the route with this id the order the driver wants its bundle drops in (stop ids: see `SavedRoute.bundleOrder`). It is kept as
+ * given, so a stop since deleted or one not in it yet is no matter: they are put right each time it is read (`orderedStops`), and
+ * editing the route never rewrites it. Only ids (text, none twice) are kept, and an empty order takes it off. The route and its round are
+ * not touched, so Start Over and Reset Round keep it too: it is the driver's list, not progress. An unknown route changes nothing.
+ */
+export function setBundleOrder(lib: Library, routeId: string, order: readonly string[]): Library {
+  const clean = normalizeBundleOrder(order)
+  const route = lib.routes.find((r) => r.id === routeId)
+  if (!route) return lib
+  return mapRoute(lib, routeId, (r) => withOrder(r, clean))
 }
 
 export function selectRoute(lib: Library, id: string): Library {
@@ -113,12 +133,15 @@ export function renameRoute(lib: Library, id: string, name: string): Library {
   return mapRoute(lib, id, (r) => ({ ...r, name: uniqueName(lib, name, id) }))
 }
 
-/** Copy a route, with its named sections and street names, under a new name and switch to the copy. Its round starts fresh. */
+/**
+ * Copy a route, with its named sections, street names and bundle order (the stop ids are the same in the copy), under a new name and
+ * switch to the copy. Its round starts fresh.
+ */
 export function duplicateRoute(lib: Library, id: string, now = Date.now()): Library {
   const source = lib.routes.find((r) => r.id === id)
   if (!source) return lib
   const made = makeRoute(uniqueName(lib, `${source.name} copy`), structuredClone(source.route), now)
-  const copy = withExtras(made, structuredClone(source.sections), structuredClone(source.streets))
+  const copy = withOrder(withExtras(made, structuredClone(source.sections), structuredClone(source.streets)), source.bundleOrder)
   return { routes: [...lib.routes, copy], activeId: copy.id }
 }
 
@@ -154,7 +177,7 @@ export function importClashes(lib: Library, imported: { name: string }[]): strin
  */
 export function addImported(
   lib: Library,
-  imported: { name: string; route: Route; sections?: NamedSection[]; streets?: TurnStreet[] }[],
+  imported: { name: string; route: Route; sections?: NamedSection[]; streets?: TurnStreet[]; bundleOrder?: string[] }[],
   now = Date.now(),
   mode: ImportMode = 'keep',
 ): Library {
@@ -164,19 +187,26 @@ export function addImported(
   let next: Library = replaceStarter ? { routes: [], activeId: '' } : lib
   for (const item of imported) {
     const existing = mode === 'replace' ? next.routes.find((r) => sameName(r.name, item.name)) : undefined
-    // A backup made before sections or street names existed has none, so a route it replaces keeps its own.
+    // A backup made before sections or street names existed has none, so a route it replaces keeps its own. The same goes for the
+    // bundle order, which a backup carries only when the driver had set one.
     next = existing
       ? {
           ...next,
           routes: next.routes.map((r) =>
             r.id === existing.id
-              ? withExtras({ ...r, route: item.route, round: freshRound(), updatedAt: now }, item.sections ?? r.sections, item.streets ?? r.streets)
+              ? withOrder(
+                  withExtras({ ...r, route: item.route, round: freshRound(), updatedAt: now }, item.sections ?? r.sections, item.streets ?? r.streets),
+                  item.bundleOrder ?? r.bundleOrder,
+                )
               : r,
           ),
         }
       : {
           ...next,
-          routes: [...next.routes, withExtras(makeRoute(uniqueName(next, item.name || 'Imported route'), item.route, now), item.sections, item.streets)],
+          routes: [
+            ...next.routes,
+            withOrder(withExtras(makeRoute(uniqueName(next, item.name || 'Imported route'), item.route, now), item.sections, item.streets), item.bundleOrder),
+          ],
         }
   }
   return replaceStarter ? { ...next, activeId: next.routes[0].id } : next
@@ -221,21 +251,27 @@ export function normalizeLibrary(raw: unknown): Library | null {
     const startM = r.round?.startM
     const sections = normalizeSections(r.sections)
     const streets = normalizeStreets(r.streets)
+    const bundleOrder = normalizeBundleOrder(r.bundleOrder)
     clean.push({
       id,
       name: cleanName(typeof r.name === 'string' ? r.name : '') || DEFAULT_NAME,
       route: normalizeRoute(r.route),
-      // The bundles dropped or missed are read like the stops done, and kept only while they are among them.
-      round: reconcile({
-        handledStopIds: handled,
-        ...(typeof furthest === 'number' && Number.isFinite(furthest) && furthest > 0 ? { furthest } : {}),
-        ...(typeof startM === 'number' && Number.isFinite(startM) && startM >= 0 ? { startM } : {}),
-        dropped: r.round?.dropped,
-        missed: r.round?.missed,
-      }),
+      // The bundles dropped or missed are read like the stops done, and kept only while they are among them. What a change of side made
+      // of the passes at the head of a court is read back too (a round saved before it was kept has none): see `RoundState.courtLegs`.
+      round: withCourtLegs(
+        reconcile({
+          handledStopIds: handled,
+          ...(typeof furthest === 'number' && Number.isFinite(furthest) && furthest > 0 ? { furthest } : {}),
+          ...(typeof startM === 'number' && Number.isFinite(startM) && startM >= 0 ? { startM } : {}),
+          dropped: r.round?.dropped,
+          missed: r.round?.missed,
+        }),
+        normalizeCourtLegs(r.round?.courtLegs),
+      ),
       updatedAt: typeof r.updatedAt === 'number' && Number.isFinite(r.updatedAt) ? r.updatedAt : 0,
       ...(sections.length ? { sections } : {}),
       ...(streets.length ? { streets } : {}),
+      ...(bundleOrder.length ? { bundleOrder } : {}),
     })
   }
   if (!clean.length) return null

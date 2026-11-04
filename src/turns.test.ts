@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import { cumulativeDistances, simplify } from './geo'
+import { DRIVES_ON_LEFT, UTURN_WAY } from './region'
 import { ROAD_SIMPLIFY_M } from './roads'
 import {
   arrowShape,
   MIN_TURN_DEG,
   onTheRoute,
   pointAt,
+  readsAsUturnAt,
+  REVERSAL_DEG,
   routeTurns,
   spokenDistance,
   spokenMetres,
@@ -25,6 +28,7 @@ import {
   UTURN_MAX_DEG,
   UTURN_MIN_DEG,
   upcomingTurn,
+  uturnThere,
   type Turn,
   type TurnCue,
 } from './turns'
@@ -417,6 +421,69 @@ describe('the turn to show', () => {
   it('is nothing once the last turn is behind, or when there are none', () => {
     expect(upcomingTurn(turns, 500)).toBeNull()
     expect(upcomingTurn([], 0)).toBeNull()
+  })
+
+  describe('with turns close together, as in, round and out of a short court', () => {
+    // The turn into a court 8 m deep, the U-turn at its end and the turn out, as routeTurns reads them: the turn out is a swing over two pieces.
+    const court: Turn[] = [turnAt(100, 90, 0), turnAt(110, 180, 90), turnAt(117.5, 90, 270, 2.5)]
+
+    it('moves on from each as soon as the driver is through it, so the next is up in time, with no heading to go by', () => {
+      // The turn in used to be up until the driver was 15 m past it, at the turn out: the U-turn was never shown.
+      expect(upcomingTurn(court, 99.5)?.turn).toBe(court[0])
+      expect(upcomingTurn(court, 100)?.turn).toBe(court[1])
+      expect(upcomingTurn(court, 109.5)?.turn).toBe(court[1])
+      expect(upcomingTurn(court, 110)?.turn).toBe(court[2])
+      // The last of them is up the whole 15 m, as any turn with none close after it is.
+      expect(upcomingTurn(court, 117.5 + TURN_PASSED_M)?.turn).toBe(court[2])
+      expect(upcomingTurn(court, 117.5 + TURN_PASSED_M + 0.5)).toBeNull()
+    })
+
+    it('holds a turn until the next starts 15 m ahead, when that is sooner than 15 m past it, and not before its swing ends', () => {
+      const two = [turnAt(100, 90, 0), turnAt(125, -90, 90)]
+      expect(upcomingTurn(two, 109.5)?.turn).toBe(two[0])
+      expect(upcomingTurn(two, 110)?.turn).toBe(two[1])
+      // 30 m apart or more, the whole 15 m, as before.
+      const apart = [turnAt(100, 90, 0), turnAt(130, -90, 90)]
+      expect(upcomingTurn(apart, 115)?.turn).toBe(apart[0])
+      expect(upcomingTurn(apart, 115.5)?.turn).toBe(apart[1])
+      // A corner rounded off from 94 m to 106 m, with a U-turn at 110 m: up until the end of its swing.
+      const round = [turnAt(100, 90, 0, 6), turnAt(110, 180, 90)]
+      expect(upcomingTurn(round, 105.5)?.turn).toBe(round[0])
+      expect(upcomingTurn(round, 106)?.turn).toBe(round[1])
+    })
+
+    it('never brings one back once the furthest reached is through it, however the position wanders back', () => {
+      // Back at 105 m on a fix that has slipped, the U-turn again for a driver known to have got only to 109 m...
+      expect(upcomingTurn(court, 105, { reached: 109 })?.turn).toBe(court[1])
+      // ...but the turn out for one known to have got to 110 m, or to the turn out itself, wherever the fix is.
+      expect(upcomingTurn(court, 105, { reached: 110 })?.turn).toBe(court[2])
+      expect(upcomingTurn(court, 105, { reached: 115 })?.turn).toBe(court[2])
+      expect(upcomingTurn(court, 95, { reached: 118 })?.turn).toBe(court[2])
+      // A turn the driver is not through yet is still to come, whatever the furthest reached.
+      expect(upcomingTurn(court, 95, { reached: 99.5 })?.turn).toBe(court[0])
+      expect(upcomingTurn(court, 95, { reached: 100 })?.turn).toBe(court[1])
+    })
+
+    it('counts the turn after a corner just passed for the heading into the corner, as the heading lags, so a later one is not shown first', () => {
+      // A court at 120 degrees to a road heading north: the turn out heads 60 degrees off the road, so a phone still heading up the road agrees with it.
+      const angled: Turn[] = [turnAt(100, 120, 0), turnAt(110, 180, 120), turnAt(117.5, 60, 300, 2.5)]
+      expect(upcomingTurn(angled, 99, { heading: 0 })?.turn).toBe(angled[0])
+      expect(upcomingTurn(angled, 101, { heading: 0 })?.turn).toBe(angled[1])
+      expect(upcomingTurn(angled, 101, { heading: 120 })?.turn).toBe(angled[1])
+      // Once the corner is behind the driver for good, a phone heading up the road is one back out on it: the turn out is the next.
+      expect(upcomingTurn(angled, 101, { heading: 0, reached: 101 })?.turn).toBe(angled[2])
+      // Not past a U-turn, though: just past one is the same place as just before it, and a phone still heading into the court has not turned round.
+      expect(upcomingTurn(angled, 111, { heading: 120 })).toBeNull()
+      expect(upcomingTurn(angled, 111, { heading: 300 })?.turn).toBe(angled[2])
+      // Nor past a turn whose hold the next did not cut short: that is no lag.
+      expect(upcomingTurn([turnAt(100, 90, 0), turnAt(140, 90, 90)], 116, { heading: 0 })).toBeNull()
+    })
+
+    it('still sets aside a turn that comes up the other way to the way the phone is heading, before the one before it is passed', () => {
+      const both: Turn[] = [turnAt(100, 90, 0), turnAt(120, -90, 180)]
+      expect(upcomingTurn(both, 90, { heading: 0 })?.turn).toBe(both[0])
+      expect(upcomingTurn(both, 90, { heading: 180 })?.turn).toBe(both[1])
+    })
   })
 
   it('looks as far ahead as it is asked to, 200 m unless told otherwise', () => {
@@ -833,7 +900,7 @@ describe('U-turns, however they are drawn', () => {
     return out.map(spot)
   }
 
-  /** The one turn a route has, which is a U-turn the way given (1 right, -1 left, 0 for either: an exact reversal has no side). */
+  /** The one turn a route has, which is a U-turn the way given (1 right, -1 left, 0 for either). */
   function oneUturn(route: Pt[], way: 1 | -1 | 0 = 1): Turn {
     const turns = routeTurns(route)
     expect(turns).toHaveLength(1)
@@ -859,7 +926,7 @@ describe('U-turns, however they are drawn', () => {
   describe('an exact reversal at a point', () => {
     it('is found where it is, sparse or dense', () => {
       for (const route of [through([0, 0], [0, 200], [0, 0]), dense(5, [0, 0], [0, 200], [0, 0]), dense(12, [0, 0], [0, 200], [0, 0])]) {
-        const t = oneUturn(route, 0)
+        const t = oneUturn(route)
         expect(near(t.at, 200, 3)).toBe(true)
         expect(near(t.heading, 0, 1)).toBe(true)
       }
@@ -935,6 +1002,393 @@ describe('U-turns, however they are drawn', () => {
         oneUturn(drive([{ straight: 100 }, { turn: 95, radius: 4 }, { straight: gap }, { turn: 95, radius: 4 }, { straight: 100 }], 1), 1)
         oneUturn(drive([{ straight: 100 }, { turn: -95, radius: 4 }, { straight: gap }, { turn: -95, radius: 4 }, { straight: 100 }], 1), -1)
       }
+    })
+  })
+
+  describe('an exact reversal, which has no side of its own', () => {
+    /** The road out, and the road service's way back down the same road, `jog` metres across, as it answers (six decimals). `start` m more road at the start moves the reversal along the 5 m pieces the route is read in. */
+    const reversal = (heading: number, jog: number, start = 0): Pt[] => {
+      const east = (x: number, y: number) => x * cos(heading) + y * sin(heading)
+      const north = (x: number, y: number) => -x * sin(heading) + y * cos(heading)
+      const at = ([x, y]: [number, number]): Pt => {
+        const p = spot([east(x, y), north(x, y)])
+        return { lat: Number(p.lat.toFixed(6)), lng: Number(p.lng.toFixed(6)) }
+      }
+      const outXy: [number, number][] = []
+      for (let y = -start; y < 300; y += 25) outXy.push([0, y])
+      outXy.push([0, 300])
+      const backXy: [number, number][] = []
+      for (let y = 300; y >= 120; y -= 25) backXy.push([jog, y])
+      return [...outXy, ...backXy].map(at)
+    }
+
+    it('turns the way traffic here turns round, not whichever way rounding put it', () => {
+      expect(DRIVES_ON_LEFT).toBe(true)
+      expect(UTURN_WAY).toBe(1)
+      // 120 headings, three tiny jogs: before this the sign was whichever way the arithmetic wrapped +180 or -180, about one in six to the left.
+      let n = 0
+      for (let heading = 0; heading < 360; heading += 3) {
+        for (const jog of [0, 0.15, 0.4]) {
+          const turns = routeTurns(reversal(heading, jog))
+          expect(turns, `${heading} ${jog}`).toHaveLength(1)
+          expect(turnKind(turns[0].angle), `${heading} ${jog}`).toBe('uturn')
+          expect(turns[0].angle, `${heading} ${jog}`).toBeGreaterThan(0)
+          expect(turns[0].angle, `${heading} ${jog}`).toBeGreaterThanOrEqual(175)
+          // On the very line there is no jog at all, and it is a half turn to the right exactly.
+          if (jog === 0) expect(turns[0].angle).toBeCloseTo(180, 3)
+          n++
+        }
+      }
+      expect(n).toBe(360)
+    })
+
+    it('turns that way wherever the reversal falls on the 5 m pieces, and not only at the end of one', () => {
+      // Half way along a piece, the piece ends about where it began, and its way was whichever way the rounding tipped it: about one in fifty to the left.
+      // (The road as it is thinned: a straight road is its two ends.)
+      for (let heading = 0; heading < 360; heading += 3) {
+        for (let k = 0; k < 20; k++) {
+          const route = ([[0, -k / 4], [0, 300], [0, 120]] as [number, number][]).map(([x, y]) => {
+            const p = spot([x * cos(heading) + y * sin(heading), -x * sin(heading) + y * cos(heading)])
+            return { lat: Number(p.lat.toFixed(6)), lng: Number(p.lng.toFixed(6)) }
+          })
+          expect(routeTurns(route).map((t) => [turnKind(t.angle), Math.sign(t.angle)]), `${heading} ${k / 4}`).toEqual([['uturn', 1]])
+        }
+      }
+    })
+
+    it('still turns the other way now and then where the last piece of the road before it is short, a gap that is left', () => {
+      // A point of the road 0 to 5 m before the reversal, and the reversal anywhere on a piece: the short piece's way is tipped by the rounding too.
+      // About one in twenty-five is to the left (one in nine before a reversal half way along a piece was read as one joint).
+      let left = 0
+      let n = 0
+      for (let heading = 0; heading < 360; heading += 3) {
+        for (let k = 0; k < 20; k++) {
+          const read = routeTurns(reversal(heading, 0, k / 4))
+          expect(read.map((t) => turnKind(t.angle)), `${heading} ${k / 4}`).toEqual(['uturn'])
+          if (read[0].angle < 0) left++
+          n++
+        }
+      }
+      expect(left / n).toBeLessThan(0.05)
+    })
+
+    it('can be asked whether a place is read as a U-turn that way, wherever the pieces fall', () => {
+      for (const heading of [0, 37, 90, 200, 315]) {
+        const straight = reversal(heading, 0)
+        // Where the reversal is, 300 m on, and nowhere else.
+        expect(readsAsUturnAt(straight, 300), `${heading}`).toBe(true)
+        expect(readsAsUturnAt(straight, 150), `${heading}`).toBe(false)
+        expect(readsAsUturnAt(straight, 285), `${heading}`).toBe(false)
+      }
+      // A U-turn round two corners to the right is, and one to the left is not, nor is a corner.
+      expect(readsAsUturnAt(through([0, 0], [0, 200], [6, 200], [6, 0]), 203)).toBe(true)
+      expect(readsAsUturnAt(through([0, 0], [0, 200], [-6, 200], [-6, 0]), 203)).toBe(false)
+      expect(readsAsUturnAt(through([0, 0], [0, 200], [200, 200]), 200)).toBe(false)
+      // A way back that leans a degree and a half to the left of straight back is a left U-turn where the pieces fall right on it, so it is not.
+      expect(readsAsUturnAt(legs([0, 200], [181.6, 150]), 200)).toBe(false)
+      // Nor is a place that is too near the start of the route to read.
+      expect(readsAsUturnAt(through([0, 0], [0, 4], [0, 0]), 4)).toBe(false)
+    })
+
+    it('can be asked of a U-turn that a slight bend the same way a little before it was joined into, whose middle is well short of the place', { timeout: 60_000 }, () => {
+      // The road out bends 20 or 30 degrees to the right 18 to 28 m before it turns straight back: the bend is joined into the U-turn, and the middle of
+      // the two is 9 to 14 m short of where the route turns round. Asked of the turn whose middle is nearest, no more than two pieces off, this was no.
+      for (const kink of [20, 30]) {
+        for (const q of [18, 23, 28]) {
+          for (let heading = 0; heading < 360; heading += 15) {
+            for (let k = 0; k < 20; k++) {
+              const route = ([[0, -k / 4], [0, 200], [q * sin(kink), 200 + q * cos(kink)], [0, 200], [0, 50]] as [number, number][]).map(([x, y]) => {
+                const p = spot([x * cos(heading) + y * sin(heading), -x * sin(heading) + y * cos(heading)])
+                return { lat: Number(p.lat.toFixed(6)), lng: Number(p.lng.toFixed(6)) }
+              })
+              const at = 200 + k / 4 + q
+              const label = `${kink} ${q} ${heading} ${k / 4}`
+              expect(readsAsUturnAt(route, at), label).toBe(true)
+              expect(uturnThere(routeTurns(route), at), label).toBe(true)
+            }
+          }
+        }
+      }
+    })
+
+    it('says which turn is at a place: the one whose stretch takes it in, else the nearest by its middle or, a piece off, by its stretch', () => {
+      const turn = (from: number, to: number, angle: number): Turn => ({ at: (from + to) / 2, from, to, angle, heading: 0 })
+      // A U-turn joined with a bend 25 m before it, whose stretch ends at the place or a few metres short of it.
+      expect(uturnThere([turn(175, 200, 180)], 200)).toBe(true)
+      expect(uturnThere([turn(172, 197, 180)], 200)).toBe(true)
+      expect(uturnThere([turn(165, 194, 180)], 200)).toBe(false)
+      // A U-turn at a point, a piece or two off.
+      expect(uturnThere([turn(205, 205, 180)], 200)).toBe(true)
+      expect(uturnThere([turn(210, 210, 180)], 200)).toBe(true)
+      expect(uturnThere([turn(211, 211, 180)], 200)).toBe(false)
+      // To the left, or a sharp turn, is not one; nor is a place where a corner is, though a U-turn is a little further on.
+      expect(uturnThere([turn(175, 200, -180)], 200)).toBe(false)
+      expect(uturnThere([turn(195, 205, 150)], 200)).toBe(false)
+      expect(uturnThere([turn(195, 205, 90), turn(208, 208, 180)], 200)).toBe(false)
+      expect(uturnThere([], 200)).toBe(false)
+    })
+
+    it('is a bend of this size or bigger in one joint, and no smaller bend is turned to the right on that account', () => {
+      expect(REVERSAL_DEG).toBe(178.5)
+    })
+
+    it('keeps the side of a hand-tapped near reversal, which has one', () => {
+      for (const way of [1, -1] as const) {
+        // The way back is drawn 3 degrees to one side of the way out: 177 degrees round, to that side.
+        const route = legs([0, 200], [way * 177, 150])
+        const t = oneUturn(route, way)
+        expect(near(Math.abs(t.angle), 177, 0.5)).toBe(true)
+      }
+    })
+
+    it('keeps the side of a hairpin and of a U-turn to the left drawn as two corners', () => {
+      expect(oneUturn(through([0, 0], [0, 200], [-6, 200], [-6, 0]), -1).angle).toBeCloseTo(-180, 0)
+      expect(oneUturn(through([0, 0], [0, 200], [6, 200], [6, 0]), 1).angle).toBeCloseTo(180, 0)
+    })
+  })
+
+  describe('a U-turn right next to a corner the other way', () => {
+    /** A route of legs from heading `from`: each leg turned that much more, so the same shape is tried in any direction. */
+    const turned = (from: number, ...moves: [number, number][]): Pt[] => legs(...moves.map(([h, len]): [number, number] => [h + from, len]))
+    const FROM = [0, 37, 90, 200, 315]
+    const summary = (route: Pt[]) => routeTurns(route).map((t) => [turnKind(t.angle), Math.sign(t.angle)] as const)
+
+    it('is a corner and a U-turn, in that order, when the corner is a left and the U-turn a right, 5 to 14 m apart', () => {
+      for (const from of FROM) {
+        for (const gap of [5, 8, 10, 14]) {
+          // North, left to the west for `gap` m, then right round (north for 8 m) and east: the U-turn goes round to the right.
+          const route = turned(from, [0, 150], [-90, gap], [0, 8], [90, 150])
+          expect(summary(route), `${from} ${gap}`).toEqual([['turn', -1], ['uturn', 1]])
+          const [corner, uturn] = routeTurns(route)
+          expect(near(corner.angle, -90, 6)).toBe(true)
+          expect(near(corner.at, 150, 6)).toBe(true)
+          expect(near(uturn.angle, 180, 6)).toBe(true)
+          expect(corner.to).toBeLessThan(uturn.from)
+        }
+      }
+    })
+
+    it('is a U-turn and a corner, in that order, when the U-turn is a right and the corner after it a left', () => {
+      for (const from of FROM) {
+        // The route is walked in 5 m pieces, so a corner has to start 8 m or so after the U-turn ends to be told from it.
+        for (const gap of [8, 10, 14]) {
+          const route = turned(from, [0, 150], [90, 8], [180, gap], [90, 150])
+          expect(summary(route), `${from} ${gap}`).toEqual([['uturn', 1], ['turn', -1]])
+          const [uturn, corner] = routeTurns(route)
+          expect(near(uturn.angle, 180, 6)).toBe(true)
+          expect(near(corner.angle, -90, 6)).toBe(true)
+          expect(uturn.to).toBeLessThan(corner.from)
+        }
+      }
+    })
+
+    it('is the same for a U-turn to the left with a corner to the right, either side of it', () => {
+      for (const from of FROM) {
+        for (const gap of [8, 10, 14]) {
+          expect(summary(turned(from, [0, 150], [90, gap], [0, 8], [-90, 150])), `before ${from} ${gap}`).toEqual([['turn', 1], ['uturn', -1]])
+          expect(summary(turned(from, [0, 150], [-90, 8], [180, gap], [-90, 150])), `after ${from} ${gap}`).toEqual([['uturn', -1], ['turn', 1]])
+        }
+      }
+    })
+
+    it('is the same with the corners rounded off and a point every couple of metres', () => {
+      for (const gap of [4, 8, 12]) {
+        const before = routeTurns(drive([{ straight: 150 }, { turn: -90, radius: 5 }, { straight: gap }, { turn: 90, radius: 5 }, { straight: 8 }, { turn: 90, radius: 5 }, { straight: 150 }], 2))
+        expect(before.map((t) => turnKind(t.angle)), `${gap}`).toEqual(['turn', 'uturn'])
+        const after = routeTurns(drive([{ straight: 150 }, { turn: 90, radius: 5 }, { straight: 8 }, { turn: 90, radius: 5 }, { straight: gap }, { turn: -90, radius: 5 }, { straight: 150 }], 2))
+        expect(after.map((t) => turnKind(t.angle)), `${gap}`).toEqual(['uturn', 'turn'])
+      }
+    })
+
+    it('puts each turn where it is: the corner before the U-turn, with the way into it', () => {
+      const [corner, uturn] = routeTurns(legs([0, 150], [-90, 8], [0, 8], [90, 150]))
+      expect(near(corner.heading, 0, 8)).toBe(true)
+      expect(near(corner.at, 150, 6)).toBe(true)
+      // The U-turn is coming up to the heading the corner left the route on: west.
+      expect(near(uturn.heading, 270, 20)).toBe(true)
+      expect(uturn.at).toBeGreaterThan(corner.at)
+    })
+
+    it('leaves a roundabout as one turn, in and round and out', () => {
+      // In from the south, round to the right, and out: three lobes (in, round, out), not two.
+      for (const round of [90, 180, 270]) {
+        const turns = routeTurns(drive([{ straight: 100 }, { turn: 40, radius: 12 }, { turn: round, radius: 20 }, { turn: -40, radius: 12 }, { straight: 100 }], 3))
+        expect(turns.length, `${round}`).toBeLessThanOrEqual(1)
+      }
+    })
+
+    it('leaves a jog or a chicane as it was: lobes that are small, or equal, are not a U-turn and a corner', () => {
+      // Left 100, right 100: a jog (equal lobes).
+      expect(routeTurns(legs([0, 150], [-100, 12], [0, 150])).map((t) => turnKind(t.angle)).includes('uturn')).toBe(false)
+      // An S of 120 left and then 150 right: neither is a corner next to a U-turn, though the second is nearly one.
+      const s = routeTurns(legs([0, 150], [-120, 10], [30, 150]))
+      expect(s.map((t) => Math.round(t.angle))).not.toContain(180)
+      // A chicane of 30 degrees each way.
+      expect(routeTurns(legs([0, 150], [-30, 10], [0, 150]))).toEqual([])
+    })
+
+    it('does not cut a U-turn from a corner that is too slight to be one', () => {
+      // 45 left, then a right U-turn: the corner is under 60 degrees, so it stays in the swing as it did.
+      const turns = routeTurns(legs([0, 150], [-45, 8], [45, 8], [135, 8], [225, 150]))
+      expect(turns.some((t) => turnKind(t.angle) === 'turn')).toBe(false)
+    })
+
+    it('is still one turn, the wrong way round, when the corner is the same way as the U-turn: a known gap', () => {
+      // A right corner and then a right U-turn within 15 m add up to 270, which can't be told from a tight spiral. The drawing keeps clear of it (uturnShape.ts).
+      const turns = routeTurns(legs([0, 150], [90, 8], [180, 8], [270, 150]))
+      expect(turns).toHaveLength(1)
+      expect(turnKind(turns[0].angle)).not.toBe('uturn')
+    })
+  })
+
+  describe('a U-turn along the road, straight back down it, with a corner right next to it', () => {
+    /**
+     * The road service's U-turn along the road with a corner `gap` m from it, as it answers (six decimals, and only the corners, as a straight
+     * road is thinned), the road out heading `heading`: `after`, out 60 m, straight back down the very same line and round the corner `gap` m on;
+     * `before`, out 40 m, round the corner, `gap` m along to the end and straight back past it. `turn` is the way the corner goes as it is driven
+     * (1 right, -1 left), and `start` m more road at the start moves where the U-turn falls on the 5 m pieces the route is read in.
+     */
+    const roadUturn = (heading: number, start: number, where: 'before' | 'after', gap: number, turn: 1 | -1): Pt[] => {
+      const xy: [number, number][] =
+        where === 'after' ? [[0, -start], [0, 60], [0, 60 - gap], [-turn * 60, 60 - gap]] : [[0, -start], [0, 40], [turn * gap, 40], [-turn * 60, 40]]
+      return xy.map(([x, y]) => {
+        const p = spot([x * cos(heading) + y * sin(heading), -x * sin(heading) + y * cos(heading)])
+        return { lat: Number(p.lat.toFixed(6)), lng: Number(p.lng.toFixed(6)) }
+      })
+    }
+    const want = (where: 'before' | 'after', turn: 1 | -1) => (where === 'after' ? [['uturn', 1], ['turn', turn]] : [['turn', turn], ['uturn', 1]])
+    const GAPS = { after: [8, 10, 12], before: [6, 7, 8, 10, 12] }
+    /**
+     * The most of the places the pieces can fall that may read wrong, for each distance of the corner from the U-turn: [a corner to the right, to the left].
+     * These are the rates the README gives (measured: before, 6 m 37.8% and 17.8%, 7 m 18.0% and 0.3%, 8 m 0.17% and 0.08%; after, 8 m 0.33% and 0.17%).
+     */
+    const RATES: Record<'before' | 'after', Record<number, [number, number]>> = {
+      before: { 6: [0.4, 0.2], 7: [0.2, 0.005], 8: [0.002, 0.002], 10: [0, 0], 12: [0, 0] },
+      after: { 8: [0.004, 0.004], 10: [0, 0], 12: [0, 0] },
+    }
+
+    interface Case {
+      where: 'before' | 'after'
+      turn: 1 | -1
+      /** How far the corner is from the U-turn, in metres. */
+      gap: number
+      /** How far into a 5 m piece the U-turn falls: the route is read in pieces from its start. */
+      into: number
+      /** What it is read as, when that is not the corner and the U-turn in order. */
+      wrong: string | null
+    }
+    let cases: Case[] | null = null
+    /** Every case, worked out once: a corner either way, before or after, at 120 headings, with the road starting every quarter of a metre over a piece. */
+    function allCases(): Case[] {
+      if (cases) return cases
+      cases = []
+      for (let heading = 0; heading < 360; heading += 3) {
+        for (let k = 0; k < 20; k++) {
+          for (const where of ['after', 'before'] as const) {
+            for (const gap of GAPS[where]) {
+              for (const turn of [1, -1] as const) {
+                const got = JSON.stringify(routeTurns(roadUturn(heading, k / 4, where, gap, turn)).map((t) => [turnKind(t.angle), Math.sign(t.angle)]))
+                const into = ((where === 'after' ? 60 : 40 + gap) + k / 4) % 5
+                cases.push({ where, turn, gap, into, wrong: got === JSON.stringify(want(where, turn)) ? null : `${heading} ${k / 4} ${gap}: ${got}` })
+              }
+            }
+          }
+        }
+      }
+      return cases
+    }
+
+    it('is the U-turn and the corner, in order, a corner either way before it or after it, wherever the U-turn falls within a metre of the end of a piece', { timeout: 60_000 }, () => {
+      // Before this a reversal that came out to the left was summed with a corner to the left next to it, and read as one 'Turn right': about half of these.
+      const near = allCases().filter((c) => c.into <= 1 || c.into >= 4)
+      // 9 of the 20 places on a piece are within a metre of one of its ends.
+      expect(near).toHaveLength(120 * 9 * (3 + 5) * 2)
+      expect(near.filter((c) => c.wrong).map((c) => `${c.where} ${c.turn} ${c.wrong}`)).toEqual([])
+    })
+
+    it('is the U-turn and a corner after it or before it wherever it falls at these rates, each distance on its own', { timeout: 60_000 }, () => {
+      // Mid-piece, a corner close before it can spread into the piece the U-turn falls in, and the reversal is then read as less than one: a sharp turn,
+      // or the other way round (they were wrong half the time, or more). A right corner 6 m before is still read right only about 6 times in 10, and 7 m
+      // before about 8 in 10; from 8 m either side, all but about 1 in 300 at most.
+      for (const where of ['after', 'before'] as const) {
+        for (const gap of GAPS[where]) {
+          for (const turn of [1, -1] as const) {
+            const these = allCases().filter((c) => c.where === where && c.gap === gap && c.turn === turn)
+            const wrong = these.filter((c) => c.wrong)
+            expect(these).toHaveLength(120 * 20)
+            const most = RATES[where][gap][turn === 1 ? 0 : 1]
+            expect(wrong.length / these.length, `${where} ${gap} ${turn}: ${wrong.slice(0, 3).map((c) => c.wrong).join(' | ')}`).toBeLessThanOrEqual(most)
+          }
+        }
+      }
+    })
+
+    it('in and out of a short court: the corner in, the U-turn and the corner out, whichever way you leave', { timeout: 60_000 }, () => {
+      // The road service's U-turn at the end of a court `gap` m deep, as it answers: in round the corner, straight back out round the same corner, and on
+      // the way you were going or back the way you came. The corner in, the reversal and the corner out are one swing, and summed they were nothing (in
+      // and on: 90 + 180 + 90 is a whole turn) or one U-turn (in and back): every one of these from 1 to 16 m deep, 92% at 17 m, 66% at 18 and 26% at 19.
+      // A court shallower than 8 m is still a gap: the 5 m pieces can't always tell its corner from the reversal (about 1 in 5 wrong at 7 m, half at 6 m).
+      const wrong: string[] = []
+      let n = 0
+      for (let heading = 0; heading < 360; heading += 3) {
+        for (let k = 0; k < 20; k++) {
+          for (const gap of [8, 10, 12, 14, 16, 18]) {
+            for (const turn of [1, -1] as const) {
+              for (const out of ['on', 'back'] as const) {
+                const route = ([[0, -k / 4], [0, 100], [turn * gap, 100], [0, 100], [0, out === 'on' ? 200 : 0]] as [number, number][]).map(([x, y]) => {
+                  const p = spot([x * cos(heading) + y * sin(heading), -x * sin(heading) + y * cos(heading)])
+                  return { lat: Number(p.lat.toFixed(6)), lng: Number(p.lng.toFixed(6)) }
+                })
+                const got = routeTurns(route).map((t) => [turnKind(t.angle), Math.sign(t.angle)])
+                const want = [['turn', turn], ['uturn', 1], ['turn', out === 'on' ? turn : -turn]]
+                if (JSON.stringify(got) !== JSON.stringify(want)) wrong.push(`${heading} ${k / 4} ${gap} ${turn} ${out}: ${JSON.stringify(got)}`)
+                n++
+              }
+            }
+          }
+        }
+      }
+      expect(n).toBe(120 * 20 * 6 * 2 * 2)
+      expect(wrong.slice(0, 5)).toEqual([])
+    })
+
+    it('in and out of a short court at 45 degrees the way U-turns go round: the bear in is a turn of its own, not taken into the U-turn', { timeout: 60_000 }, () => {
+      // A bear of 45 degrees and the reversal (180) add up to no more than 225, so the two were joined as two halves of one U-turn and the bear was lost:
+      // for a bear to the right, about half of these at 45 degrees, and all of them at 42 to 44 (13% at 46, where the sum is just over). A U-turn on
+      // its own takes in only a slight bend before it. (Under about 45 degrees the bear in can be read as a slight bend, either way, on the 5 m pieces.)
+      const wrong: string[] = []
+      let n = 0
+      for (let heading = 0; heading < 360; heading += 6) {
+        for (let k = 0; k < 20; k++) {
+          for (const gap of [8, 10, 12, 16, 20, 30]) {
+            for (const angle of [45, 46]) {
+              for (const turn of [UTURN_WAY, -UTURN_WAY]) {
+                for (const out of ['on', 'back'] as const) {
+                  const end: [number, number] = [turn * gap * sin(angle), 100 + gap * cos(angle)]
+                  const route = ([[0, -k / 4], [0, 100], end, [0, 100], [0, out === 'on' ? 200 : 0]] as [number, number][]).map(([x, y]) => {
+                    const p = spot([x * cos(heading) + y * sin(heading), -x * sin(heading) + y * cos(heading)])
+                    return { lat: Number(p.lat.toFixed(6)), lng: Number(p.lng.toFixed(6)) }
+                  })
+                  const got = routeTurns(route).map((t) => [turnKind(t.angle), Math.sign(t.angle)])
+                  if (JSON.stringify(got.slice(0, 2)) !== JSON.stringify([['bear', turn], ['uturn', UTURN_WAY]])) wrong.push(`${heading} ${k / 4} ${gap} ${angle} ${turn} ${out}: ${JSON.stringify(got)}`)
+                  n++
+                }
+              }
+            }
+          }
+        }
+      }
+      expect(n).toBe(60 * 20 * 6 * 2 * 2 * 2)
+      expect(wrong.slice(0, 5)).toEqual([])
+    })
+
+    it('still takes a slight bend just before a U-turn into it, and a bend that is a turn after one is a turn of its own', () => {
+      // 30 degrees to the right and, 10 m on, straight back: one U-turn, as a slanted start of the way back reads.
+      const slight = routeTurns(through([0, 0], [0, 100], [5 * sin(30), 100 + 5 * cos(30) + 5], [5 * sin(30), 0]))
+      expect(slight.map((t) => turnKind(t.angle))).toEqual(['uturn'])
+      // Straight back and then a bear of 45 degrees the same way round: the U-turn and the bear.
+      const after = routeTurns(through([0, 0], [0, 100], [0, 60], [-60 * sin(45), 60 - 60 * cos(45)]))
+      expect(after.map((t) => [turnKind(t.angle), Math.sign(t.angle)])).toEqual([['uturn', UTURN_WAY], ['bear', UTURN_WAY]])
     })
   })
 

@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react'
-import { cleanAddress, cleanLabel, cleanNote, MAX_ADDRESS, MAX_LABEL, MAX_NOTE, parseQty, qtyProblem, stopFields } from './routeEdit'
+import { cleanAddress, cleanLabel, cleanNote, hasPapers, MAX_ADDRESS, MAX_LABEL, MAX_NOTE, parseQty, qtyProblem, stopFields } from './routeEdit'
 import type { Stop } from './types'
 import { Banner } from './ui'
 
@@ -10,21 +10,23 @@ interface Props {
 }
 
 /**
- * Change a stop's name, its address and, for a bundle drop, how many papers it gets: what its alert shows, with
- * the address under the name. They are separate, so a business can be named and have its address kept as well.
+ * Change a stop's name, its address and, for a bundle drop or an apartment block, how many papers it gets or are thrown there: what its
+ * alert shows, with the address under the name. They are separate, so a business can be named and have its address kept as well.
  * A special request has no name: it has its address and a note saying what to do there.
  * Leaving any of them blank takes it off the stop.
  */
 export function StopDialog({ stop, onSave, onClose }: Props) {
   const bundle = stop.type === 'bundle'
+  const block = stop.type === 'block'
   const request = stop.type === 'request'
+  const counted = hasPapers(stop.type)
   // A stop made before places had addresses of their own may have its address in its name: it is offered as the address.
   const start = stopFields(stop)
   const [name, setName] = useState(start.name)
   const [address, setAddress] = useState(start.address)
   const [papers, setPapers] = useState(stop.qty ? String(stop.qty) : '')
   const [note, setNote] = useState(stop.note ?? '')
-  const problem = bundle ? qtyProblem(papers) : null
+  const problem = counted ? qtyProblem(papers) : null
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -40,7 +42,7 @@ export function StopDialog({ stop, onSave, onClose }: Props) {
     onSave({
       label: request ? undefined : cleanLabel(name),
       address: cleanAddress(address),
-      qty: bundle ? parseQty(papers) : undefined,
+      qty: counted ? parseQty(papers) : undefined,
       note: request ? cleanNote(note) : undefined,
     })
   }
@@ -48,13 +50,15 @@ export function StopDialog({ stop, onSave, onClose }: Props) {
   return (
     <div className="scrim" onClick={onClose}>
       <form className="dialog" role="dialog" aria-modal="true" aria-labelledby="stop-title" autoComplete="off" onClick={(e) => e.stopPropagation()} onSubmit={submit}>
-        <h2 id="stop-title">{bundle ? 'Bundle Drop' : request ? 'Special Request' : 'No-Throw House'}</h2>
+        <h2 id="stop-title">{bundle ? 'Bundle Drop' : block ? 'Apartment Block' : request ? 'Special Request' : 'No-Throw House'}</h2>
         <p>
           {bundle
             ? 'The alert shows the name and how many papers to leave, with the address under the name.'
-            : request
-              ? 'The alert shows your note, with the house number beside it.'
-              : 'The alert shows the name, with the address under it.'}
+            : block
+              ? 'The alert shows how many papers to throw and which side of the road it is on, with the name and the address.'
+              : request
+                ? 'The alert shows your note, with the house number beside it.'
+                : 'The alert shows the name, with the address under it.'}
         </p>
 
         {!request && (
@@ -64,7 +68,7 @@ export function StopDialog({ stop, onSave, onClose }: Props) {
               className="field-input"
               value={name}
               maxLength={MAX_LABEL}
-              placeholder={bundle ? "e.g. Joe's Cafe" : 'Optional'}
+              placeholder={bundle ? "e.g. Joe's Cafe" : block ? 'e.g. Lakeside Apartments' : 'Optional'}
               enterKeyHint="next"
               autoCapitalize="words"
               autoCorrect="off"
@@ -81,7 +85,7 @@ export function StopDialog({ stop, onSave, onClose }: Props) {
             value={address}
             maxLength={MAX_ADDRESS}
             placeholder="e.g. 12 Oak Road, Lewes"
-            enterKeyHint={bundle || request ? 'next' : 'done'}
+            enterKeyHint={counted || request ? 'next' : 'done'}
             autoCapitalize="words"
             autoCorrect="off"
             spellCheck={false}
@@ -105,7 +109,7 @@ export function StopDialog({ stop, onSave, onClose }: Props) {
             />
           </label>
         )}
-        {bundle && (
+        {counted && (
           <label className="dialog-field">
             <span className="field-label">Papers</span>
             <input

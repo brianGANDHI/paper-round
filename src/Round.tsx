@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { AlertBanner } from './AlertBanner'
-import { barBundle, dropAllowed, freshStart, missedAmong, missedNotice, restartedRound, restartEffect, restoreBundle, savedRound } from './bundleFlow'
-import { bundleList, markDropped, nextBundle, nextBundleSpeech, otherPasses, passStates, type PassStates } from './bundles'
+import { barBundle, dropAllowed, freshStart, missedNotice, restartedRound, restartEffect, restoreBundle, savedRound } from './bundleFlow'
+import { bundleList, bundleRows, markDropped, nextBundleSpeech, nextInOrder, otherPasses, passStates, type PassStates } from './bundles'
 import { BundlesSheet } from './BundlesSheet'
-import { aheadOf, alertable, alertRadius, alertSide, ALERT_DISTANCES, approachSide, houseRow, isAlertDistance, isGoneBy, pickCurrent, planSpeech, roundCounts, zoneExit, type AlertDistance } from './alerts'
+import { aheadOf, alertable, alertRadius, ALERT_DISTANCES, courtLegsOf, houseRow, isAlertDistance, isGoneBy, keepAlertsAhead, legsOnResume, pickCurrent, quietReachFor, resumedLegs, roundCounts, zoneExit, type AlertDistance } from './alerts'
+import { bannerBlock, bannerWaiting, shownSide } from './bannerBlock'
 import { SIDE_LABEL, SIDE_PILL, SIDE_SHORT } from './colors'
 import { useDialogs } from './confirm'
 import { useGps, useWakeLock } from './device'
@@ -14,13 +15,30 @@ import { pushTrail, trailHeading, type TrailPoint } from './heading'
 import { HeadingBadge } from './HeadingBadge'
 import { Icon } from './Icon'
 import { MapCredit } from './MapCredit'
-import { guideToLeft, OFF_MAX_ACCURACY_M, ON_ROUTE_M, offRouteSpeech, startOffRoute, stepOffRoute, takeMeBack, type OffEvent, type OffState, type RouteFix } from './offRoute'
+import {
+  guideToLeft,
+  OFF_MAX_ACCURACY_M,
+  ON_ROUTE_M,
+  offRouteSpeech,
+  restartWatch,
+  startOffRoute,
+  startOffWatch,
+  stepWatched,
+  takeMeBack,
+  unasked,
+  watchFix,
+  type OffEvent,
+  type OffState,
+  type OffWatch,
+  type RouteFix,
+} from './offRoute'
 import { OffRouteBanner } from './OffRouteBanner'
 import { holdHeading } from './mapHeading'
 import { MapView, type ViewCmd } from './MapView'
 import { resolveSections } from './namedSections'
-import { advance, makeTrack, rebaseProgress, startProgress, type Progress } from './progress'
-import { continueFrom, slackFor } from './resume'
+import { advance, makeTrack, offRouteGap, rebaseProgress, startProgress, type Progress } from './progress'
+import { keptBeforeDrop } from './dropMemory'
+import { continueFrom, sameCourtLegs, slackFor, withCourtLegs } from './resume'
 import { RoundBar, RoundButtons, type Notice } from './RoundBar'
 import { RoundMenu } from './RoundMenu'
 import { afterUserMove, barCover, FREE_LOOK_MS } from './roundView'
@@ -28,14 +46,17 @@ import { formatDistance, paintMetres, routeLength } from './routeEdit'
 import { loadAlertDistance, loadHeadingUp, loadKeepAudioAwake, loadVoiceTurns, saveAlertDistance, saveHeadingUp, saveKeepAudioAwake, saveVoiceTurns } from './storage'
 import { RouteChip, Segmented } from './ui'
 import { sideChangeNote, sideExtents, type ExtentKey } from './driveEdit'
+import { createSideCue, sideAtAlong, sideLookAheadM, sideWords } from './sideVoice'
 import { sound } from './sound'
 import { say, speechAvailable, stopSpeaking, unlockSpeech } from './speech'
 import { StartPicker } from './StartPicker'
 import { missingQueries, nameTurns } from './streets'
 import { cueToSay, guidanceToShow, turnKey } from './transitView'
 import { TurnCard } from './TurnCard'
+import { doneNow, endTurnHold, heldKeys, holdGoneBy, holdLeftBehind, judgedAt, NOTHING_HELD, shownQueue, stepTurnHold, type TurnHold } from './turnHold'
 import { onTheRoute, routeTurns, TURN_KM_M, TURN_PASSED_M, type TurnCue } from './turns'
-import { SIDES, type NamedSection, type Pt, type RoundState, type Route, type Side, type TurnStreet } from './types'
+import { alertWordsStale, planVoice } from './voicePlan'
+import { SIDES, type NamedSection, type Pt, type RoundState, type Route, type Side, type StopType, type TurnStreet } from './types'
 
 /** The furthest reached is kept with the round this many metres at a time. */
 const SAVE_EVERY_M = 100
@@ -71,6 +92,9 @@ interface Props {
   /** The route's named sections, and the street names found for its turns. */
   sections: readonly NamedSection[]
   streets: readonly TurnStreet[]
+  /** The order the driver drops the bundles in (stop ids, see `SavedRoute.bundleOrder`), and a change to it from the Bundles list. */
+  bundleOrder?: readonly string[]
+  onBundleOrder: (order: string[]) => void
   onRound: (r: RoundState) => void
   /** The route was changed from the road, such as the throw side of the part being driven: the round carries on with it. */
   onAdjustRoute: (route: Route) => void
@@ -78,12 +102,16 @@ interface Props {
   onGoRoutes: () => void
 }
 
-export function Round({ route, round, routeName, sections, streets, onRound, onAdjustRoute, onGoSetup, onGoRoutes }: Props) {
+export function Round({ route, round, routeName, sections, streets, bundleOrder, onBundleOrder, onRound, onAdjustRoute, onGoSetup, onGoRoutes }: Props) {
   const [started, setStarted] = useState(false)
   const [overview, setOverview] = useState(false)
   // Alerts wait their turn so a bundle prompt can never hide a no-throw warning.
   const [queue, setQueue] = useState<Occurrence[]>([])
   const seen = useRef(new Set<string>())
+  /** The alerts held over a turn round the tracker is not sure of yet, and the stops put by meanwhile (see turnHold.ts). */
+  const turnHold = useRef<TurnHold | null>(null)
+  /** The keys of the alerts held, for the banner, which does not show one the driver has gone by as passed (see `shownQueue`). */
+  const [turnHeld, setTurnHeld] = useState<ReadonlySet<string>>(NOTHING_HELD)
   /** Where the phone has been, for a heading when it has no course of its own. Only fixes that were believed are in it. */
   const trail = useRef<TrailPoint[]>([])
   /** Which way the phone is heading, if it can say: which pass of a street is being driven, which side a stop off the route is on, and the turn that comes up depend on it. */
@@ -99,6 +127,8 @@ export function Round({ route, round, routeName, sections, streets, onRound, onA
   const offRef = useRef<OffState>(startOffRoute)
   /** Whether the route has been reached yet: until then the driver is on the way to it, not off it. */
   const reachedRef = useRef(false)
+  /** What is kept beside the off-route machine from fix to fix (see `OffWatch` in offRoute.ts): when the last fix to go by came, whether the phone has been unseen since the place last followed, and whether it has got to where the round starts. */
+  const watchRef = useRef<OffWatch>(startOffWatch)
   /** Where the last fix that was weighed for leaving the route was: a phone standing still, jittering, is not weighed again. */
   const lastStepAt = useRef<Pt | null>(null)
   /** How far along the route the round starts from, and where the phone first touched it, for telling reaching the route from crossing it. */
@@ -113,7 +143,7 @@ export function Round({ route, round, routeName, sections, streets, onRound, onA
   const finishedRef = useRef(false)
   const routeEndRef = useRef(0)
   const occsRef = useRef<Occurrence[]>([])
-  const radiusRef = useRef<Record<'bundle' | 'nothrow' | 'request', number>>({ bundle: 40, nothrow: 40, request: 40 })
+  const radiusRef = useRef<Record<StopType, number>>({ bundle: 40, nothrow: 40, request: 40, block: 40 })
   /** The latest `restartAt`, for the fix effect, which runs on its own schedule. */
   const restartAtRef = useRef<(metres: number, skip: boolean) => void>(() => {})
   /** The picker of where to start, or to skip to: on the start screen, or over the road. */
@@ -138,25 +168,44 @@ export function Round({ route, round, routeName, sections, streets, onRound, onA
   const [barEl, setBarEl] = useState<HTMLDivElement | null>(null)
   const [coverPx, setCoverPx] = useState(BAR_COVER_PX)
   const handled = useMemo(() => new Set(round.handledStopIds), [round])
+  /** How close to a stop its alert shows, as the driver chose it. */
+  const [alertDistance, setAlertDistance] = useState(loadAlertDistance)
   // Each time the route passes a stop is a separate warning, so a street driven twice warns on both passes.
   const allOccs = useMemo(() => occurrences(route), [route])
-  // A no-throw house on a stretch where nothing is thrown at all has nothing to warn about.
-  const occs = useMemo(() => alertable(route, allOccs), [route, allOccs])
-  const track = useMemo(() => makeTrack(route.points), [route.points])
-  /** What each bundle drop is called, by occurrence, for saying which was missed. */
-  const bundleNames = useMemo(() => new Map(bundleList(occs, { handledStopIds: [] }, 0).map((b) => [b.key, b.name])), [occs])
+  // How far from the route a no-throw house can be kept quiet: out to where it is met by where the driver is, which goes with the alert distance.
+  const reachM = useMemo(() => quietReachFor(alertDistance), [alertDistance])
   /** Where the driver has got to along the route, judged against where they were a moment ago. Null until the round has begun. */
   const [progress, setProgress] = useState<Progress | null>(null)
   const progressRef = useRef<Progress | null>(null)
+  const radius = useMemo(() => alertRadius(alertDistance), [alertDistance])
+  // The passes that alert, as `alertable` gives them for the route as it is: a no-throw house on a stretch where nothing is thrown at all has nothing to warn about.
+  const fresh = useMemo(() => alertable(route, allOccs, reachM), [route, allOccs, reachM])
+  /**
+   * The passes the round alerts for: `fresh`, with any alert a change part way through the round moved onto a leg of a court the driver has gone by kept on the leg still ahead (see `keepAlertsAhead`). Worked out in the render the route changes in, so no effect ever sees the alert on the leg gone by.
+   * Before the round is under way (the start screen, and Continue Round) they are as the change left them, from what is kept with the round (see `resumedLegs`), so nothing is worked out again from where the driver is, until the first fix on the route after Continue Round (see `legsOnResume`).
+   */
+  const [legs, setLegs] = useState(() => ({ fresh, occs: resumedLegs(route, allOccs, fresh, round.courtLegs, radius) }))
+  let occs = legs.occs
+  if (legs.fresh !== fresh) {
+    occs = progress ? keepAlertsAhead(route, allOccs, legs.occs, fresh, progress.along, radius).occs : resumedLegs(route, allOccs, fresh, round.courtLegs, radius)
+    setLegs({ fresh, occs })
+  }
+  const track = useMemo(() => makeTrack(route.points), [route.points])
+  /** What each bundle drop is called, by occurrence, for saying which was missed. */
+  const bundleNames = useMemo(() => new Map(bundleList(occs, { handledStopIds: [] }, 0).map((b) => [b.key, b.name])), [occs])
   /** The furthest reached that has been saved with the round, in metres. */
   const savedFurthest = useRef(round.furthest ?? 0)
   /** How far along the route the driver is, and the furthest they have got (what is behind it is drawn faded), in metres. */
   const along = progress?.along ?? 0
   const driven = progress?.furthest ?? 0
   const snapIdx = progress?.idx ?? 0
-  /** Every bundle drop in route order with what became of it, and the one coming next, for the bar and the list. */
-  const bundles = useMemo(() => bundleList(occs, round, along), [occs, round, along])
-  const barNext = useMemo(() => barBundle(bundles), [bundles])
+  /** Where the phone is, as its latest fix says: how far each bundle drop is, in a straight line. Null before the first fix. */
+  const fixLat = fix?.lat
+  const fixLng = fix?.lng
+  const phoneAt = useMemo<Pt | null>(() => (fixLat === undefined || fixLng === undefined ? null : { lat: fixLat, lng: fixLng }), [fixLat, fixLng])
+  /** Every bundle stop in the driver's order with what became of it, the first still to do being the next, for the bar and the list. */
+  const rows = useMemo(() => bundleRows(occs, round, bundleOrder, phoneAt), [occs, round, bundleOrder, phoneAt])
+  const barNext = useMemo(() => barBundle(rows), [rows])
   const turns = useMemo(() => routeTurns(route.points), [route.points])
   // The turns with the street each leads into, where it is known.
   const named = useMemo(() => nameTurns(route.points, turns, streets), [route.points, turns, streets])
@@ -175,10 +224,13 @@ export function Round({ route, round, routeName, sections, streets, onRound, onA
   /** The alerts already said out loud, by occurrence, so a row of houses is said once, not house by house. */
   const announced = useRef(new Set<string>())
   const voiceRef = useRef(voice)
+  /** The alerts that came up but are not said yet, by occurrence: a no-throw house is named only once the side thrown where the driver is includes its side (see `planVoice`). */
+  const heldRef = useRef(new Set<string>())
+  /** The side last said out loud, so each change of the side thrown is said once (see `createSideCue`). */
+  const sideCueRef = useRef(createSideCue())
+  /** How fast the phone said it was going at the fix the driver's place is from, for how far ahead the side is said. */
+  const speedRef = useRef<number | null>(null)
   const side = sideAt(route, snapIdx)
-  /** How close to a stop its alert shows, as the driver chose it. */
-  const [alertDistance, setAlertDistance] = useState(loadAlertDistance)
-  const radius = useMemo(() => alertRadius(alertDistance), [alertDistance])
   // The effect below reads what is showing, and the latest way to save progress, without re-running for them.
   const queueRef = useRef(queue)
   const onRoundRef = useRef(onRound)
@@ -187,13 +239,18 @@ export function Round({ route, round, routeName, sections, streets, onRound, onA
   const startMRef = useRef(round.startM ?? 0)
   /** Where the round was started or skipped to, until the first fix on the route after that: see CATCH_UP_M. */
   const restartRef = useRef<number | null>(null)
+  /** Set by *Continue Round* until the first fix on the route after it, where a house at the head of a court the driver is between the two legs of is put on the leg ahead (see `legsOnResume`). */
+  const resumeRef = useRef(false)
   /**
    * The round as it was last kept. Every save builds on it, so the bundles dropped and missed are carried along with the stops done and
    * not lost by a save that knows only of those (the screen used to build the round afresh each time). It is set at once when the round
    * is kept, not waiting for the new one to come back as a prop, so two changes in the same moment build on each other.
    */
   const roundRef = useRef(round)
-  /** How each pass of a bundle's stop stood just before it was dropped (open, skipped or missed), so that taking the drop back puts every one of them back. */
+  /**
+   * How each pass of a bundle's stop stood just before it was dropped (open, skipped or missed), so that taking the drop back puts every one
+   * of them back. A restart keeps it for the drops it keeps (see `keptBeforeDrop`); it is lost only when the driver leaves the Round tab.
+   */
   const beforeDrop = useRef(new Map<string, PassStates>())
   /** When Dropped was last tapped on an alert, so that a double tap drops only one bundle. */
   const lastDropAt = useRef(-Infinity)
@@ -217,13 +274,14 @@ export function Round({ route, round, routeName, sections, streets, onRound, onA
   }, [])
 
   /**
-   * Keeps the stops done and how far the round has got, and where it was started from, with the bundles dropped and missed it had.
+   * Keeps the stops done and how far the round has got, and where it was started from, with the bundles dropped and missed it had, and
+   * what a change of side made of the passes at the head of a court (see `courtLegsOf`).
    * `missedKeys` are bundles just driven past with no tap, which must be among the stops done. Anything else that marks stops done (a
    * skip, a catch-up, leaving the route) leaves the bundles in it skipped: neither dropped nor missed.
    */
   const saveRound = useCallback(
     (handledStopIds: string[], furthest?: number, missedKeys: readonly string[] = []) => {
-      commitRound(savedRound(roundRef.current, handledStopIds, furthest, startMRef.current, missedKeys))
+      commitRound(withCourtLegs(savedRound(roundRef.current, handledStopIds, furthest, startMRef.current, missedKeys), roundRef.current.courtLegs))
     },
     [commitRound],
   )
@@ -276,11 +334,19 @@ export function Round({ route, round, routeName, sections, streets, onRound, onA
         else return
       }
       const radius = radiusRef.current
-      if (occsRef.current.some((o) => byPosition(o, radius) && !handledRef.current.has(o.key) && haversine(now.at, o.stop) <= o.off + radius[o.stop.type] + OFF_ROUTE_STOP_M)) return
+      if (occsRef.current.some((o) => byPosition(o, radius) && !handledRef.current.has(o.key) && haversine(now.at, o.stop) <= o.off + radius[o.stop.type] + OFF_ROUTE_STOP_M)) {
+        // The machine is not asked about this fix, so the place it last followed goes stale: the phone is as good as unseen (see `unasked`).
+        watchRef.current = unasked(watchRef.current)
+        return
+      }
       // While the tracker is weighing up a jump to somewhere else on the route its place is the old one and its gap the new one's: not a fix on the route (`doubt`).
-      const reading: RouteFix = { time: now.time, at: now.at, accuracy: now.accuracy, speed, gap: now.gap, along: now.along, furthest: now.furthest, lost: now.lost, doubt: now.doubt !== null }
+      // How far the phone is from the route is from the nearest part of it, not from the place the tracker holds (see `offRouteGap`).
+      const reading: RouteFix = { time: now.time, at: now.at, accuracy: now.accuracy, speed, gap: offRouteGap(now), along: now.along, furthest: now.furthest, lost: now.lost, doubt: now.doubt !== null }
       const before = offRef.current
-      const step = stepOffRoute(before, reading)
+      // The machine is told what the watch knows: whether the phone has been unseen, and whether it is still on its way to where the round
+      // starts. The watch is kept before a carry-on below restarts the round, so that the restart's own reset of it is the one that stands.
+      const step = stepWatched(watchRef.current, before, reading, reachAlong.current)
+      watchRef.current = step.watch
       let state = step.state
       let event = step.event
       // Driving back towards where the route was left, without asking to be taken back, is being taken back: it does not carry on from here.
@@ -305,6 +371,7 @@ export function Round({ route, round, routeName, sections, streets, onRound, onA
           }
           seen.current.delete(o.key)
           announced.current.delete(o.key)
+          heldRef.current.delete(o.key)
         }
         setQueue([])
         if (gone.length) saveRound([...handledRef.current, ...gone], savedFurthest.current)
@@ -340,6 +407,10 @@ export function Round({ route, round, routeName, sections, streets, onRound, onA
   // been going over the last few dozen metres, if that is clear. A fix that was set aside, or seen before, changes nothing.
   useEffect(() => {
     if (!fix) return
+    // Every fix the phone gives is watched, whatever the tracker makes of it: a good one more than 10 s after the last means the phone was unseen
+    // (in the background, or under poor sky) and may have driven on along the route. Fixes set aside, and those while standing still, count too:
+    // they are what keep a stop from looking like a gap.
+    watchRef.current = watchFix(watchRef.current, fix)
     const course = fix.heading ?? trailHeading(trail.current, fix.accuracy)
     const before = progressRef.current
     let now = advance(track, before, fix, course)
@@ -355,6 +426,7 @@ export function Round({ route, round, routeName, sections, streets, onRound, onA
       if (now.along <= capRef.current || (offRef.current.phase === 'on' && forward)) capRef.current = null
     }
     progressRef.current = now
+    speedRef.current = fix.speed ?? null
     trail.current = pushTrail(trail.current, { lat: now.at.lat, lng: now.at.lng, time: now.time ?? fix.time })
     setHeadingDeg(course)
     // The map's own heading: the course when there is one, held when there isn't, and from the route's own direction at the start.
@@ -390,17 +462,20 @@ export function Round({ route, round, routeName, sections, streets, onRound, onA
   }, [track])
 
   // What is waiting to be shown is looked up again in the edited route, and a stop that no longer alerts goes. One that has just started
-  // to alert, behind the driver, is one they have already gone by, so it counts as done and doesn't hold up the count.
-  const alertKeys = useRef(new Set(occs.map((o) => o.key)))
+  // to alert, behind the driver, is one they have already gone by, so it counts as done and doesn't hold up the count; so is one whose
+  // alert moved behind the driver with no leg ahead that it alerts on; one still to be passed on the other leg of a court, where it is
+  // quiet, is left out instead, so taking the change back brings it back (see `keepAlertsAhead`).
+  const alertsBefore = useRef(occs)
   useEffect(() => {
-    const before = alertKeys.current
-    alertKeys.current = new Set(occs.map((o) => o.key))
+    const before = alertsBefore.current
+    alertsBefore.current = occs
     const byKey = new Map(occs.map((o) => [o.key, o]))
     // A stop that stopped alerting, and may alert again (the change is taken back), is forgotten as one already seen and said.
-    for (const key of before) {
+    for (const { key } of before) {
       if (byKey.has(key)) continue
       seen.current.delete(key)
       announced.current.delete(key)
+      heldRef.current.delete(key)
     }
     const waiting = queueRef.current
     const next = waiting.flatMap((o) => {
@@ -410,9 +485,20 @@ export function Round({ route, round, routeName, sections, streets, onRound, onA
     if (next.length !== waiting.length || next.some((o, i) => o !== waiting[i])) setQueue(next)
     const p = progressRef.current
     if (!p) return
-    const gone = occs.filter((o) => !before.has(o.key) && !handledRef.current.has(o.key) && !byPosition(o, radius) && o.at < p.along - slackFor(radius)).map((o) => o.key)
+    // What the change made of the passes at the head of a court is kept with the round at once, so Continue Round puts them back as they were (see `resumedLegs`).
+    const kept = courtLegsOf(fresh, occs)
+    if (!sameCourtLegs(kept, roundRef.current.courtLegs)) commitRound(withCourtLegs(roundRef.current, kept))
+    const behind = keepAlertsAhead(route, allOccs, before, occs, p.along, radius).done.flatMap((key) => {
+      const o = byKey.get(key)
+      return o && !handledRef.current.has(key) ? [o] : []
+    })
+    // While a turn round is not sure yet, `p.along` is where the turn put the driver, which it may take back: a stop behind that but not behind
+    // where it put them from is put by with the hold, as a stop gone by then is (see `holdLeftBehind`), and is done only once the turn is sure.
+    const put = holdLeftBehind(turnHold.current, behind, slackFor(radius), radius)
+    turnHold.current = put.hold
+    const gone = put.now.map((o) => o.key)
     if (gone.length) saveRound([...handledRef.current, ...gone], savedFurthest.current)
-  }, [occs, radius, saveRound])
+  }, [occs, fresh, radius, saveRound, commitRound, route, allOccs])
 
   // The furthest reached is kept with the round a hundred metres at a time, so that carrying on later starts from there.
   useEffect(() => {
@@ -426,78 +512,144 @@ export function Round({ route, round, routeName, sections, streets, onRound, onA
   // What the driver is near. This runs for every move of the driver, and when the stops done, the route or the distance change.
   useEffect(() => {
     if (!progress) return
+    // The first fix on the route after Continue Round (the place carried on from is only on paper): a house at the head of a court the driver is
+    // between the two legs of, thrown on the leg ahead, is put there, once (see `legsOnResume`). The effect that follows the passes keeps that
+    // with the round, and this one runs again with them. The updater keeps the legs' own `fresh`: in here `fresh` is the alerts coming up, declared below.
+    if (resumeRef.current && !progress.lost) {
+      resumeRef.current = false
+      const moved = legsOnResume(route, allOccs, occs, handled, progress.along, radius)
+      if (moved !== occs) {
+        // Once, at the first fix on the route after Continue Round (the ref is cleared above), which the render cannot tell from the fixes after it.
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        setLegs((l) => ({ fresh: l.fresh, occs: moved }))
+        return
+      }
+    }
     const driverAt = progress.along
     const pos = progress.at
+
+    // A turn round the tracker is not sure of yet (see turnHold.ts): the alerts up as it began are judged where the driver was put from, and a
+    // stop along the route gone by meanwhile is put by, until the turn is sure (they are done) or undone (they are still to come, and may alert again).
+    const step = stepTurnHold(turnHold.current, progress, queueRef.current, track.cum[track.cum.length - 1] ?? 0)
+    for (const o of step.release) {
+      seen.current.delete(o.key)
+      announced.current.delete(o.key)
+      heldRef.current.delete(o.key)
+    }
 
     // An alert goes when you are away from its stop (only a bundle drop's has a button, Dropped, and it stays up till then). Driving on
     // past a stop counts it as done, and backing away from it first lets it alert again when you come back. A bundle drop driven past
     // like that, without Dropped, is recorded as missed, but only on the route (a sweep after leaving it, or a catch-up, just skips it).
     const left = queueRef.current.flatMap((o) => {
-      const exit = zoneExit(o, driverAt, radius, pos)
+      const exit = zoneExit(o, judgedAt(o, driverAt, step.hold), radius, pos)
       return exit ? [{ o, exit }] : []
     })
+    const gone = new Set(left.map((l) => l.o.key))
+    // While off the route, or on a part of it that is not where it was left, the place along the route is not where the driver is, so
+    // going 'past' a stop along it says nothing: it may alert again. A stop away from the route is met by where the driver is, whatever the route says.
+    const onRoute = offRef.current.phase === 'on'
+    let goneBy: Occurrence[] = []
     if (left.length) {
-      const gone = new Set(left.map((l) => l.o.key))
       setQueue((q) => q.filter((o) => !gone.has(o.key)))
-      // While off the route, or on a part of it that is not where it was left, the place along the route is not where the driver is, so
-      // going 'past' a stop along it says nothing: it may alert again. A stop away from the route is met by where the driver is, whatever the route says.
-      const onRoute = offRef.current.phase === 'on'
       for (const l of left) {
         if (l.exit === 'back' || (l.exit === 'passed' && !onRoute && !byPosition(l.o, radius))) {
           seen.current.delete(l.o.key)
           announced.current.delete(l.o.key)
+          heldRef.current.delete(l.o.key)
         }
       }
-      const goneBy = left.filter((l) => l.exit === 'passed' && !handled.has(l.o.key) && (onRoute || byPosition(l.o, radius)))
-      const passed = goneBy.map((l) => l.o.key)
-      if (passed.length) {
-        const missed = missedAmong(goneBy.map((l) => l.o), onRoute)
-        saveRound([...handled, ...passed], savedFurthest.current, missed)
-        if (missed.length) setToast({ message: missedNotice(missed.map((key) => bundleNames.get(key) ?? 'a bundle drop')) })
-      }
+      goneBy = left.filter((l) => l.exit === 'passed' && !handled.has(l.o.key) && (onRoute || byPosition(l.o, radius))).map((l) => l.o)
+    }
+    const put = holdGoneBy(step.hold, goneBy, radius)
+    turnHold.current = put.hold
+    setTurnHeld(heldKeys(put.hold))
+    // The stops done now, and those put by over a turn round that stood, in one save: `handled` is this render's, so a second save would undo the first.
+    const settled = doneNow(put.now, step.settle, handled, onRoute)
+    let done: ReadonlySet<string> = handled
+    if (settled.done.length) {
+      done = new Set([...handled, ...settled.done.map((o) => o.key)])
+      saveRound([...done], savedFurthest.current, settled.missed)
+      if (settled.missed.length) setToast({ message: missedNotice(settled.missed.map((key) => bundleNames.get(key) ?? 'a bundle drop')) })
     }
 
     // A round just started or skipped to is at that spot only on paper, until the first fix says where the phone really is.
     if (progress.lost && progress.time === null) return
     // The first fix on the route after the round was started or skipped to a spot finds the car some way past it, by the time it was
     // confirmed: the stops in between would be neither done nor alerting, so they count as gone by (if the car is not far from the spot).
-    let done = handled
+    // It builds on the stops just done, for the same reason.
     const from = restartRef.current
     if (from !== null && !progress.lost) {
       restartRef.current = null
       const ahead = progress.along - from
       if (ahead > 0 && ahead < CATCH_UP_M) {
-        const gone = occs.filter((o) => !handled.has(o.key) && !byPosition(o, radius) && o.at < progress.along - slackFor(radius)).map((o) => o.key)
+        const gone = occs.filter((o) => !done.has(o.key) && !byPosition(o, radius) && o.at < progress.along - slackFor(radius)).map((o) => o.key)
         if (gone.length) {
-          done = new Set([...handled, ...gone])
+          done = new Set([...done, ...gone])
           saveRound([...done], savedFurthest.current)
         }
       }
     }
     const fresh = approachingOccurrences(driverAt, pos, occs, done, radius, progress.accuracy).filter((o) => !seen.current.has(o.key))
-    if (!fresh.length) return
-    fresh.forEach((o) => seen.current.add(o.key))
-    setQueue((q) => [...q, ...fresh])
-    // A bundle alert is the thing to answer, and its Dropped button is where a sheet's Done is, so the sheets make way for it.
-    if (fresh.some((o) => o.stop.type === 'bundle')) {
-      setMenuOpen(false)
-      setBundlesOpen(false)
+    let beepSeconds = 0
+    if (fresh.length) {
+      fresh.forEach((o) => seen.current.add(o.key))
+      setQueue((q) => [...q, ...fresh])
+      // A bundle alert is the thing to answer, and its Dropped button is where a sheet's Done is, so the sheets make way for it.
+      if (fresh.some((o) => o.stop.type === 'bundle')) {
+        setMenuOpen(false)
+        setBundlesOpen(false)
+      }
+      const has = (type: StopType) => fresh.some((o) => o.stop.type === type)
+      beepSeconds = has('nothrow') ? sound.noThrow() : has('request') ? sound.request() : has('block') ? sound.block() : sound.bundle()
     }
-    const beepSeconds = fresh.some((o) => o.stop.type === 'nothrow') ? sound.noThrow() : fresh.some((o) => o.stop.type === 'request') ? sound.request() : sound.bundle()
     if (!voiceRef.current) return
-    // With the voice on, the house numbers are said once the beep is over: a row of no-throw houses all together, the first time any of it comes up.
-    const plan = planSpeech(fresh, (first) => houseRow(route, allOccs, occs, handled, first, radius), announced.current)
+    // With the voice on, the side thrown is said as it changes, a few metres before the change so the word is done by then, and once
+    // where the round starts. It is queued: it breaks in on another alert's words being said, which are said again in full after it (see
+    // `CUT_GRACE_MS`), and a no-throw row and it are said in the order asked, neither cutting the other off (see `SayOptions.warning`).
+    // The cue is stepped on every fix, but the word is asked for after the alerts' words of this fix, so a no-throw row that comes up as
+    // the side changes is said first, before the house, and the side word right after it.
+    const word = progress.lost ? null : sideCueRef.current.update(sideAt(route, progress.idx), sideAtAlong(route, track.cum, progress.along + sideLookAheadM(speedRef.current)), progress.along)
+    const saySide = () => {
+      if (word) say(sideWords(word), { queue: true, afterMs: beepSeconds * 1000, stale: () => sideCueRef.current.last() !== word })
+    }
+    if (!fresh.length && heldRef.current.size === 0) {
+      saySide()
+      return
+    }
+    // The house numbers are said once the beep is over: a row of no-throw houses all together, the first time any of it comes up, and
+    // only once the side thrown where the driver is takes in their side (until then they are held). Other stops are said as they come up.
+    const plan = planVoice({
+      route,
+      allOccs,
+      occs,
+      handled: done,
+      radius,
+      queue: queueRef.current.filter((o) => !gone.has(o.key)),
+      fresh,
+      announced: announced.current,
+      held: heldRef.current,
+      driver: { idx: progress.idx, along: progress.along, driven: progress.furthest, pos, heading: headingDeg },
+    })
     for (const key of plan.announce) announced.current.add(key)
-    if (plan.text) say(plan.text, { urgent: true, afterMs: beepSeconds * 1000 })
-  }, [progress, handled, occs, allOccs, route, radius, saveRound, bundleNames])
+    heldRef.current = new Set(plan.held)
+    // Said whole, so the next alert waits for them instead of cutting them short; a no-throw row is a warning, which cuts off any other
+    // alert's words and goes before them, but waits for a side word being said or asked before it (see `SayOptions.warning`); on this fix
+    // it is asked for before the side word. Left out if the driver has gone by all they name before their turn comes.
+    if (plan.text) say(plan.text, { urgent: true, whole: true, warning: plan.noThrow, afterMs: beepSeconds * 1000, stale: alertWordsStale(plan.announce, occs, () => progressRef.current, radius) })
+    saySide()
+  }, [progress, handled, occs, allOccs, route, track, radius, headingDeg, saveRound, bundleNames])
 
   // The alert showing is for the nearest no-throw house still ahead, or else the nearest of the others. For a no-throw house it is for
-  // the whole row it is in, numbers and all, so the driver sees at once which houses to leave out, and the others that wait are counted
-  // (not those already gone by, which are only waiting to go).
+  // the whole row it is in, numbers and all, so the driver sees at once which houses to leave out, with an apartment block still to come
+  // in it (its papers are not hidden by the house), and the others that wait are counted (not those already gone by, which are only
+  // waiting to go).
   const here0 = progress?.at ?? null
-  const current = pickCurrent(queue, driven, along, here0, radius)
+  // Not an alert held over a turn round not sure yet that the driver, put on the way back, has gone by: the banner would show it as passed (see `shownQueue`).
+  const shown = shownQueue(queue, turnHeld, driven, along, here0, radius)
+  const current = pickCurrent(shown, driven, along, here0, radius)
   const row = current ? houseRow(route, allOccs, occs, handled, current, radius) : []
-  const waiting = queue.filter((o) => !row.some((r) => r.key === o.key) && !isGoneBy(o, driven, along, here0, radius)).length
+  const blockAhead = bannerBlock(shown, current, driven, along, here0, radius)
+  const waiting = bannerWaiting(shown, blockAhead ? [...row, blockAhead] : row, driven, along, here0, radius)
   // On the map, the houses the alert is for stand out, with their numbers.
   const activeStops = row.map((o) => o.stop.id)
   // Off the route: a line from the phone to where the route was left, and how far and which way that is.
@@ -508,9 +660,9 @@ export function Round({ route, round, routeName, sections, streets, onRound, onA
   const guideInfo = guiding && leftPoint ? guideToLeft(progress.at, { ...leftAt, at: leftPoint }, headingDeg ?? mapHeading) : null
   // A stop off the route is met by where the driver is: its distance is how far off it is, and its side is the side it is on
   // as the driver comes up to it. One along the route has a distance and a side along the route.
-  const here = current ? byPosition(current, radius) : false
   const ahead = current ? aheadOf(current, along, here0, radius) : 0
-  const currentSide = !current ? null : here ? approachSide(headingDeg, here0, current.stop) : alertSide(route, allOccs, current)
+  const currentSide = current ? shownSide(route, allOccs, current, radius, headingDeg, here0) : null
+  const blockSide = blockAhead ? shownSide(route, allOccs, blockAhead, radius, headingDeg, here0) : null
 
   // What the turn card shows, while the phone is on the route (and no Off the route banner is up) and its fix is good enough to say how
   // far along it is. Anywhere but a stretch of transit it is the next turn, once it is within 200 m. On transit it is always something:
@@ -520,7 +672,7 @@ export function Round({ route, round, routeName, sections, streets, onRound, onA
   // The turns are the named ones, so the street each leads into comes with it.
   const transit = side === 'transit'
   const onTrack = off.phase === 'on' && !!progress && onTheRoute(progress.gap, progress.accuracy, progress.lost)
-  const guidance = guidanceToShow(named, { onTrack, transit, along, routeEnd: track.cum[track.cum.length - 1] ?? 0, heading: headingDeg, after: driven - TURN_PASSED_M })
+  const guidance = guidanceToShow(named, { onTrack, transit, along, routeEnd: track.cum[track.cum.length - 1] ?? 0, heading: headingDeg, after: driven - TURN_PASSED_M, reached: driven })
   // The turn the card is for and the voice speaks of, however it is shown: the turn itself, or the turn a straight leads to.
   const guided = guidance ? guidedTurn(guidance) : null
   const nextAt = guided?.turn.at ?? null
@@ -567,12 +719,27 @@ export function Round({ route, round, routeName, sections, streets, onRound, onA
     sound.unlock()
     if (keepAudio) sound.startKeepAlive()
     unlockSpeech()
-    // An alert showing as the voice goes on is the first thing said, as it is what the driver needs to hear, whether or not it was said before.
+    // The side thrown is said again at the next fix, as it was not said while the voice was off.
+    sideCueRef.current.reset()
+    // An alert showing as the voice goes on is the first thing said, as it is what the driver needs to hear, whether or not it was said
+    // before: a no-throw house only if the side thrown where the driver is takes it in, and otherwise it is held until it does.
     const showing = queue.filter((o) => !isGoneBy(o, driven, along, here0, radius))
-    const plan = planSpeech(showing, (first) => houseRow(route, allOccs, occs, handled, first, radius), new Set())
+    const plan = planVoice({
+      route,
+      allOccs,
+      occs,
+      handled,
+      radius,
+      queue: showing,
+      fresh: showing,
+      announced: new Set(),
+      held: new Set(),
+      driver: { idx: snapIdx, along, driven, pos: here0, heading: headingDeg },
+    })
+    heldRef.current = new Set(plan.held)
     if (plan.text) {
       for (const key of plan.announce) announced.current.add(key)
-      say(plan.text, { urgent: true })
+      say(plan.text, { urgent: true, whole: true, warning: plan.noThrow, stale: alertWordsStale(plan.announce, occs, () => progressRef.current, radius) })
       return
     }
     // On a stretch of transit that includes the turn a long way off, at the cue for where it is.
@@ -622,6 +789,12 @@ export function Round({ route, round, routeName, sections, streets, onRound, onA
    * keeps the heading the phone has.
    */
   const restartAt = (metres: number, skip: boolean) => {
+    // A turn round not sure yet is taken as it stands (see `endTurnHold`): what it held or put by that the driver has gone by is done, a bundle
+    // among it missed, before the spot decides the stops (and keeps those before it so).
+    const ended = doneNow([], endTurnHold(turnHold.current, progressRef.current?.along ?? 0, queueRef.current, radius), handledRef.current, true)
+    if (ended.done.length) saveRound([...handledRef.current, ...ended.done.map((o) => o.key)], savedFurthest.current, ended.missed)
+    turnHold.current = null
+    setTurnHeld(NOTHING_HELD)
     seen.current.clear()
     const start = startProgress(track, metres)
     progressRef.current = start
@@ -633,10 +806,12 @@ export function Round({ route, round, routeName, sections, streets, onRound, onA
     savedFurthest.current = metres
     startMRef.current = metres
     restartRef.current = metres > 0 ? metres : null
+    resumeRef.current = false
     // A round started or skipped to a spot has not reached the route yet, and has not left it.
     offRef.current = startOffRoute
     setOff(startOffRoute)
     reachedRef.current = false
+    watchRef.current = restartWatch(watchRef.current)
     reachAlong.current = metres
     reachRun.current = null
     lastStepAt.current = null
@@ -644,11 +819,21 @@ export function Round({ route, round, routeName, sections, streets, onRound, onA
     guidedRef.current = false
     saidTurn.current.clear()
     announced.current.clear()
-    beforeDrop.current.clear()
+    heldRef.current.clear()
+    // The side where the round starts is said once the phone is there.
+    sideCueRef.current.reset()
     stopSpeaking()
     setQueue([])
+    // A pass kept on the leg of a court still ahead (see `keepAlertsAhead`) is kept so from the spot: a skip back before the court puts it
+    // back on the way in, which the car passes again, and a fresh start (at 0) gives the passes as `alertable` has them.
+    const based = keepAlertsAhead(route, allOccs, occs, fresh, metres, radius).occs
+    setLegs({ fresh, occs: based })
     // Skipping keeps the bundles dropped or missed before the spot (and forgets those after it, which come up again); a fresh start forgets all.
-    commitRound(restartedRound(roundRef.current, occs, metres, slackFor(radius), freshStart(skip, finishedRef.current)))
+    // What that makes of the passes at the head of a court is kept with the round, in place of what it had (a fresh start has none).
+    const next = withCourtLegs(restartedRound(roundRef.current, based, metres, slackFor(radius), freshStart(skip, finishedRef.current)), courtLegsOf(fresh, based))
+    // A drop that is kept can still be taken back whole, with every pass it settled, until the driver leaves the Round tab.
+    beforeDrop.current = keptBeforeDrop(beforeDrop.current, next)
+    commitRound(next)
   }
 
   useLayoutEffect(() => {
@@ -686,10 +871,17 @@ export function Round({ route, round, routeName, sections, streets, onRound, onA
       // Carried on, so the driver is taken to be where the last stop done was (or where the round was started from), which tells the passes of a street driven twice apart.
       const carryOn = continueFrom(round, allOccs, handled)
       reachAlong.current = carryOn
+      watchRef.current = restartWatch(watchRef.current)
       const start = startProgress(track, carryOn)
       progressRef.current = start
       setProgress(start)
       trail.current = []
+      announced.current.clear()
+      heldRef.current.clear()
+      sideCueRef.current.reset()
+      // The passes at the head of a court are as a change of side left them, from what is kept with the round (see `resumedLegs`). The
+      // first fix on the route then puts a house at the head of a court the driver is between the two legs of on the leg ahead (see `legsOnResume`).
+      resumeRef.current = true
     }
     go()
   }
@@ -742,6 +934,7 @@ export function Round({ route, round, routeName, sections, streets, onRound, onA
     for (const k of before?.keys() ?? [key]) {
       seen.current.delete(k)
       announced.current.delete(k)
+      heldRef.current.delete(k)
     }
   }
 
@@ -768,7 +961,8 @@ export function Round({ route, round, routeName, sections, streets, onRound, onA
     const seconds = sound.dropped()
     setToast({ message: 'Dropped', undo: () => takeBackDrop(key) })
     if (!voiceRef.current) return
-    const next = nextBundle(bundleList(occs, roundRef.current, progressRef.current?.along ?? along))
+    // The next is the next in the driver's own order, wherever it is, with how far it is in a straight line.
+    const next = nextInOrder(bundleRows(occs, roundRef.current, bundleOrder, phoneAt))
     if (next) say(nextBundleSpeech(next), { afterMs: seconds * 1000 })
   }
 
@@ -870,7 +1064,7 @@ export function Round({ route, round, routeName, sections, streets, onRound, onA
     setToast({ message: said, undo })
     // Counting the houses that go quiet or start to alert takes a moment on a long round, so it follows the message rather than holding it up.
     setTimeout(() => {
-      const note = sideChangeNote(route, next)
+      const note = sideChangeNote(route, next, reachM)
       // Houses that start to alert behind the car are counted done at once, so the driver is told they won't alert.
       const full = note && /alert/.test(note) ? `${note} (any already behind you count as done)` : note
       if (full) setToast((t) => (t && t.undo === undo ? { ...t, message: `${said} ${full}` } : t))
@@ -898,6 +1092,8 @@ export function Round({ route, round, routeName, sections, streets, onRound, onA
   const { total, remaining, done, finished } = roundCounts(occs, handled)
   // A round that has been started part way, or driven some way, carries on from there even when no stop has been done.
   const carryOn = continueFrom(round, allOccs, handled)
+  // With nothing to carry on, the one button starts afresh (as Start Over does). With nothing done that is where the round would carry on
+  // from anyway, but what a change of side made of the passes at the head of a court is forgotten, so a house it left out alerts again on the new drive.
   const partial = remaining > 0 && (done > 0 || carryOn > 0)
 
   if (!started && picker === 'start') {
@@ -925,7 +1121,7 @@ export function Round({ route, round, routeName, sections, streets, onRound, onA
           </p>
           {finished && <p className="fine">Your last round is finished, so this will start a new one.</p>}
           <p className="fine">
-            You'll only be alerted for bundle drops, no‑throw houses and special requests. Keep the phone unlocked and mounted, because GPS pauses when the screen is off.
+            You'll only be alerted for bundle drops, no‑throw houses, special requests and apartment blocks. Keep the phone unlocked and mounted, because GPS pauses when the screen is off.
           </p>
           <div className="alert-setting">
             <div className="brush-label">Alert distance</div>
@@ -978,7 +1174,7 @@ export function Round({ route, round, routeName, sections, streets, onRound, onA
               </button>
             </>
           ) : (
-            <button className="btn primary block" onClick={() => begin(finished || total === 0)}>
+            <button className="btn primary block" onClick={() => begin(true)}>
               {finished ? 'Start New Round' : 'Start Round'}
             </button>
           )}
@@ -998,6 +1194,7 @@ export function Round({ route, round, routeName, sections, streets, onRound, onA
         route={route}
         position={fix}
         handled={handled}
+        reachM={reachM}
         drivenM={driven}
         active={activeStops}
         follow={!overview}
@@ -1056,6 +1253,7 @@ export function Round({ route, round, routeName, sections, streets, onRound, onA
             side={currentSide}
             waiting={waiting}
             onDropped={current.stop.type === 'bundle' ? () => dropFromAlert(current) : undefined}
+            blockAhead={blockAhead ? { stop: blockAhead.stop, side: blockSide } : undefined}
           />
         )}
       </div>
@@ -1103,7 +1301,7 @@ export function Round({ route, round, routeName, sections, streets, onRound, onA
         />
       )}
 
-      {bundlesOpen && <BundlesSheet items={bundles} onClose={() => setBundlesOpen(false)} onMark={markFromList} onUndo={takeBackDrop} />}
+      {bundlesOpen && <BundlesSheet rows={rows} order={bundleOrder} onOrder={onBundleOrder} onClose={() => setBundlesOpen(false)} onMark={markFromList} onUndo={takeBackDrop} />}
 
       {picker === 'jump' && (
         <StartPicker route={route} sections={sections} occs={occs} handled={handled} round={round} slack={slackFor(radius)} position={fix} mode="jump" onPick={(m, name) => void skipTo(m, name)} onClose={() => setPicker(null)} />

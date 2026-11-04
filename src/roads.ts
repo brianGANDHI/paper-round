@@ -1,6 +1,8 @@
-import { bearing, haversine, simplify } from './geo'
-import { appendPoint, appendPoints, isDuplicateTap, removeLastPoint } from './routeEdit'
+import { bearing, haversine, sideAt, simplify } from './geo'
+import { appendPoint, appendPoints, isDuplicateTap, removeLastPoint, routeLength } from './routeEdit'
+import { readsAsUturnAt, routeTurns, uturnThere } from './turns'
 import type { Pt, Route, Side } from './types'
+import { drawUturn, endsWithUturn } from './uturnShape'
 
 /**
  * Follow roads: the stretch between two taps worked out along streets by a public OSRM server.
@@ -10,9 +12,9 @@ import type { Pt, Route, Side } from './types'
  * (fossgis.de/arbeitsgruppen/osm-server/nutzungsbedingungen) allow one request a second, ask for
  * OpenStreetMap attribution with a link to fix the map, rule out heavy use, and promise no
  * availability. So there is a gap between requests, only one runs at a time, and any failure is
- * answered with a straight line instead. Route by address (transit.ts) asks the same server for the
- * road between two typed addresses, and reports a failure instead. Street names (streets.ts) ask it which
- * road is nearest a point. All of them ask through the same gap, one at a time in the order they asked.
+ * answered with a straight line instead (or, for a U-turn, with one drawn on the spot: see `uturnShape.ts`). Route by address
+ * (transit.ts) asks the same server for the road between two typed addresses, and reports a failure instead. Street names (streets.ts)
+ * ask it which road is nearest a point. All of them ask through the same gap, one at a time in the order they asked.
  */
 const DEFAULT_ENDPOINT = 'https://routing.openstreetmap.de/routed-car/route/v1/driving'
 
@@ -73,12 +75,15 @@ export const ROAD_NOTICE: Record<Exclude<RoadFailure, 'cancelled'>, string> = {
 }
 
 /**
- * What to tell the user when a request for a U-turn found no road, so that stretch is a straight line. The service gives
- * one answer for several causes: no road to leave the last point by the way back (a one-way street), a point with no road
- * near it (the last point, or the tap), and no way between the two. So it names what is most likely, and doesn't claim which.
+ * What to tell the user when a request for a U-turn along the road found no road, so a U-turn was drawn at the end of the route instead (see
+ * `localUturn`). The service gives one answer for several causes: no road to leave the last point by the way back (a one-way street), a point with
+ * no road near it (the last point, or the tap), and no way between the two. So it names the likeliest, and doesn't claim which. The tap was not used.
  */
-export const UTURN_NOTICE =
-  'No road route found there for a U-turn (it may be a one-way street, or a point too far from a road), so that stretch is a straight line.'
+export const UTURN_NO_ROAD_NOTICE =
+  'No road to turn round on there (it may be a one-way street), so a U-turn was drawn at the end of your route. Tap where you head next.'
+/** The same, when the road service could not be asked or did not answer: no connection, too slow, or not working. */
+export const UTURN_UNREACHED_NOTICE =
+  "Couldn't reach the road service, so a U-turn was drawn at the end of your route. Tap where you head next."
 
 const lngLat = (p: Pt) => `${p.lng.toFixed(6)},${p.lat.toFixed(6)}`
 
@@ -301,12 +306,22 @@ export async function fetchRoad(from: Pt, to: Pt, opts: LookupOptions = {}): Pro
 /** Whether a tap can be followed along roads: there has to be a point to start from, and the tap has to be somewhere new. */
 export const canFollow = (route: Route, tap: Pt) => route.points.length > 0 && !isDuplicateTap(route, tap)
 
+/** A point a tap took off the end of the route, with the side of the piece of route it ended, so that Undo can put it back as it was. */
+export interface TakenPoint {
+  point: Pt
+  side: Side
+}
+
 /** What one tap added to the route. */
 export interface Stretch {
   /** The points added to the end of the route. */
   added: Pt[]
-  /** The route's only point, when the start of the road took its place. */
-  replaced: Pt | null
+  /**
+   * What the stretch took the place of, which Undo puts back: the route's only point, when the start of the road took its place, or the turn and
+   * the way back of a U-turn drawn at the end of the route, when the road was drawn on from the U-turn's first point instead (see `extendAlongRoads`).
+   * Null when it took the place of nothing.
+   */
+  replaced: Pt | TakenPoint[] | null
 }
 
 export interface Extension extends Stretch {
@@ -321,11 +336,51 @@ function straight(route: Route, tap: Pt, side: Side, notice: string | null): Ext
 }
 
 /**
+ * How far, in metres, the road for the tap after a U-turn drawn on the spot can start from where the U-turn's way back meets the line the route came
+ * in on (`UTURN_ACROSS_M` across from where it ends), and still be that way back snapped onto the middle of the road: give or take a road that bends.
+ */
+const UTURN_LINE_M = 1
+
+/**
+ * The route with `road` drawn on from the first point of a U-turn drawn on the spot at its end (see `drawUturn`), in place of the U-turn's turn and
+ * way back, and those two points with their sides, for Undo to put back. The U-turn ends 5 m to the side of the line the route came in on, and the
+ * road service starts the road snapped onto the middle of the road. Drawn on from the end of the U-turn, the route would jog back across to it: two
+ * more bends a few metres after the U-turn, which `routeTurns` takes into it, so that a corner or a bend just after made the U-turn a turn the wrong
+ * way, or nothing. Drawn on from the U-turn's first point, the route goes straight back down the road, as a U-turn along the road does, and a corner
+ * either way after it is a turn of its own (see `REVERSAL_DEG` in turns.ts). Null unless the route ends with such a U-turn, the road starts within
+ * `UTURN_LINE_M` of where the way back meets that line, and the turn directions read the route drawn on so as a U-turn the way the U-turn went
+ * round, wherever their 5 m pieces fall (see `readsAsUturnAt`), and as the whole route falls on them (see `uturnThere`): a route that doubles back on
+ * its own line goes round only the way its pieces lean, and where the road curves through, or kinks a few metres before the end, they would read some
+ * of those as a U-turn the other way round, or as a sharp turn. The jog keeps its way round. With the U-turn after a corner, the way back ends on the
+ * street the U-turn is in (see `uturnBehind`), so the road service starts the road there too, on that line.
+ */
+function drawnOnFromUturn(route: Route, road: Pt[], side: Side): { route: Route; added: Pt[]; taken: TakenPoint[] } | null {
+  const n = route.points.length
+  if (!endsWithUturn(route.points)) return null
+  const [a, b, c] = route.points.slice(-3)
+  // Moved across by as far as the road starts from the U-turn's end, the U-turn's turn lands on its first point when the road is on the line.
+  const across: Pt = { lat: b.lat + road[0].lat - c.lat, lng: b.lng + road[0].lng - c.lng }
+  if (haversine(across, a) > UTURN_LINE_M) return null
+  const base = removeLastPoint(removeLastPoint(route))
+  const next = appendPoints(base, road, side)
+  // Read wherever the pieces fall, and as the whole route falls on them, which is somewhere between the places `readsAsUturnAt` tries.
+  const at = routeLength(base.points)
+  if (!readsAsUturnAt(next.points, at) || !uturnThere(routeTurns(next.points), at)) return null
+  // The turn ends the piece across (n - 3) and the way back ends the piece back down the road (n - 2).
+  const taken = [b, c].map((point, i): TakenPoint => ({ point, side: sideAt(route, n - 3 + i) }))
+  return { route: next, added: next.points.slice(base.points.length), taken }
+}
+
+/**
  * The route with a stretch added from its end to `tap`, thrown on `side`. It follows streets when
  * they can be found and is a straight line otherwise, with a notice saying why. The first point of a
  * route and a tap on the last point need no lookup. Rejects with a 'cancelled' RoadError, and only that, when cancelled.
- * With `uturnFrom` (see `LookupOptions`) the road turns back from the end of the route; when there is no road to do that
- * along, the straight line's notice says so.
+ * With `uturnFrom` (see `LookupOptions`) the road turns back from the end of the route. When it can't, for whatever reason
+ * (no road to do it along, no connection, too slow, the service down), a U-turn is drawn at the end of the route instead
+ * (`localUturn`, thrown on `side` as `withUturn` has it) and the tap is not added: it was where the road was to go, which is
+ * not where this goes, and a straight line to it would not turn round. The notice says so, and to tap again.
+ * A road that starts beside the end of a U-turn drawn on the spot, on the line the route came in on, takes the place of the U-turn's
+ * turn and way back where that reads as the same U-turn, and `replaced` has them (see `drawnOnFromUturn`).
  */
 export async function extendAlongRoads(route: Route, tap: Pt, side: Side, opts: LookupOptions = {}): Promise<Extension> {
   const from = route.points[route.points.length - 1]
@@ -336,8 +391,13 @@ export async function extendAlongRoads(route: Route, tap: Pt, side: Side, opts: 
   } catch (e) {
     const kind = e instanceof RoadError ? e.kind : 'service'
     if (kind === 'cancelled') throw e
-    return straight(route, tap, side, kind === 'no-road' && isBearing(opts.uturnFrom) ? UTURN_NOTICE : ROAD_NOTICE[kind])
+    const drawn = isBearing(opts.uturnFrom) ? drawUturn(route, side) : null
+    if (drawn) return { ...drawn, notice: kind === 'no-road' ? UTURN_NO_ROAD_NOTICE : UTURN_UNREACHED_NOTICE, replaced: null }
+    return straight(route, tap, side, ROAD_NOTICE[kind])
   }
+  // A road that starts beside a U-turn drawn on the spot is drawn on from the U-turn's first point, rather than with a jog across to it.
+  const turned = drawnOnFromUturn(route, road, side)
+  if (turned) return { route: turned.route, notice: null, added: turned.added, replaced: turned.taken }
   // A route that is just one loose point starts on the street instead, rather than with a short link to it.
   const lone = route.points.length === 1
   const base: Route = lone ? { ...route, points: [] } : route
@@ -356,8 +416,9 @@ const endsWith = (points: Pt[], tail: Pt[]) =>
 
 /**
  * Take back the last tap, which may have added a whole stretch of road: the newest recorded stretch that
- * still ends the route comes off again (and the start it replaced goes back). Stretches recorded after it
- * are forgotten, as they no longer fit. Null when none ends the route, for example after points were edited.
+ * still ends the route comes off again (and what it replaced goes back: the start, or the way back of a U-turn,
+ * on the sides it had). Stretches recorded after it are forgotten, as they no longer fit. Null when none ends
+ * the route, for example after points were edited.
  */
 export function undoStretch(route: Route, history: Stretch[]): { route: Route; history: Stretch[] } | null {
   const at = history.findLastIndex((h) => endsWith(route.points, h.added))
@@ -365,6 +426,7 @@ export function undoStretch(route: Route, history: Stretch[]): { route: Route; h
   const { added, replaced } = history[at]
   let next = route
   for (let i = 0; i < added.length; i++) next = removeLastPoint(next)
-  if (replaced) next = appendPoint(next, replaced)
+  if (Array.isArray(replaced)) for (const { point, side } of replaced) next = appendPoint(next, point, side)
+  else if (replaced) next = appendPoint(next, replaced)
   return { route: next, history: history.slice(0, at) }
 }
