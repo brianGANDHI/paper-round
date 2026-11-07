@@ -1,8 +1,8 @@
 import { plural } from './format'
-import { haversine, type Occurrence } from './geo'
+import { byPosition, haversine, pastAlerting, placedZone, type Occurrence } from './geo'
 import { formatDistance } from './routeEdit'
 import { spokenDistance } from './turns'
-import type { Pt, RoundState, Stop } from './types'
+import type { Pt, RoundState, Stop, StopType } from './types'
 
 /*
  * Bundle drops in a round. A bundle drop is somewhere papers are left in a bundle by hand, so unlike a house on the round it
@@ -13,8 +13,8 @@ import type { Pt, RoundState, Stop } from './types'
  *   - done (`handledStopIds`): the alert is over, however it came to be.
  *   - dropped: done, and the driver tapped "Dropped" (or marked it so in the list).
  *   - missed: done, but the driver drove past in its zone without tapping. It can still be marked dropped later.
- * A bundle that is done and in neither list was skipped over: a skip to a spot or section, a restart, and the catch-up after one
- * all mark what they go over as done without it having been dropped or missed. A bundle not done is still to come.
+ * A bundle that is done and in neither list was skipped over: a skip to a spot or section and a restart mark what they go over as
+ * done without it having been dropped or missed. A bundle not done is still to come.
  * The invariant is that dropped and missed are subsets of done and share nothing. `reconcile` restores it; every function here that
  * changes a round keeps it.
  *
@@ -28,6 +28,11 @@ import type { Pt, RoundState, Stop } from './types'
  * THEIR order (`bundleRows`): one row for each bundle stop, in the order the driver put them in (`SavedRoute.bundleOrder`), which never
  * changes by itself. The next bundle is the first in that order that is still to do, wherever it is, and its distance is the straight
  * line from the phone. The bar, the list and the voice after a drop all go by the rows.
+ *
+ * Only the bundle next in that list alerts (see `gatedOccurrences`): driving past any other gives no alert and no miss, and it stays to do.
+ * The next one gone by with no alert at all, as in a stretch with no fix, is missed, so it can't hold up the list (see `wentByUnseen`), but only if the
+ * car can really have driven past it: from one fix to the next, never at the first fix after a start, a skip or a spell off the route, which is no proof of what the car drove.
+ * One that goes behind the car and is not counted missed stays next, and the driver is told once (see `nextLeftBehind`).
  */
 
 /** What became of a bundle, or where it is: dropped, missed, skipped over, the one coming next, or one that comes after that. */
@@ -99,8 +104,8 @@ const trimmed = (text: string | undefined): string | null => text?.trim() || nul
  * A pass of a stop that has another pass dropped is covered by that drop (`coveredBy` says which pass) and is 'skipped' whatever the round
  * says of it, so it is never the next bundle, nor a miss, and a round that was kept before the drop settled it still reads right.
  * Of those not done, the first that is not behind the driver (see `behindM`) is 'next', and the rest are 'later'. One not done that
- * is behind the driver, which is rare (a stretch of the round with no fix, say), is 'later' too, with `behind` set, so the list can
- * say it was passed and still offer to mark it dropped. A key in `dropped` or `missed` that is not done is ignored: see `reconcile`.
+ * is behind the driver (driven past while it was not next, say) is 'later' too, with `behind` set, so the list can say it was passed
+ * and still offer to mark it dropped. A key in `dropped` or `missed` that is not done is ignored: see `reconcile`.
  */
 export function bundleList(
   occs: readonly Occurrence[],
@@ -528,6 +533,168 @@ export const setupBundles = (occs: readonly Occurrence[]): EditorBundle[] =>
 
 /** The bundle coming next in the driver's list, or null when none is left to do. */
 export const nextInOrder = (rows: readonly BundleRow[]): BundleRow | null => rows.find((r) => r.status === 'next') ?? null
+
+/* ------------------------------------------------------------------ *
+ * Which bundle may alert. The driver works down their list, so only the stop next in it alerts: another driven past gives no banner, beep or
+ * voice, is not queued, and is neither missed nor done. The rule follows the list at once, whatever moves the next on: a drop, a miss, Mark
+ * dropped, Undo, a reorder. With no order set the list is route order, so the rule is the same. Nothing here touches the other kinds of stop.
+ * ------------------------------------------------------------------ */
+
+/** The id of the stop next in the driver's list (see `bundleRows`), or null when none is left to do. */
+export const nextBundleId = (occs: readonly Occurrence[], round: Pick<RoundState, 'handledStopIds' | 'dropped' | 'missed'>, order: readonly string[] | undefined): string | null =>
+  nextInOrder(bundleRows(occs, round, order, null))?.id ?? null
+
+/**
+ * The passes that may alert, of `occs`, given the id of the bundle next in the driver's list (`nextId`, see `nextBundleId`), the keys of the stops
+ * done, how far the driver has got (`reached`, see `reachedAt`) and the alert zones. Every other kind of stop is as it was, and the passes of every
+ * other bundle are taken out.
+ *
+ * The next bundle alerts along the route, as ever, on a pass the driver can still come to. Once every pass of it to do is behind them, too far
+ * for it to alert along the route (see `pastAlerting`), it was driven past while it was not next, and there is no way along the route to it any
+ * more: its last pass to do is then met by where the driver is (see `Occurrence.placed`), in its zone (see `placedZone`), whatever the route
+ * says. So a bundle the driver is already beside as it becomes next alerts at once, and one they come back to alerts as they get there. A stop away
+ * from the route is met that way already. Only the last pass to do may alert once every pass to do is that far behind. Nor does a pass of a stop met by place once the car is further
+ * on from it than its zone reaches and there is a later pass to do: a car in the zone then is at the later pass, and that going by settles the earlier ones (see `earlierPasses`), where
+ * an earlier one going by would leave the later one open, and the stop next with no way to come to it. A stop with one pass, and one the car has not gone that far on from, are as ever.
+ */
+export function gatedOccurrences(occs: readonly Occurrence[], nextId: string | null, done: ReadonlySet<string>, reached: number, radius: Record<StopType, number>): Occurrence[] {
+  const left = occs.filter((o) => o.stop.id === nextId && !done.has(o.key))
+  const last = left.length ? left.reduce((a, b) => (b.at > a.at ? b : a)) : null
+  const allBehind = left.every((o) => pastAlerting(o, reached, radius))
+  return occs.flatMap((o) => {
+    if (o.stop.type !== 'bundle') return [o]
+    if (o.stop.id !== nextId) return []
+    if (o === last) return [allBehind && !byPosition(o, radius) ? { ...o, placed: true } : o]
+    return last && (allBehind || (byPosition(o, radius) && reached - o.at > placedZone(o, radius))) ? [] : [o]
+  })
+}
+
+/**
+ * The bundle alerts among `alerts` that are not for the bundle next in the driver's list (`nextId`, see `nextBundleId`): the list has moved on since
+ * they came up, so they go without a word. Not done and not missed, they may alert again once they are next.
+ */
+export const notNextAlerts = <T extends Pick<Occurrence, 'stop'>>(alerts: readonly T[], nextId: string | null): T[] => alerts.filter((o) => o.stop.type === 'bundle' && o.stop.id !== nextId)
+
+/**
+ * The keys of the earlier passes, not done yet, of the bundles in `goneBy` (the keys of passes that went by without a drop): they are gone by too. A
+ * pass driven by while the stop was not next is left to do, and a stop is to do while any pass is, so with this pass gone by the stop would stay to
+ * do for ever, and hold up every bundle after it in the list. They count as neither dropped nor missed: the pass that went by says what became of
+ * the stop. `done` are the keys of the stops done before this.
+ */
+export function earlierPasses(occs: readonly Pick<Occurrence, 'key' | 'stop' | 'at'>[], goneBy: readonly string[], done: ReadonlySet<string>): string[] {
+  const gone = new Set(goneBy)
+  const reached = new Map<string, number>()
+  for (const o of occs) if (gone.has(o.key) && o.stop.type === 'bundle') reached.set(o.stop.id, Math.max(reached.get(o.stop.id) ?? -Infinity, o.at))
+  return occs.filter((o) => o.at < (reached.get(o.stop.id) ?? -Infinity) && !done.has(o.key) && !gone.has(o.key)).map((o) => o.key)
+}
+
+/** How far along the route a pass of a stop is finally gone by: on the later leg, where the route goes by it on both legs of a court (see `Occurrence.alt`). */
+const lastLegOf = (o: Pick<Occurrence, 'at' | 'altAt'>): number => Math.max(o.at, o.altAt ?? o.at)
+
+/**
+ * The keys of the bundles the driver went by with no alert as they got from `from` to `to` metres along the route (see `reachedAt`): to count as
+ * missed, each with its earlier passes settled (see `earlierPasses`). Without this a stretch with no fix past the next bundle would leave it next for
+ * ever, silencing every bundle after it for the rest of the round with no sign but the bar's growing distance.
+ *
+ * It walks down the driver's list from the next bundle, as `round` has it. The next bundle has gone by when the last pass of it not done was still
+ * ahead of the driver or in its alert window at `from`, is past it at `to` (see `pastAlerting`), and never came up (it is not in `cameUp`, the keys
+ * of the alerts seen, which take in those up and those put by over a turn round). The bundle after it is then next, and is tested the same way in
+ * the same stretch, so a gap past two in a row does not leave the second holding the list. The walk ends at the first that fails. So a stop with a pass
+ * still to come stays next and alerts on that pass, and one that was already behind the driver is met by place (see `gatedOccurrences`). A pass the route
+ * goes by on both legs of a court (see `Occurrence.alt`) is still to come until the later leg is gone by. A stop met by where the driver is has no
+ * place along the route to go by. Bundles not next are never touched.
+ *
+ * A car at `pos` in the zone of a bundle (see `placedZone`) is at it, however far along the route it is put, so that bundle has not gone by, and the
+ * walk ends there: it alerts by place on this fix, and is missed as ever if it is driven out of the zone.
+ *
+ * `nextWas` is the stop next at the last look (see `firstLink`): a bundle that has only just become next, by a tap in the same moment, was not gone by
+ * unseen, as it was not its turn. Left out, the walk starts from whichever bundle is next now, as it does when the one before it was missed on this fix.
+ */
+export function wentByUnseen(
+  occs: readonly Occurrence[],
+  round: Pick<RoundState, 'handledStopIds' | 'dropped' | 'missed'>,
+  order: readonly string[] | undefined,
+  from: number,
+  to: number,
+  pos: Pt,
+  radius: Record<StopType, number>,
+  cameUp: ReadonlySet<string>,
+  nextWas?: string | null,
+): string[] {
+  const goneBy: string[] = []
+  let now = round
+  for (;;) {
+    const id = nextBundleId(occs, now, order)
+    if (id === null || (!goneBy.length && nextWas !== undefined && id !== nextWas)) return goneBy
+    const done = new Set(now.handledStopIds)
+    const last = occs.filter((o) => o.stop.id === id && !done.has(o.key)).reduce((a, b) => (b.at > a.at ? b : a))
+    const end = { ...last, at: lastLegOf(last) }
+    if (byPosition(last, radius) || cameUp.has(last.key) || pastAlerting(end, from, radius) || !pastAlerting(end, to, radius)) return goneBy
+    if (haversine(pos, last.stop) <= placedZone({ ...last, placed: true }, radius)) return goneBy
+    goneBy.push(last.key)
+    now = { ...now, handledStopIds: [...now.handledStopIds, last.key, ...earlierPasses(occs, [last.key], done)] }
+  }
+}
+
+/**
+ * Who `wentByUnseen` may start from on a stretch from one fix to the next, with `nextWas` the stop next at the last look and `missed` the keys of the bundles
+ * that went by in their zones on this fix, alert up and no tap. A bundle that became next because that one went by has been ahead all along, so it may be the first
+ * link, as it would be in a gap with no alert up. One that became next at a tap stays what `nextWas` makes of it: a drop is not a miss.
+ */
+export const firstLink = (occs: readonly Pick<Occurrence, 'key' | 'stop'>[], nextWas: string | null, missed: readonly string[]): string | null | undefined =>
+  occs.some((o) => o.stop.id === nextWas && missed.includes(o.key)) ? undefined : nextWas
+
+/** How far behind the driver along the route, and from the car in a straight line, in metres, the next bundle is left behind (see `nextLeftBehind`): well past any zone and any jitter. */
+export const NEXT_BEHIND_M = 150
+
+/** What is said when the next bundle has been left behind (see `nextLeftBehind`). */
+export const NEXT_BEHIND_SPEECH = 'Next bundle is behind you.'
+
+/** Whether a pass is behind the car at `along`: by its last leg, as one with a leg still to come can yet be gone by. */
+const passBehind = (o: Occurrence, along: number, radius: Record<StopType, number>): boolean => pastAlerting({ ...o, at: lastLegOf(o) }, along, radius)
+
+/** Whether the bundle next in the list (`nextId`) has a pass not done that is not behind the car yet, where it is along the route (`along`), not how far it has got. */
+export const nextStillAhead = (occs: readonly Occurrence[], nextId: string | null, done: ReadonlySet<string>, along: number, radius: Record<StopType, number>): boolean =>
+  occs.some((o) => o.stop.id === nextId && !done.has(o.key) && !passBehind(o, along, radius))
+
+/**
+ * Whether the bundle next in the list (`nextId`) has been left behind, so that it is holding up the list with nothing to show for it: every pass of it not done is more
+ * than NEXT_BEHIND_M behind where the car is along the route (`along`), and the car at `pos` is more than that from the stop, in a straight line. Where the car is, not how far
+ * it has got: after Continue Round the furthest reached can be well on from the car, and a bundle between the two is still ahead of it.
+ * It stays next, as the driver may mean to go back, and it alerts by place if they do. This only says so: the screen tells them, once.
+ */
+export function nextLeftBehind(occs: readonly Occurrence[], nextId: string | null, done: ReadonlySet<string>, along: number, pos: Pt): boolean {
+  const left = occs.filter((o) => o.stop.id === nextId && !done.has(o.key))
+  return left.length > 0 && left.every((o) => along - lastLegOf(o) > NEXT_BEHIND_M) && haversine(pos, left[0].stop) > NEXT_BEHIND_M
+}
+
+/** What is said when the next bundle is holding up those after it (see `nextHoldsUp`). */
+export const stillNextSpeech = (name: string): string => `Next bundle is still ${name}.`
+
+/** The passes of bundles behind the car at `along`, by key (see `nextHoldsUp`). */
+export const bundlesBehind = (occs: readonly Occurrence[], along: number, radius: Record<StopType, number>): Set<string> =>
+  new Set(occs.filter((o) => o.stop.type === 'bundle' && passBehind(o, along, radius)).map((o) => o.key))
+
+/**
+ * Whether the bundle next in the list (`nextId`) is costing the driver another bundle with the car going on: it has a pass behind the car at `along`, done or not, and since that pass
+ * the car has gone by a pass not done of another bundle that the list can no longer reach in order. That bundle is further down the list, so it went by with nothing said, and it has no
+ * pass left within reach of the next one's own next pass: taking the next there, the list comes to it with the car past it. The next may well have a pass still to come, far on: this is
+ * what says so while that is ahead, as `nextLeftBehind` can only speak once it is not.
+ *
+ * `already` is the passes behind the car when this bundle became next (none when that is not known, see `goneBefore` in src/Round.tsx): what went by before that is not this bundle's doing, by the list
+ * or by the driver's own reorder. So a list in the order the driver means to drive never comes to this. A bundle left for a later pass still has that pass after the next's, and it is not
+ * said of a bundle the car has yet to come to, however many others go by first: that is the driver's order working as it should. A pass of the next counts as behind the car only once its
+ * last leg is (see `lastLegOf`); a pass of another counts from its first leg, as while the next holds the list it will not alert on the later one, though that leg can still be reached in order.
+ */
+export function nextHoldsUp(occs: readonly Occurrence[], nextId: string | null, done: ReadonlySet<string>, along: number, radius: Record<StopType, number>, already: ReadonlySet<string> = new Set()): boolean {
+  const passed = occs.filter((o) => o.stop.id === nextId && passBehind(o, along, radius))
+  if (!passed.length) return false
+  const since = Math.min(...passed.map((o) => o.at))
+  const toCome = occs.filter((o) => !done.has(o.key) && !passBehind(o, along, radius))
+  const nextComes = Math.min(Infinity, ...toCome.filter((o) => o.stop.id === nextId).map((o) => o.at))
+  const lostFor = (id: string) => toCome.every((o) => o.stop.id !== id || pastAlerting({ ...o, at: lastLegOf(o) + radius[o.stop.type] }, nextComes, radius))
+  return occs.some((o) => o.stop.type === 'bundle' && o.stop.id !== nextId && !done.has(o.key) && !already.has(o.key) && o.at > since && pastAlerting(o, along, radius) && lostFor(o.stop.id))
+}
 
 /** How many bundle drops are left to do: stops, so a street driven twice counts once. */
 export const bundlesLeft = (rows: readonly Pick<BundleRow, 'status'>[]): number => rows.filter((r) => isToDo(r.status)).length

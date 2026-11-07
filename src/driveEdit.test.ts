@@ -82,7 +82,7 @@ describe('how far a change of side can reach, where the driver is', () => {
     })
 
     it('gives each one its length, and says the whole stretch is the entire one', () => {
-      expect(found.extents.map((e) => e.detail)).toEqual(['700 m', '300 m', '1.7 km', '1.7 km', '3.0 km, the entire left stretch'])
+      expect(found.extents.map((e) => e.detail)).toEqual(['700 m', '300 m', '1.7 km', '1.7 km', '3.0 km, the entire port stretch'])
     })
 
     it('has the exact ends it paints, as numbers', () => {
@@ -323,7 +323,7 @@ describe('how far a change of side can reach, where the driver is', () => {
     it('leave the street out, and keep the whole stretch, when the street is the whole of it', () => {
       const found = sideExtents(route, [], [], 2300)
       expect(keys(found)).toEqual(['toStretchEnd', 'stretch'])
-      expect(found.extents[1].detail).toBe('3.0 km, the entire left stretch')
+      expect(found.extents[1].detail).toBe('3.0 km, the entire port stretch')
     })
   })
 
@@ -404,8 +404,8 @@ describe('how far a change of side can reach, where the driver is', () => {
     it('says which, for each', () => {
       const entire = (side: Side) =>
         sideExtents(built([0, 1000, 4000, 5000], ['both', side, 'both']), turns(1900, 2600), [oak], 2300).extents.find((e) => e.key === 'stretch')!.detail
-      expect(entire('left')).toBe('3.0 km, the entire left stretch')
-      expect(entire('right')).toBe('3.0 km, the entire right stretch')
+      expect(entire('left')).toBe('3.0 km, the entire port stretch')
+      expect(entire('right')).toBe('3.0 km, the entire starboard stretch')
       expect(entire('transit')).toBe('3.0 km, the entire transit stretch')
       // A stretch with the same side as its neighbours is still its own stretch.
       expect(entire('both')).toBe('3.0 km, the entire both-sides stretch')
@@ -720,7 +720,7 @@ describe('a street or a named section that is the whole stretch', () => {
   it('has the whole stretch change all of it, which is what it says', () => {
     const found = sideExtents(route, [], [], 2300)
     expect(leftAfter(found, 'stretch')).toEqual([])
-    expect(found.extents.find((e) => e.key === 'stretch')?.detail).toBe('3.0 km, the entire left stretch')
+    expect(found.extents.find((e) => e.key === 'stretch')?.detail).toBe('3.0 km, the entire port stretch')
   })
 
   it('takes the ends of the stretch, not the turn a few metres inside it, when that is all the street is', () => {

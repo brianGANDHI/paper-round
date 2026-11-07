@@ -95,6 +95,9 @@ export function planVoice(input: VoiceInput): VoicePlan {
 /** Where the driver is when an alert's words come to be said: the tracker's place, or null when there is none yet. */
 export type DriverNow = Pick<Progress, 'along' | 'furthest' | 'at' | 'turned'>
 
+/** How far along the route the driver is, for judging the stops words name: while a turn round is not sure, where it put them from (see `alertWordsStale`). */
+const judgedAlong = (p: DriverNow): number => (p.turned ? p.turned.from : p.along)
+
 /**
  * The check that an alert's words are out of date by the time their turn comes (`SayOptions.stale`): true once the driver has gone by
  * every stop they name (`keys`, the plan's `announce`, found in `occs`), by the rule by which `planVoice` names no stop gone by (see
@@ -117,7 +120,29 @@ export function alertWordsStale(
   return () => {
     const p = now()
     if (!p || !stops.length) return false
-    const along = p.turned ? p.turned.from : p.along
-    return stops.every((o) => isGoneBy(o, p.furthest, along, p.at, radius))
+    return stops.every((o) => isGoneBy(o, p.furthest, judgedAlong(p), p.at, radius))
+  }
+}
+
+/**
+ * The check that a no-throw warning that did not start has come too late for a second try (`SayOptions.retryStale`): true once the car is
+ * level with every stop the words name, or past them. `alertWordsStale` allows a first try a little past a house; a second try starts later
+ * still, so at that limit it would begin well past the house and run over the next ones, where "No throw, 17" could be taken for a house that
+ * should get a paper. Better the banner alone, which still shows the row. The driver is judged along the route as in `alertWordsStale`,
+ * and a stop met by where the phone is is never level, however close the phone is: its words are always said.
+ */
+export function alertWordsLevel(
+  keys: readonly string[],
+  occs: readonly Occurrence[],
+  now: () => DriverNow | null,
+  radius: Record<Stop['type'], number>,
+): () => boolean {
+  const named = new Set(keys)
+  const stops = occs.filter((o) => named.has(o.key))
+  return () => {
+    const p = now()
+    if (!p || !stops.length) return false
+    const reached = Math.max(judgedAlong(p), p.furthest)
+    return stops.every((o) => !byPosition(o, radius) && o.at <= reached)
   }
 }

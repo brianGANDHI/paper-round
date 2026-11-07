@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { BACKUP_VERSION, backupFileName, makeBackup, parseBackup, toBackupRoute, type BackupRoute } from './backup'
 import { resolveSections } from './namedSections'
-import { activeRoute, addImported, addRoute, createLibrary, makeRoute, setActiveRound, setActiveSections, setActiveStreets } from './library'
+import { activeRoute, addImported, addRoute, createLibrary, makeRoute, setActiveRound, setActiveSections, setActiveStreets, setLoad } from './library'
 import { snapAtDistance, pathLength } from './geo'
-import type { Library, NamedSection, Pt, Route, SavedRoute, TurnStreet } from './types'
+import type { Library, LoadList, NamedSection, Pt, Route, SavedRoute, TurnStreet } from './types'
 
 const route: Route = {
   points: [
@@ -771,6 +771,228 @@ describe("the driver's order of the bundle drops in a backup", () => {
       const lib = { ...ordered(), routes: ordered().routes.map((r) => ({ ...r, round: { handledStopIds: ['b1'], dropped: ['b1'], furthest: 200 } })) }
       const text = makeBackup(lib.routes.map(toBackupRoute))
       for (const word of ['dropped', 'handledStopIds', 'furthest']) expect(text, word).not.toContain(word)
+    })
+  })
+})
+
+describe('what the driver loads before the round, in a backup', () => {
+  const mine = (): LoadList => ({
+    lines: [
+      { id: 'x', bundles: 80, kind: 'bagged', note: 'Front seat' },
+      { id: 'y', bundles: 4, kind: 'unwrapped' },
+    ],
+    papersEach: { bagged: 30, unwrapped: 40 },
+  })
+  const withLoad = (load?: LoadList): BackupRoute => ({ name: 'Monday', route, ...(load ? { load } : {}) })
+  const loadOfBackup = (text: string) => ok(text)[0].load
+
+  describe('writing it', () => {
+    it('writes it with the route when the route has one of its own', () => {
+      expect(makeBackup([withLoad(mine())])).toContain(`"load":${JSON.stringify(mine())}`)
+    })
+
+    it('writes nothing when it has none, so a backup of such a route is as it was before', () => {
+      expect(makeBackup([withLoad()])).not.toContain('"load"')
+    })
+
+    it('writes a list with no lines, which is not the same as having none', () => {
+      expect(makeBackup([withLoad({ ...mine(), lines: [] })])).toContain('"load":{"lines":[]')
+    })
+  })
+
+  describe('taking it from a saved route', () => {
+    const saved = (load?: LoadList) => {
+      const lib = addRoute(createLibrary(), 'Monday', route)
+      return activeRoute(load ? setLoad(lib, lib.activeId, load) : lib)
+    }
+
+    it('has it when the route has one', () => {
+      expect(toBackupRoute(saved(mine())).load).toEqual(mine())
+    })
+
+    it('has no key for it when the route has none', () => {
+      expect('load' in toBackupRoute(saved())).toBe(false)
+    })
+  })
+
+  describe('reading it back', () => {
+    it('is the list that was written', () => {
+      expect(loadOfBackup(makeBackup([withLoad(mine())]))).toEqual(mine())
+    })
+
+    it('keeps each route of a backup its own', () => {
+      const back = ok(makeBackup([withLoad(mine()), { name: 'Saturday', route, load: { ...mine(), lines: [] } }, withLoad()]))
+      expect(back.map((r) => r.load?.lines.length)).toEqual([2, 0, undefined])
+    })
+
+    it('has none from a backup made before it existed', () => {
+      expect('load' in ok(makeBackup([withLoad()]))[0]).toBe(false)
+    })
+
+    it('has none when what is there is nothing usable, and does not refuse the route for it, as it is an extra', () => {
+      for (const junk of ['"x"', '5', 'null', '[]', '{}', '{"lines":"x"}', '{"lines":[1,null]}']) {
+        const text = makeBackup([withLoad(mine())]).replace(`"load":${JSON.stringify(mine())}`, `"load":${junk}`)
+        const back = ok(text)
+        expect('load' in back[0], junk).toBe(false)
+        expect(back[0].route.points, junk).toHaveLength(3)
+      }
+    })
+
+    it('keeps the lines that can be read from a damaged list, tidied', () => {
+      const text = makeBackup([withLoad(mine())]).replace('"bundles":80', '"bundles":"lots"').replace('"bagged":30', '"bagged":-5')
+      expect(loadOfBackup(text)).toEqual({ lines: [{ id: 'y', bundles: 4, kind: 'unwrapped' }], papersEach: { bagged: 25, unwrapped: 40 } })
+    })
+  })
+
+  describe('all the way, from the phone and back', () => {
+    const loaded = () => {
+      const lib = addRoute(createLibrary(), 'Monday', route)
+      return setLoad(lib, lib.activeId, mine())
+    }
+    const read = (text: string) => {
+      const result = parseBackup(text)
+      if (!result.ok) throw new Error(result.error)
+      return result.routes
+    }
+
+    it('restores it into a library with nothing else', () => {
+      const restored = addImported(createLibrary(), read(makeBackup(loaded().routes.map(toBackupRoute))))
+      expect(restored.routes.find((x) => x.name === 'Monday')!.load).toEqual(mine())
+    })
+
+    it('restores it as a copy when the name is taken, leaving the one here as it is', () => {
+      const restored = addImported(loaded(), read(makeBackup(loaded().routes.map(toBackupRoute))))
+      expect(restored.routes.find((x) => x.name === 'Monday 2')!.load).toEqual(mine())
+      expect(restored.routes.find((x) => x.name === 'Monday')!.load).toEqual(mine())
+    })
+
+    it('takes the list of the backup over a route of the same name, and keeps its own when the backup has none', () => {
+      const other = { ...mine(), papersEach: { bagged: 10, unwrapped: 20 } }
+      expect(addImported(loaded(), read(makeBackup([withLoad(other)])), 5, 'replace').routes.find((x) => x.name === 'Monday')!.load).toEqual(other)
+      expect(addImported(loaded(), read(makeBackup([withLoad()])), 5, 'replace').routes.find((x) => x.name === 'Monday')!.load).toEqual(mine())
+    })
+  })
+})
+
+describe('curly quotes in a backup', () => {
+  /** What smart punctuation makes of plain quotes as a phone is typed on, whole and left over, with an apostrophe beside them. */
+  const TYPED = ['The “big” pallet', '6” stack', '„low”', 'Bob’s van', '‘old’ stack', 'Bob’s 6” “big”', 'odd ‟one‟']
+
+  const at = (i: number) => ({ lat: -33.869 - i * 1e-3, lng: 151.21 })
+
+  /** A route with `text` in every place the driver types something that a backup keeps. */
+  const typedIn = (text: string): BackupRoute => ({
+    name: text,
+    route: {
+      ...route,
+      stops: [
+        { id: 'a', type: 'nothrow', pathIdx: 0, ...at(0), label: text, address: text },
+        { id: 'b', type: 'request', pathIdx: 1, ...at(1), note: text },
+      ],
+    },
+    sections: [{ id: 's1', name: text, ...at(2) }],
+    streets: [{ ...at(3), out: 90, name: text }],
+    load: { lines: [{ id: 'l', bundles: 5, kind: 'bagged', note: text }], papersEach: { bagged: 25, unwrapped: 50 } },
+  })
+
+  /** Each thing typed, as it came back. */
+  const typedOut = (r: BackupRoute) => [r.name, r.route.stops[0].label, r.route.stops[0].address, r.route.stops[1].note, r.sections?.[0].name, r.streets?.[0].name, r.load?.lines[0].note]
+
+  /**
+   * Text as Notes leaves it: every straight quote curled, the backup's own quotes with the rest, opening after a space, a bracket or a
+   * colon and closing after anything else.
+   */
+  const curled = (text: string) => {
+    const opens = (i: number) => i === 0 || /[\s([{:,]/.test(text[i - 1])
+    return text.replace(/"/g, (_, i: number) => (opens(i) ? '“' : '”')).replace(/'/g, (_, i: number) => (opens(i) ? '‘' : '’'))
+  }
+
+  /** What the app wrote before it wrote curly quotes as escapes: the text of the data, just as it is. */
+  const oldBackup = (r: BackupRoute) => `Paper Round backup\n${JSON.stringify({ app: 'paper-round', version: 1, exportedAt: '2026-10-15T00:00:00.000Z', routes: [r] })}`
+
+  it.each(TYPED)('keeps %s in everything that is typed', (text) => {
+    expect(typedOut(ok(makeBackup([typedIn(text)]))[0])).toEqual(Array(7).fill(text))
+  })
+
+  it.each(TYPED)('keeps %s when Notes has curled the quotes of the backup itself', (text) => {
+    const notes = curled(makeBackup([typedIn(text)]))
+    expect(notes).toContain('“app”')
+    expect(typedOut(ok(`Here you go!\n\n${notes}\n\nSent from my iPhone`)[0])).toEqual(Array(7).fill(text))
+  })
+
+  it.each(TYPED)('keeps %s when every quote of the backup itself has come out the same way', (text) => {
+    for (const quote of ['”', '“', '„', '‟']) expect(typedOut(ok(makeBackup([typedIn(text)]).replace(/"/g, quote))[0]), quote).toEqual(Array(7).fill(text))
+  })
+
+  it('writes a curly quote as an escape, so there is none in the text to be taken for the quotes round it', () => {
+    const text = makeBackup([typedIn('“a” ‘b’ „c ‟d')])
+    expect(text).not.toMatch(/[“”„‟‘’]/)
+    for (const escape of ['\\u201c', '\\u201d', '\\u2018', '\\u2019', '\\u201e', '\\u201f']) expect(text, escape).toContain(escape)
+  })
+
+  it('writes the same text as before for a route with no curly quote in it', () => {
+    const when = new Date('2026-10-15T00:00:00Z')
+    const data = makeBackup([typedIn('Plain words')], when).split('\n')[1]
+    expect(data).toBe(JSON.stringify(JSON.parse(data)))
+  })
+
+  it.each(['6" stack', '"big" one', "O'Brien, 14", `it's a "big" one`])('gives back %s with its plain quotes plain, also through Notes', (text) => {
+    expect(typedOut(ok(makeBackup([typedIn(text)]))[0])).toEqual(Array(7).fill(text))
+    expect(typedOut(ok(curled(makeBackup([typedIn(text)])))[0])).toEqual(Array(7).fill(text))
+  })
+
+  it('is not put off by a backslash before a curly quote, or by a name that looks like an escape', () => {
+    for (const text of ['back\\“slash”', 'two\\\\”', 'written \\u201c out', '\\']) {
+      expect(typedOut(ok(makeBackup([typedIn(text)]))[0]), text).toEqual(Array(7).fill(text))
+      expect(typedOut(ok(curled(makeBackup([typedIn(text)])))[0]), text).toEqual(Array(7).fill(text))
+    }
+  })
+
+  it('goes all the way, from the phone through Notes and back', () => {
+    const text = 'Bob’s “big” 6” pallet'
+    let lib = addRoute(createLibrary(), text, typedIn(text).route)
+    lib = setLoad(lib, lib.activeId, typedIn(text).load!)
+    const result = parseBackup(curled(makeBackup(lib.routes.map(toBackupRoute))))
+    if (!result.ok) throw new Error(result.error)
+    const restored = addImported(createLibrary(), result.routes).routes.find((r) => r.name === text)!
+    expect(restored.route.stops[0].label).toBe(text)
+    expect(restored.load?.lines[0].note).toBe(text)
+  })
+
+  describe('in a backup made before they were written as escapes', () => {
+    it.each(TYPED)('keeps %s, written as it is', (text) => {
+      expect(oldBackup(typedIn(text))).toContain(text)
+      expect(typedOut(ok(oldBackup(typedIn(text)))[0])).toEqual(Array(7).fill(text))
+    })
+
+    it('still reads one with no curly quote typed in it, through Notes or not, with its plain quotes plain', () => {
+      const text = `O'Brien's 6" stack`
+      expect(typedOut(ok(oldBackup(typedIn(text)))[0])).toEqual(Array(7).fill(text))
+      expect(typedOut(ok(curled(oldBackup(typedIn(text))))[0])).toEqual(Array(7).fill(text))
+    })
+
+    it('still reads one through Notes with a curly apostrophe, which can no longer be told from a plain one that Notes curled', () => {
+      expect(typedOut(ok(curled(oldBackup(typedIn('Bob’s van'))))[0])).toEqual(Array(7).fill("Bob's van"))
+    })
+  })
+
+  describe('in what is not a usable backup', () => {
+    const error = (text: string) => {
+      const r = parseBackup(text)
+      return r.ok ? null : r.error
+    }
+
+    it('still refuses it, curled or not', () => {
+      expect(error('“buy” ‘milk’')).toMatch(/doesn't look like a Paper Round backup/)
+      expect(error('{“app”:')).toMatch(/doesn't look like a Paper Round backup/)
+      expect(error('{“app”:“other”,“routes”:[]}')).toMatch(/doesn't look like a Paper Round backup/)
+      expect(error('{"app":"paper-round","version":1,"routes":[}')).toMatch(/doesn't look like a Paper Round backup/)
+    })
+
+    it('still says what is wrong with a backup that was curled', () => {
+      expect(error('{“app”:“paper-round”,“version”:99,“routes”:[]}')).toMatch(/newer version/)
+      expect(error('{“app”:“paper-round”,“version”:1,“routes”:[]}')).toMatch(/no routes/)
+      expect(error('{“app”:“paper-round”,“version”:1,“routes”:[5]}')).toMatch(/Route 1 in the backup is damaged/)
     })
   })
 })

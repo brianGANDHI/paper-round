@@ -1,5 +1,6 @@
 import { isGoneBy, zoneExit } from './alerts'
 import { missedAmong } from './bundleFlow'
+import { notNextAlerts } from './bundles'
 import { byPosition, type Occurrence } from './geo'
 import type { Progress } from './progress'
 import type { Pt, StopType } from './types'
@@ -84,6 +85,25 @@ export function stepTurnHold(hold: TurnHold | null, p: Pick<Progress, 'turned' |
   return { hold, settle, release }
 }
 
+/**
+ * The step with the bundles among the stops put by that are no longer next in the driver's list (`nextId`, see `nextBundleId`) let go of instead
+ * of done: a reorder while the turn was not sure took them off the top of the list, and a bundle that is not next is never missed by being driven
+ * past. They are to come again, as if the turn had been undone. With none such it gives `step` itself.
+ */
+export function stepForNext(step: TurnStep, nextId: string | null): TurnStep {
+  const stale = notNextAlerts(step.settle, nextId)
+  return stale.length ? { ...step, settle: step.settle.filter((o) => !stale.includes(o)), release: [...step.release, ...stale] } : step
+}
+
+/**
+ * How far the driver has got, for telling which passes of the next bundle are behind them (see `gatedOccurrences`): where they are or the furthest
+ * reached, whichever is further on, so a car that has backed up past a bundle goes on meeting it by where it is. While a turn round is not sure,
+ * where it put them does not count, only where it put them from: it may be taken back, and a bundle still to come on the way out would have been
+ * taken for one driven past. (The furthest reached is held for all of a turn round: see `Progress.turned`.)
+ */
+export const reachedAt = (p: Pick<Progress, 'along' | 'furthest'>, hold: TurnHold | null): number =>
+  Math.max(hold && !hold.ended ? Math.min(p.along, hold.from) : p.along, p.furthest)
+
 /** Where along the route an alert that is up is judged, for leaving its zone (see `zoneExit`): where the driver was put from, while it is held; otherwise `along`, where the driver is. */
 export const judgedAt = (o: Pick<Occurrence, 'key'>, along: number, hold: TurnHold | null): number => (hold?.held.has(o.key) ? hold.from : along)
 
@@ -113,12 +133,13 @@ export function holdLeftBehind(hold: TurnHold | null, behind: readonly Occurrenc
 }
 
 /**
- * The stops a fix makes done, to keep in one go, and the bundles among them missed: those just gone by (`now`, missed only on the route:
- * see `missedAmong`), and those put by over a turn round that stood (`settle`, see `TurnStep`), less any done already (a drop from the
+ * The stops a fix makes done, to keep in one go, and the bundles among them missed: those just gone by (`now`, missed only on the route,
+ * which `onRoute` takes in being back on it somewhere else: see `missedAmong`), and those put by over a turn round that stood (`settle`, see `TurnStep`), less any done already (a drop from the
  * alert of another pass of the stop settles them too). A stop put by was gone by on the route, so a bundle among them is missed wherever
- * the driver is now.
+ * the driver is now. So is any bundle met by where the driver is (see `byPosition`), whether it is away from the route or was driven past before
+ * it was next: it was up with its Dropped button while the driver was at it, whatever the off-route banner was saying. Skipped, the list would have no way to mark it dropped.
  */
-export function doneNow(now: readonly Occurrence[], settle: readonly Occurrence[], handled: ReadonlySet<string>, onRoute: boolean): { done: Occurrence[]; missed: string[] } {
+export function doneNow(now: readonly Occurrence[], settle: readonly Occurrence[], handled: ReadonlySet<string>, onRoute: boolean, radius: Record<StopType, number>): { done: Occurrence[]; missed: string[] } {
   const keys = new Set(now.map((o) => o.key))
   const late: Occurrence[] = []
   for (const o of settle) {
@@ -126,7 +147,7 @@ export function doneNow(now: readonly Occurrence[], settle: readonly Occurrence[
     keys.add(o.key)
     late.push(o)
   }
-  return { done: [...now, ...late], missed: [...missedAmong(now, onRoute), ...missedAmong(late, true)] }
+  return { done: [...now, ...late], missed: [...missedAmong(onRoute ? now : now.filter((o) => byPosition(o, radius))), ...missedAmong(late)] }
 }
 
 /**

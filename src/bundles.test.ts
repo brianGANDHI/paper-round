@@ -10,24 +10,36 @@ import {
   bundleNameOf,
   bundleRows,
   bundlesLeft,
+  firstLink,
   bundleTotals,
   bundleTotalsText,
   canMarkDropped,
   canMoveBundle,
   bundleStops,
   distanceText,
+  earlierPasses,
   editorMove,
   editorRows,
+  gatedOccurrences,
   isToDo,
   markDropped,
   markMissed,
   MAX_BUNDLE_ORDER,
   moveBundle,
   nextBundle,
+  nextBundleId,
   nextBundleLine,
   nextBundleSpeech,
+  NEXT_BEHIND_M,
+  NEXT_BEHIND_SPEECH,
+  bundlesBehind,
+  nextHoldsUp,
+  stillNextSpeech,
+  nextLeftBehind,
+  nextStillAhead,
   nextInOrder,
   normalizeBundleOrder,
+  notNextAlerts,
   orderedStops,
   otherPasses,
   papersText,
@@ -40,6 +52,7 @@ import {
   setupBundles,
   undoDropped,
   UNNAMED_BUNDLE,
+  wentByUnseen,
   type BundleItem,
   type BundleRow,
   type BundleStatus,
@@ -47,7 +60,7 @@ import {
   type PassState,
   type RowStatus,
 } from './bundles'
-import { approachingOccurrences, occurrences, type Occurrence } from './geo'
+import { approachingOccurrences, occurrences, placedZone, type Occurrence } from './geo'
 import type { Pt, RoundState, Route, Stop } from './types'
 
 /** An occurrence of a bundle drop `at` metres along the route, by hand so that the distances are exact. */
@@ -2028,5 +2041,524 @@ describe('the stops, with what a list of them needs to act on', () => {
       ['missed', 'a#2'],
       ['missed', 'b'],
     ])
+  })
+})
+
+describe('which bundle may alert', () => {
+  const zone = { bundle: 40, nothrow: 40, request: 40, block: 40 }
+  const A = bundle('a', 100)
+  const B1 = bundle('b', 300)
+  const B2 = bundle('b', 700, {}, 'b#2')
+  const C = bundle('c', 500)
+  const occs = [A, B1, C, B2]
+  const house: Occurrence = { key: 'h', stop: { id: 'h', type: 'nothrow', lat: 0, lng: 0, pathIdx: 0 }, idx: 0, at: 200, off: 8 }
+  const block: Occurrence = { ...house, key: 'k', stop: { ...house.stop, id: 'k', type: 'block' } }
+  const request: Occurrence = { ...house, key: 'r', stop: { ...house.stop, id: 'r', type: 'request' } }
+
+  describe('the next in the list', () => {
+    it('is the first in the order still to do, wherever it is', () => {
+      expect(nextBundleId(occs, { handledStopIds: [] }, ['c', 'a', 'b'])).toBe('c')
+      expect(nextBundleId(occs, { handledStopIds: ['c'], dropped: ['c'] }, ['c', 'a', 'b'])).toBe('a')
+    })
+
+    it('is the first the route reaches with no order set', () => {
+      expect(nextBundleId(occs, { handledStopIds: [] }, undefined)).toBe('a')
+      expect(nextBundleId(occs, { handledStopIds: ['a'] }, undefined)).toBe('b')
+    })
+
+    it('stays with a stop while a pass of it is left, and leaves one missed or skipped with none left', () => {
+      expect(nextBundleId(occs, { handledStopIds: ['b'], missed: ['b'] }, ['b', 'c', 'a'])).toBe('b')
+      expect(nextBundleId(occs, { handledStopIds: ['b', 'b#2'], missed: ['b#2'] }, ['b', 'c', 'a'])).toBe('c')
+    })
+
+    it('is null with none left to do, or none at all', () => {
+      expect(nextBundleId(occs, { handledStopIds: ['a', 'b', 'b#2', 'c'] }, undefined)).toBeNull()
+      expect(nextBundleId([house], { handledStopIds: [] }, undefined)).toBeNull()
+    })
+  })
+
+  describe('the passes that may alert', () => {
+    const gate = (nextId: string | null, done: string[], reached: number, list: readonly Occurrence[] = occs, radius = zone) => gatedOccurrences(list, nextId, new Set(done), reached, radius)
+
+    it('takes out every pass of every bundle but the next', () => {
+      expect(gate('c', [], 0)).toEqual([C])
+      expect(gate('b', [], 0)).toEqual([B1, B2])
+    })
+
+    it('takes out every bundle with none next', () => {
+      expect(gate(null, [], 0)).toEqual([])
+    })
+
+    it('leaves every other kind of stop just as it was', () => {
+      const out = gate('c', [], 0, [house, A, block, C, request])
+      expect(out).toEqual([house, block, C, request])
+      expect(out[0]).toBe(house)
+      expect(out[1]).toBe(block)
+      expect(out[3]).toBe(request)
+    })
+
+    it('leaves the passes of the next along the route while one is still to come', () => {
+      const out = gate('b', [], 400)
+      expect(out).toEqual([B1, B2])
+      expect(out[0]).toBe(B1)
+      expect(out[1]).toBe(B2)
+    })
+
+    it('leaves one in its alert window along the route, and goes by place the moment it is behind that', () => {
+      expect(gate('c', [], 520)[0].placed).toBeUndefined()
+      expect(gate('c', [], 520.5)[0].placed).toBe(true)
+    })
+
+    it('goes by the smaller window of a small alert distance', () => {
+      const small = { bundle: 10, nothrow: 10, request: 10, block: 10 }
+      expect(gate('c', [], 510, occs, small)[0].placed).toBeUndefined()
+      expect(gate('c', [], 510.5, occs, small)[0].placed).toBe(true)
+    })
+
+    it('flags the last pass to do when every pass to do is behind the driver, on a copy, and it alone may alert', () => {
+      expect(gate('b', [], 800)).toEqual([{ ...B2, placed: true }])
+      expect(B2.placed).toBeUndefined()
+    })
+
+    it('goes by the last pass to do, not the last pass', () => {
+      expect(gate('b', ['b#2'], 800)).toEqual([{ ...B1, placed: true }])
+    })
+
+    it('goes by how far the passes are along the route, in whatever order they come', () => {
+      expect(gate('b', [], 800, [B2, B1])).toEqual([{ ...B2, placed: true }])
+    })
+
+    describe('a stop away from the route, met by place already', () => {
+      const off1: Occurrence = { ...B1, off: 90 }
+      const off2: Occurrence = { ...B2, off: 90 }
+
+      it('is left as it is on its last pass, not flagged, once every pass is behind: that pass going by settles the earlier one', () => {
+        const out = gate('b', [], 800, [off1, off2])
+        expect(out).toEqual([off2])
+        expect(out[0]).toBe(off2)
+      })
+
+      it('keeps both passes, first first, while the car has not gone further on from the first than its zone reaches', () => {
+        expect(gate('b', [], 0, [off1, off2])).toEqual([off1, off2])
+        expect(gate('b', [], off1.at + placedZone(off1, zone), [off1, off2])).toEqual([off1, off2])
+      })
+
+      it('takes out a pass the car has gone further on from than that, with a pass ahead: the car in the zone is at the later one', () => {
+        expect(gate('b', [], off1.at + placedZone(off1, zone) + 0.5, [off1, off2])).toEqual([off2])
+      })
+
+      it('changes nothing for a stop with one pass, wherever the car is', () => {
+        expect(gate('b', [], 5000, [off1])).toEqual([off1])
+        expect(gate('b', [], 0, [off1])).toEqual([off1])
+      })
+    })
+
+    it('flags nothing with all its passes done', () => {
+      expect(gate('b', ['b', 'b#2'], 800)).toEqual([B1, B2])
+    })
+  })
+
+  describe('the alerts up that are no longer next', () => {
+    it('are the bundles that are not next, and no other kind of stop', () => {
+      expect(notNextAlerts([A, house, C, request, block], 'c')).toEqual([A])
+      expect(notNextAlerts([B1, B2], 'b')).toEqual([])
+    })
+
+    it('are all the bundles up with none next', () => {
+      expect(notNextAlerts([A, house], null)).toEqual([A])
+    })
+  })
+
+  describe('a next bundle gone by with no alert', () => {
+    const zone = { bundle: 40, nothrow: 40, request: 40, block: 40 }
+    const A = bundle('A', 200)
+    const B = bundle('B', 400)
+    const C = bundle('C', 600)
+    const none: ReadonlySet<string> = new Set()
+    const round = (handledStopIds: string[] = []): RoundState => ({ handledStopIds })
+    /** Where the car is, a kilometre from every stop here, which are all at the one spot: what is tested is the stretch. */
+    const away = { lat: -33.861, lng: 151.2 }
+
+    it('counts one that was ahead at the last look and is past its alert window now', () => {
+      expect(wentByUnseen([A, B, C], round(), undefined, 150, 300, away, zone, none)).toEqual(['A'])
+    })
+
+    it('goes by the alert window: inside it at the last look counts, past it does not', () => {
+      expect(wentByUnseen([A, B], round(), undefined, 220, 300, away, zone, none)).toEqual(['A'])
+      expect(wentByUnseen([A, B], round(), undefined, 220.1, 300, away, zone, none)).toEqual([])
+    })
+
+    it('does not count one still inside its alert window now', () => {
+      expect(wentByUnseen([A, B], round(), undefined, 150, 220, away, zone, none)).toEqual([])
+      expect(wentByUnseen([A, B], round(), undefined, 150, 220.1, away, zone, none)).toEqual(['A'])
+    })
+
+    it('goes by the smaller zone at a small alert distance', () => {
+      const small = { ...zone, bundle: 10 }
+      expect(wentByUnseen([A, B], round(), undefined, 150, 211, away, small, none)).toEqual(['A'])
+      expect(wentByUnseen([A, B], round(), undefined, 150, 209, away, small, none)).toEqual([])
+    })
+
+    it('goes on to the next in the list, in the same stretch, and stops at the first that fails', () => {
+      expect(wentByUnseen([A, B, C], round(), undefined, 150, 500, away, zone, none)).toEqual(['A', 'B'])
+      expect(wentByUnseen([A, B, C], round(), undefined, 150, 700, away, zone, none)).toEqual(['A', 'B', 'C'])
+    })
+
+    it('walks the driver\'s list, not the route: a bundle further on the list, gone by but not reached, stays to do', () => {
+      expect(wentByUnseen([A, B, C], round(), ['A', 'C', 'B'], 150, 500, away, zone, none)).toEqual(['A'])
+      expect(wentByUnseen([A, B, C], round(), ['C', 'A', 'B'], 150, 500, away, zone, none)).toEqual([])
+    })
+
+    it('does not count one that came up, or the bundles after it', () => {
+      expect(wentByUnseen([A, B], round(), undefined, 150, 500, away, zone, new Set(['A']))).toEqual([])
+      expect(wentByUnseen([A, B], round(), undefined, 150, 500, away, zone, new Set(['B']))).toEqual(['A'])
+    })
+
+    it('leaves a stop with a pass still to come, and counts the last pass once it is gone by', () => {
+      const first = bundle('X', 200)
+      const second = bundle('X', 800, {}, 'X#2')
+      expect(wentByUnseen([first, second], round(), undefined, 150, 300, away, zone, none)).toEqual([])
+      expect(wentByUnseen([first, second], round(), undefined, 700, 900, away, zone, none)).toEqual(['X#2'])
+    })
+
+    it('takes the earlier passes with it before it goes on down the list, or the stop would stop the walk', () => {
+      const first = bundle('X', 200)
+      const second = bundle('X', 800, {}, 'X#2')
+      expect(wentByUnseen([first, second, bundle('Y', 850)], round(), undefined, 700, 900, away, zone, none)).toEqual(['X#2', 'Y'])
+    })
+
+    it('judges the last pass not done, one done already being out of it', () => {
+      const first = bundle('X', 200)
+      const second = bundle('X', 800, {}, 'X#2')
+      expect(wentByUnseen([first, second], round(['X#2']), undefined, 150, 300, away, zone, none)).toEqual(['X'])
+    })
+
+    it('does not count one already behind the driver at the last look', () => {
+      expect(wentByUnseen([A, B], round(), undefined, 300, 350, away, zone, none)).toEqual([])
+    })
+
+    it('counts nothing when the reach goes back, or holds still', () => {
+      expect(wentByUnseen([A], round(), undefined, 300, 150, away, zone, none)).toEqual([])
+      expect(wentByUnseen([A], round(), undefined, 180, 180, away, zone, none)).toEqual([])
+    })
+
+    it('needs the first in the walk to be the one that was next at the last look, when it is told which: it has only just become next, by a tap', () => {
+      expect(wentByUnseen([A, B], round(['A']), undefined, 380, 450, away, zone, none, 'A')).toEqual([])
+      expect(wentByUnseen([A, B], round(['A']), undefined, 380, 450, away, zone, none, 'B')).toEqual(['B'])
+      expect(wentByUnseen([A, B], round(['A']), undefined, 380, 450, away, zone, none)).toEqual(['B'])
+      expect(wentByUnseen([A, B], round(['A']), undefined, 380, 450, away, zone, none, null)).toEqual([])
+    })
+
+    it('asks that only of the first: the one after it follows on', () => {
+      expect(wentByUnseen([A, B, C], round(), undefined, 150, 500, away, zone, none, 'A')).toEqual(['A', 'B'])
+    })
+
+    it('leaves a stop away from the route, which has no place along it to go by', () => {
+      expect(wentByUnseen([{ ...bundle('Far', 200), off: 90 }, B], round(), undefined, 150, 500, away, zone, none)).toEqual([])
+    })
+
+    it('has a pass on both legs of a court still to come until the later leg is gone by', () => {
+      const court: Occurrence = { ...bundle('T', 300), alt: 3, altAt: 380 }
+      expect(wentByUnseen([court], round(), undefined, 250, 340, away, zone, none)).toEqual([])
+      expect(wentByUnseen([court], round(), undefined, 250, 410, away, zone, none)).toEqual(['T'])
+    })
+
+    it('finds nothing with no bundle left to do', () => {
+      expect(wentByUnseen([A], round(['A']), undefined, 150, 300, away, zone, none)).toEqual([])
+    })
+
+    it('touches nothing it is given', () => {
+      const given = round()
+      wentByUnseen([A, B], given, undefined, 150, 500, away, zone, none)
+      expect(given).toEqual({ handledStopIds: [] })
+    })
+
+    describe('with the car in the zone of the bundle', () => {
+      /** A spot this many metres north of every stop here. */
+      const north = (m: number) => ({ lat: -33.87 + m / 111_195, lng: 151.2 })
+
+      it('does not count it: the car is at it', () => {
+        expect(wentByUnseen([A, B], round(), undefined, 150, 300, north(40), zone, none)).toEqual([])
+      })
+
+      it('counts it from just outside the zone', () => {
+        expect(wentByUnseen([A, B], round(), undefined, 150, 300, north(41), zone, none)).toEqual(['A'])
+      })
+
+      it('ends the walk there, so what is after it stays as it is', () => {
+        const near: Occurrence = { ...B, stop: { ...B.stop, lat: north(500).lat } }
+        const pos = north(490)
+        expect(wentByUnseen([A, near, C], round(), undefined, 150, 700, pos, zone, none)).toEqual(['A'])
+      })
+
+      it('goes by the zone it will be met in: one set back further than the alert distance has a zone that reaches the road', () => {
+        const back: Occurrence = { ...A, off: 50 }
+        expect(wentByUnseen([back, B], round(), undefined, 150, 300, north(65), zone, none)).toEqual([])
+        expect(wentByUnseen([back, B], round(), undefined, 150, 300, north(66), zone, none)).toEqual(['A'])
+      })
+
+      it('goes by it as it will be met, placed, for one further off than the Setup limit', () => {
+        const back: Occurrence = { ...A, off: 65 }
+        const wide = { bundle: 40, nothrow: 40, request: 40, block: 40 }
+        expect(wentByUnseen([back, B], round(), undefined, 150, 300, north(80), wide, none)).toEqual([])
+        expect(wentByUnseen([back, B], round(), undefined, 150, 300, north(81), wide, none)).toEqual(['A'])
+      })
+    })
+  })
+
+  describe('who the walk may start from', () => {
+    const A = bundle('A', 200)
+    const X = bundle('X', 300, {}, 'X')
+    const X2 = bundle('X', 800, {}, 'X#2')
+    const list = [A, X, X2]
+
+    it('is the stop next at the last look, with nothing missed on this fix', () => {
+      expect(firstLink(list, 'A', [])).toBe('A')
+      expect(firstLink(list, null, [])).toBeNull()
+    })
+
+    it('is anyone, once that stop went by on this fix with its alert up', () => {
+      expect(firstLink(list, 'A', ['A'])).toBeUndefined()
+    })
+
+    it('goes by the stop of any pass of it', () => {
+      expect(firstLink(list, 'X', ['X#2'])).toBeUndefined()
+    })
+
+    it('takes no notice of another stop missed', () => {
+      expect(firstLink(list, 'A', ['X'])).toBe('A')
+    })
+
+    it('stays the stop next with none next, whatever went by', () => {
+      expect(firstLink(list, null, ['A'])).toBeNull()
+    })
+  })
+
+  describe('the next bundle left behind', () => {
+    /** A spot this many metres north of the stops here. */
+    const north = (m: number) => ({ lat: -33.87 + m / 111_195, lng: 151.2 })
+    const zone = { bundle: 40, nothrow: 40, request: 40, block: 40 }
+    const none: ReadonlySet<string> = new Set()
+    const A = bundle('A', 200)
+    const far = north(1000)
+
+    it('says what it says plainly', () => {
+      expect(NEXT_BEHIND_M).toBe(150)
+      expect(NEXT_BEHIND_SPEECH).toBe('Next bundle is behind you.')
+      expect(stillNextSpeech('Co-op')).toBe('Next bundle is still Co-op.')
+    })
+
+    describe('holding up those after it', () => {
+      const pass = (id: string, at: number, key = id) => ({ ...A, key, at, stop: { ...A.stop, id } })
+      // A goes by at 200 and comes round again at 2,000, with B and C between. The zone past a pass is 20 m, or the alert distance if less.
+      const route = [pass('A', 200), pass('B', 500), pass('C', 900), pass('A', 2000, 'A#2')]
+      const done = (...keys: string[]) => new Set(keys)
+
+      it('is so once the car is past a bundle after a pass of the next, with the pass still to come', () => {
+        expect(nextHoldsUp(route, 'A', none, 515, zone)).toBe(false)
+        expect(nextHoldsUp(route, 'A', none, 525, zone)).toBe(true)
+      })
+
+      it('takes a pass of the next already done as much as one not', () => {
+        expect(nextHoldsUp(route, 'A', done('A'), 600, zone)).toBe(true)
+      })
+
+      it('is not so with the next not gone by, however many others are: a bundle left for later is the driver\'s order at work', () => {
+        expect(nextHoldsUp([pass('B', 100), pass('C', 200), pass('A', 900)], 'A', none, 800, zone)).toBe(false)
+      })
+
+      it('goes by bundles before the next\'s pass, and those done', () => {
+        expect(nextHoldsUp([pass('B', 100), pass('A', 200)], 'A', none, 800, zone)).toBe(false)
+        expect(nextHoldsUp(route, 'A', done('B', 'C'), 1000, zone)).toBe(false)
+      })
+
+      it('waits for the last leg of a pass the route goes by on both legs of a court', () => {
+        const court = [{ ...pass('A', 200), altAt: 700 }, pass('B', 500)]
+        expect(nextHoldsUp(court, 'A', none, 600, zone)).toBe(false)
+        expect(nextHoldsUp(court, 'A', none, 730, zone)).toBe(true)
+      })
+
+      it('is not so with nothing next, or the car short of it all', () => {
+        expect(nextHoldsUp(route, null, none, 5000, zone)).toBe(false)
+        expect(nextHoldsUp(route, 'A', none, 100, zone)).toBe(false)
+      })
+
+      it('takes no notice of a bundle with a pass left after the next pass of the bundle next: the list can still reach it in order', () => {
+        const twice = [pass('S', 100), pass('U', 150), pass('S', 2500, 'S#2'), pass('U', 2550, 'U#2')]
+        expect(nextHoldsUp(twice, 'S', none, 700, zone)).toBe(false)
+      })
+
+      it('counts one with passes left, none of them after the next pass of the bundle next', () => {
+        const lost = [pass('S', 100), pass('U', 150), pass('U', 1000, 'U#2'), pass('S', 2500, 'S#2')]
+        expect(nextHoldsUp(lost, 'S', none, 700, zone)).toBe(true)
+      })
+
+      it('takes a pass at the same place as the next pass of the bundle next as one the list can reach: it is had right after it', () => {
+        const pair = [pass('S', 100), pass('U', 150), pass('S', 2500, 'S#2'), pass('U', 2500, 'U#2')]
+        expect(nextHoldsUp(pair, 'S', none, 700, zone)).toBe(false)
+      })
+
+      it('takes the later leg of a court as a pass left', () => {
+        const court = [pass('S', 100), { ...pass('U', 150), altAt: 2600 }, pass('S', 2500, 'S#2')]
+        expect(nextHoldsUp(court, 'S', none, 700, zone)).toBe(false)
+      })
+
+      it('counts any bundle gone by when the next has no pass left: the car is past it, and it is told of either way', () => {
+        expect(nextHoldsUp([pass('S', 100), pass('U', 150), pass('U', 2550, 'U#2')], 'S', none, 700, zone)).toBe(true)
+      })
+
+      it('holds the next to account only for what was not behind the car when it became next: what went by before is not its doing', () => {
+        expect(nextHoldsUp(route, 'A', none, 600, zone, new Set(['B']))).toBe(false)
+        expect(nextHoldsUp(route, 'A', none, 950, zone, new Set(['B']))).toBe(true)
+        expect(nextHoldsUp(route, 'A', none, 600, zone, new Set(['C']))).toBe(true)
+      })
+
+      it('gives the passes behind the car, by the last leg: one with a leg still to come can yet be gone by', () => {
+        const court = [pass('A', 200), { ...pass('B', 500), altAt: 900 }, pass('C', 950)]
+        expect([...bundlesBehind(court, 700, zone)]).toEqual(['A'])
+        expect([...bundlesBehind(court, 930, zone)]).toEqual(['A', 'B'])
+        const house = { ...pass('H', 300), stop: { ...pass('H', 300).stop, type: 'nothrow' as const } }
+        expect([...bundlesBehind([house], 700, zone)]).toEqual([])
+      })
+
+      it('takes a pass close enough to the next pass of the bundle next as one the list can reach: it alerts as the next is taken', () => {
+        const near = (gap: number) => [pass('N', 300), pass('X', 320), pass('X', 1300 - gap, 'X#2'), pass('N', 1300, 'N#2')]
+        expect(nextHoldsUp(near(20), 'N', none, 700, zone)).toBe(false)
+        expect(nextHoldsUp(near(zone.bundle + Math.min(20, zone.bundle)), 'N', none, 700, zone)).toBe(false)
+        expect(nextHoldsUp(near(zone.bundle + Math.min(20, zone.bundle) + 10), 'N', none, 700, zone)).toBe(true)
+      })
+
+      it('takes the first leg of the next pass of the bundle next as where it comes: a pass of another between the two legs can still be had after it', () => {
+        const court = [pass('S', 100), pass('U', 150), { ...pass('S', 2500, 'S#2'), altAt: 3000 }, pass('U', 2700, 'U#2')]
+        expect(nextHoldsUp(court, 'S', none, 700, zone)).toBe(false)
+      })
+
+      it('takes only a pass still to do as the next pass of the bundle next: one done ahead of the car, as after carrying on from further back, is not where it comes', () => {
+        const back = [pass('S', 100), pass('U', 750), pass('S', 1000, 'S#2'), pass('U', 2000, 'U#2'), pass('S', 3000, 'S#3')]
+        expect(nextHoldsUp(back, 'S', done('S', 'S#2'), 800, zone)).toBe(true)
+      })
+
+      it('counts another bundle gone by at the first leg of a court: with the next holding the list it will not alert on the later leg either', () => {
+        const court = [pass('A', 200), { ...pass('B', 500), altAt: 900 }, pass('A', 2000, 'A#2')]
+        expect(nextHoldsUp(court, 'A', none, 600, zone)).toBe(true)
+      })
+
+      it('counts from the first pass of the next gone by, not the last', () => {
+        const thrice = [pass('A', 200), pass('B', 500), pass('A', 900, 'A#2'), pass('A', 2000, 'A#3')]
+        expect(nextHoldsUp(thrice, 'A', none, 1000, zone)).toBe(true)
+      })
+
+      it('takes no notice of a bundle at the same place along the route as the pass: the car did not go by it after that pass', () => {
+        expect(nextHoldsUp([pass('A', 200), pass('B', 200), pass('A', 2000, 'A#2')], 'A', none, 300, zone)).toBe(false)
+      })
+
+      it('takes no notice of another pass of the next itself: that costs the driver no other bundle', () => {
+        expect(nextHoldsUp([pass('A', 200), pass('A', 500, 'A#2')], 'A', none, 600, zone)).toBe(false)
+      })
+
+      it('takes no notice of a stop that is not a bundle: a house gone by costs the driver no bundle', () => {
+        const house = { ...pass('H', 500), stop: { ...pass('H', 500).stop, type: 'nothrow' as const } }
+        expect(nextHoldsUp([pass('A', 200), house, pass('A', 2000, 'A#2')], 'A', none, 600, zone)).toBe(false)
+      })
+    })
+
+    it('is left behind over 150 m behind the driver along the route, and not at 150 m', () => {
+      expect(nextLeftBehind([A], 'A', none, 350, far)).toBe(false)
+      expect(nextLeftBehind([A], 'A', none, 350.1, far)).toBe(true)
+    })
+
+    it('is not left behind within 150 m of the car in a straight line, however far on along the route', () => {
+      expect(nextLeftBehind([A], 'A', none, 5000, north(149.9))).toBe(false)
+      expect(nextLeftBehind([A], 'A', none, 5000, north(150.1))).toBe(true)
+    })
+
+    it('is not left behind with a pass of it still to come, and is once the last is behind too', () => {
+      const out = bundle('X', 200, {}, 'X')
+      const back = bundle('X', 800, {}, 'X#2')
+      expect(nextLeftBehind([out, back], 'X', none, 900, far)).toBe(false)
+      expect(nextLeftBehind([out, back], 'X', none, 950.1, far)).toBe(true)
+    })
+
+    it('goes by the passes not done', () => {
+      const out = bundle('X', 200, {}, 'X')
+      const back = bundle('X', 800, {}, 'X#2')
+      expect(nextLeftBehind([out, back], 'X', new Set(['X#2']), 400, far)).toBe(true)
+      expect(nextLeftBehind([out, back], 'X', new Set(['X']), 400, far)).toBe(false)
+    })
+
+    it('counts a pass on both legs of a court from its later leg', () => {
+      const court: Occurrence = { ...bundle('T', 300), alt: 3, altAt: 380 }
+      expect(nextLeftBehind([court], 'T', none, 520, far)).toBe(false)
+      expect(nextLeftBehind([court], 'T', none, 530.1, far)).toBe(true)
+    })
+
+    it('holds nothing to be left behind with no next bundle, or with all of it done', () => {
+      expect(nextLeftBehind([A], null, none, 5000, far)).toBe(false)
+      expect(nextLeftBehind([A], 'A', new Set(['A']), 5000, far)).toBe(false)
+    })
+
+    describe('and whether it is still ahead', () => {
+      it('is ahead until it is past its alert window', () => {
+        expect(nextStillAhead([A], 'A', none, 220, zone)).toBe(true)
+        expect(nextStillAhead([A], 'A', none, 220.1, zone)).toBe(false)
+      })
+
+      it('is ahead on any pass not done', () => {
+        const out = bundle('X', 200, {}, 'X')
+        const back = bundle('X', 800, {}, 'X#2')
+        expect(nextStillAhead([out, back], 'X', none, 500, zone)).toBe(true)
+        expect(nextStillAhead([out, back], 'X', new Set(['X#2']), 500, zone)).toBe(false)
+      })
+
+      it('is ahead on a court until the later leg is gone by', () => {
+        const court: Occurrence = { ...bundle('T', 300), alt: 3, altAt: 380 }
+        expect(nextStillAhead([court], 'T', none, 350, zone)).toBe(true)
+        expect(nextStillAhead([court], 'T', none, 400.1, zone)).toBe(false)
+      })
+
+      it('is not ahead with no next bundle', () => {
+        expect(nextStillAhead([A], null, none, 0, zone)).toBe(false)
+      })
+    })
+  })
+
+  describe('the earlier passes that go by with a pass', () => {
+    const third = bundle('b', 900, {}, 'b#3')
+    const passes = [...occs, third]
+
+    it('are those before it that are not done', () => {
+      expect(earlierPasses(passes, ['b#3'], new Set())).toEqual(['b', 'b#2'])
+    })
+
+    it('leave out one done already, and one after it', () => {
+      expect(earlierPasses(passes, ['b#2'], new Set())).toEqual(['b'])
+      expect(earlierPasses(passes, ['b#3'], new Set(['b']))).toEqual(['b#2'])
+    })
+
+    it('leave out the passes that went by themselves', () => {
+      expect(earlierPasses(passes, ['b', 'b#3'], new Set())).toEqual(['b#2'])
+    })
+
+    it('are none for the first pass, or a stop passed once', () => {
+      expect(earlierPasses(passes, ['b'], new Set())).toEqual([])
+      expect(earlierPasses(passes, ['c'], new Set())).toEqual([])
+    })
+
+    it('are none for any other kind of stop, whose passes each stand alone', () => {
+      const h1 = { ...house, at: 100 }
+      const h2 = { ...house, key: 'h#2', at: 300 }
+      expect(earlierPasses([h1, h2], ['h#2'], new Set())).toEqual([])
+    })
+
+    it('are none when nothing went by, or for a key that is not a pass', () => {
+      expect(earlierPasses(passes, [], new Set())).toEqual([])
+      expect(earlierPasses(passes, ['nope'], new Set())).toEqual([])
+    })
+  })
+
+  it('leaves a stop settled by the pass that went by to count once, and missed', () => {
+    const missed = { handledStopIds: ['b#2', 'b'], missed: ['b#2'] }
+    expect(bundleStops(bundleList(occs, missed, 0)).find((s) => s.stopId === 'b')?.status).toBe('missed')
+    expect(bundleTotals(bundleList(occs, missed, 0)).missed).toBe(1)
   })
 })

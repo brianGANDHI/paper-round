@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import { alertable, alertRadius, houseRow, keepAlertsAhead, pickCurrent, quietReachFor, roundCounts, zoneExit } from './alerts'
 import { bannerWaiting } from './bannerBlock'
-import { restartedRound, savedRound } from './bundleFlow'
-import { markDropped, otherPasses } from './bundles'
+import { caughtUp, restartedRound, savedRound } from './bundleFlow'
+import { earlierPasses, firstLink, gatedOccurrences, markDropped, nextBundleId, notNextAlerts, otherPasses, wentByUnseen } from './bundles'
 import { approachingOccurrences, byPosition, haversine, occurrences, type Occurrence } from './geo'
 import { OFF_MAX_ACCURACY_M, ON_ROUTE_M, startOffRoute, stepOffRoute, type OffPhase, type OffState } from './offRoute'
-import { advance, makeTrack, offRouteGap, startProgress, type Progress } from './progress'
+import { advance, makeTrack, offRouteGap, OUTLIER_ACCURACY_M, startProgress, type Progress } from './progress'
 import { slackFor } from './resume'
-import { doneNow, endTurnHold, heldKeys, HOLD_END_M, holdGoneBy, holdLeftBehind, judgedAt, NOTHING_HELD, shownQueue, stepTurnHold, type TurnHold } from './turnHold'
+import { doneNow, endTurnHold, heldKeys, HOLD_END_M, holdGoneBy, holdLeftBehind, judgedAt, NOTHING_HELD, reachedAt, shownQueue, stepForNext, stepTurnHold, type TurnHold } from './turnHold'
 import type { Pt, RoundState, Route, Stop, StopType } from './types'
 
 // A place in Sydney, so the maths is checked away from the equator and the prime meridian.
@@ -114,12 +114,47 @@ describe('the hold over a turn round that is not sure yet', () => {
   it('keeps the stops done now and those put by over a turn that stood in one go, the bundles among them missed', () => {
     const K2 = occ('K#2', 'nothrow', 415)
     // B#2 was put by and is gone by again (it is not), H#2 is done already: each is kept once.
-    const { done, missed } = doneNow([B], [B2, H2, K2, B2], new Set(['H#2']), true)
+    const { done, missed } = doneNow([B], [B2, H2, K2, B2], new Set(['H#2']), true, radius)
     expect(done.map((o) => o.key)).toEqual(['B', 'B#2', 'K#2'])
     expect(missed).toEqual(['B', 'B#2'])
     // Off the route a bundle just gone by is skipped, not missed; one put by was gone by on the route, and is missed.
-    expect(doneNow([B], [B2], new Set(), false).missed).toEqual(['B#2'])
-    expect(doneNow([], [], new Set(), true)).toEqual({ done: [], missed: [] })
+    expect(doneNow([B], [B2], new Set(), false, radius).missed).toEqual(['B#2'])
+    expect(doneNow([], [], new Set(), true, radius)).toEqual({ done: [], missed: [] })
+  })
+
+  it('counts any bundle met by where the driver is as missed wherever the driver is, as it was up with its Dropped button: one placed, and one away from the route', () => {
+    const placed: Occurrence = { ...B, placed: true }
+    const away = occ('A', 'bundle', 300, 120)
+    expect(doneNow([placed], [], new Set(), false, radius)).toEqual({ done: [placed], missed: ['B'] })
+    expect(doneNow([placed], [], new Set(), true, radius)).toEqual({ done: [placed], missed: ['B'] })
+    expect(doneNow([away], [], new Set(), false, radius)).toEqual({ done: [away], missed: ['A'] })
+    expect(doneNow([away], [], new Set(), true, radius).missed).toEqual(['A'])
+    const house: Occurrence = { ...H, placed: true }
+    expect(doneNow([house], [], new Set(), false, radius).missed).toEqual([])
+  })
+
+  it('lets go of a bundle put by that is no longer next, which a settled turn would otherwise count as missed', () => {
+    const step = { hold: null, settle: [B2, H2], release: [H] }
+    expect(stepForNext(step, 'B')).toBe(step)
+    expect(stepForNext(step, 'C')).toEqual({ hold: null, settle: [H2], release: [H, B2] })
+    expect(stepForNext(step, null)).toEqual({ hold: null, settle: [H2], release: [H, B2] })
+    const quiet = { hold: null, settle: [], release: [] }
+    expect(stepForNext(quiet, 'C')).toBe(quiet)
+  })
+
+  it('takes the driver to have got no further than where a turn not sure yet put them from, in telling which passes are behind them', () => {
+    const p = { along: 412, furthest: 192 }
+    expect(reachedAt(p, null)).toBe(412)
+    expect(reachedAt(p, hold())).toBe(192)
+    expect(reachedAt(p, hold({ held: NOTHING_HELD, ended: true }))).toBe(412)
+    // Backed up from where the turn put them from, they have still got as far as they got.
+    expect(reachedAt({ along: 150, furthest: 192 }, hold())).toBe(192)
+    expect(reachedAt({ along: 150, furthest: 180 }, hold())).toBe(180)
+  })
+
+  it('takes the furthest reached for how far the driver has got when they have backed up', () => {
+    expect(reachedAt({ along: 500, furthest: 800 }, null)).toBe(800)
+    expect(reachedAt({ along: 800, furthest: 790 }, null)).toBe(800)
   })
 
   it('on a restart, takes the turn as it stands: put on the way back, the stops put by and the held alerts gone by are done', () => {
@@ -218,7 +253,7 @@ describe('a change of the throw side while a turn round is not sure yet', () => 
     // Sure: 100 m along the way back.
     const sure = stepTurnHold(put.hold, { along: 500, turned: null }, [], 600)
     expect(sure.settle.map((o) => o.key)).toEqual(['X'])
-    expect(doneNow([], sure.settle, new Set(['Y']), true)).toEqual({ done: [byKey.get('X')], missed: [] })
+    expect(doneNow([], sure.settle, new Set(['Y']), true, radius)).toEqual({ done: [byKey.get('X')], missed: [] })
   })
 })
 
@@ -330,6 +365,7 @@ function ride(route: Route, fixes: Fix[], o: RideOptions = {}): Ride {
   let reachRun: Pt | null = null
   let lastStepAt: Pt | null = null
   let restartFrom: number | null = null
+  let lastJudged: { reach: number; next: string | null; at: Pt } | null = null
   let round: RoundState = { handledStopIds: [] }
   let queue: Occurrence[] = []
   const seen = new Set<string>()
@@ -352,39 +388,61 @@ function ride(route: Route, fixes: Fix[], o: RideOptions = {}): Ride {
     const handled = handledNow()
     const driverAt = p.along
     const pos = p.at
-    const step = stepTurnHold(turnHold, p, queue, routeEnd)
+    // Only the bundle next in the list alerts: one up that no longer is goes without a word (see bundleGate.test.ts for the drives of that).
+    const nextAtStart = nextBundleId(occs, round, undefined)
+    const notNext = notNextAlerts(queue, nextAtStart)
+    for (const o of notNext) seen.delete(o.key)
+    queue = queue.filter((q) => !notNext.includes(q))
+    const step = stepForNext(stepTurnHold(turnHold, p, queue, routeEnd), nextAtStart)
     let hold = step.hold
     // (Round.tsx forgets them as said and held for the voice as well.)
     for (const back of step.release) seen.delete(back.key)
+    const goodFix = p.accuracy <= OUTLIER_ACCURACY_M
     const left = queue.flatMap((q) => {
       const exit = zoneExit(q, judgedAt(q, driverAt, hold), radius, pos)
+      if (exit === 'passed' && !goodFix && q.stop.type === 'bundle' && !byPosition(q, radius)) return []
       return exit ? [{ o: q, exit }] : []
     })
     const gone = new Set(left.map((l) => l.o.key))
     queue = queue.filter((q) => !gone.has(q.key))
     const onRoute = machine.phase === 'on'
-    for (const l of left) if (l.exit === 'back' || (l.exit === 'passed' && !onRoute && !byPosition(l.o, radius))) seen.delete(l.o.key)
-    const goneBy = left.filter((l) => l.exit === 'passed' && !handled.has(l.o.key) && (onRoute || byPosition(l.o, radius))).map((l) => l.o)
+    const backOn = machine.phase === 'rejoined'
+    const reallyPassed = (q: Occurrence) => onRoute || byPosition(q, radius) || (backOn && q.stop.type === 'bundle')
+    for (const l of left) if (l.exit === 'back' || (l.exit === 'passed' && !reallyPassed(l.o))) seen.delete(l.o.key)
+    const goneBy = left.filter((l) => l.exit === 'passed' && !handled.has(l.o.key) && reallyPassed(l.o)).map((l) => l.o)
     const put = holdGoneBy(hold, goneBy, radius)
     hold = put.hold
     turnHold = hold
-    const { done, missed: missedKeys } = doneNow(put.now, step.settle, handled, onRoute)
-    if (done.length) save(round, savedRound(round, [...handled, ...done.map((d) => d.key)], undefined, 0, missedKeys))
+    const { done, missed: missedKeys } = doneNow(put.now, step.settle, handled, onRoute || backOn, radius)
+    const doneKeys = done.map((d) => d.key)
+    let doneNowSet: ReadonlySet<string> = done.length ? new Set([...handled, ...doneKeys, ...earlierPasses(occs, doneKeys, handled)]) : handled
+    if (done.length) save(round, savedRound(round, [...doneNowSet], undefined, 0, missedKeys))
     if (p.lost && p.time === null) return done.length > 0
-    let doneNowSet = handled
-    if (restartFrom !== null && !p.lost) {
+    const reach = reachedAt(p, hold)
+    const judged = reached && machine.phase === 'on' && machine.near === 0 && !hold
+    let unseen: string[] = []
+    if (restartFrom !== null && !p.lost && goodFix) {
       const from = restartFrom
       restartFrom = null
       const ahead = p.along - from
       if (ahead > 0 && ahead < 300) {
-        const caught = occs.filter((c) => !handled.has(c.key) && !byPosition(c, radius) && c.at < p.along - slackFor(radius)).map((c) => c.key)
+        const caught = caughtUp(occs, doneNowSet, p.along, radius)
         if (caught.length) {
-          doneNowSet = new Set([...handled, ...caught])
+          doneNowSet = new Set([...doneNowSet, ...caught])
           save(round, savedRound(round, [...doneNowSet], undefined, 0))
         }
       }
+    } else if (judged && goodFix && lastJudged && Math.abs(reach - lastJudged.reach) - haversine(lastJudged.at, pos) <= 100) {
+      unseen = wentByUnseen(occs, round, undefined, lastJudged.reach, reach, pos, radius, seen, firstLink(occs, lastJudged.next, missedKeys))
     }
-    const fresh = approachingOccurrences(driverAt, pos, occs, doneNowSet, radius, p.accuracy).filter((f) => !seen.has(f.key))
+    if (unseen.length) {
+      doneNowSet = new Set([...doneNowSet, ...unseen, ...earlierPasses(occs, unseen, doneNowSet)])
+      save(round, savedRound(round, [...doneNowSet], undefined, 0, unseen))
+    }
+    const next = nextBundleId(occs, round, undefined)
+    lastJudged = !judged ? null : goodFix ? { reach, next, at: pos } : lastJudged
+    const gated = gatedOccurrences(occs, next, doneNowSet, reach, radius)
+    const fresh = approachingOccurrences(driverAt, pos, gated, doneNowSet, radius, p.accuracy).filter((f) => !seen.has(f.key))
     for (const f of fresh) seen.add(f.key)
     queue = [...queue, ...fresh]
     return done.length > 0
@@ -464,7 +522,7 @@ function ride(route: Route, fixes: Fix[], o: RideOptions = {}): Ride {
     if (o.skip?.after === i) {
       // The screen's restartAt(metres, true): a turn round not sure yet is taken as it stands, then the spot decides the stops.
       const handled0 = handledNow()
-      const ended = doneNow([], endTurnHold(turnHold, p.along, queue, radius), handled0, true)
+      const ended = doneNow([], endTurnHold(turnHold, p.along, queue, radius), handled0, true, radius)
       if (ended.done.length) save(round, savedRound(round, [...handled0, ...ended.done.map((e) => e.key)], undefined, 0, ended.missed))
       turnHold = null
       seen.clear()
@@ -923,10 +981,8 @@ describe('a car that really turns round part way down a street driven out and ba
     expect(b.progress.turned).toBeUndefined()
     expect(['K', 'B', 'H', 'K#2', 'B#2'].every((key) => b.handled.has(key))).toBe(true)
     expect(b.held.size).toBe(0)
-    expect(lost.missed).toEqual([
-      { key: 'B', y: 140 },
-      { key: 'B#2', y: 140 },
-    ])
+    // That fix is too poor to end B's own alert along the route, so B goes as an earlier pass of B#2, and the stop is one miss.
+    expect(lost.missed).toEqual([{ key: 'B#2', y: 140 }])
   })
 
   it('takes a turn not sure yet as it stands when the driver skips on, so the bundles driven past are missed and nothing is left held', () => {
@@ -943,9 +999,9 @@ describe('a car that really turns round part way down a street driven out and ba
 })
 
 describe('a turn round that can never be sure, as the route ends before 100 m of the way back', () => {
-  // A court 150 m deep at the very end of the route, with bundle drops 60 m and 80 m in on the right. The car turns round at 90 m without
-  // dropping either, drives out to where the route ends and stops there: there is not 100 m of the way back left to be sure of the turn on.
-  const route = routeOf([[0, 0], [0, 150], [0, 0]], [stop('B', 'bundle', [8, 60]), stop('C', 'bundle', [8, 80])])
+  // A court 150 m deep at the very end of the route, with a bundle drop 60 m in and a no-throw house 80 m in on the right. The car turns round at
+  // 90 m without dropping the bundle, drives out to where the route ends and stops there: there is not 100 m of the way back left to be sure of the turn on.
+  const route = routeOf([[0, 0], [0, 150], [0, 0]], [stop('B', 'bundle', [8, 60]), stop('C', 'nothrow', [8, 80])])
   const fixes = [{ y: 0, speed: 5, heading: 0 }, ...go(0, 90, 5), ...go(90, 0, 5), ...stand(0, 20)]
   const r = ride(route, fixes)
   const last = r.beats.at(-1)!
@@ -959,8 +1015,8 @@ describe('a turn round that can never be sure, as the route ends before 100 m of
     expect(last.held.size).toBe(0)
   })
 
-  it('tells of the bundle drops missed, on both legs, before the car is out of the court', () => {
-    expect(r.missed.map((m) => m.key).sort()).toEqual(['B', 'B#2', 'C', 'C#2'])
+  it('tells of the bundle drop missed, on both legs, before the car is out of the court', () => {
+    expect(r.missed.map((m) => m.key).sort()).toEqual(['B', 'B#2'])
     for (const m of r.missed) expect(m.y, m.key).toBeGreaterThan(0)
   })
 

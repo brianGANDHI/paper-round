@@ -1,7 +1,8 @@
 import { plural } from './format'
-import { bearing, byPosition, haversine, LATERAL_SLACK_M, occurrences, sideAt, stopSide, type Occurrence } from './geo'
+import { bearing, byPosition, haversine, LATERAL_SLACK_M, occurrences, placedZone, sideAt, stopSide, type Occurrence } from './geo'
 import { slackFor } from './resume'
 import { houseNumber, MAX_STOP_OFFSET_M, withoutNumber } from './routeEdit'
+import { sideWords } from './sideVoice'
 import type { CourtLeg, Pt, Route, Side, Stop } from './types'
 
 /** How near a stop you have to be, in metres, for its alert to come up. The driver picks one of these. */
@@ -30,11 +31,12 @@ export type ZoneExit = 'passed' | 'back'
  * `driverAt` is how far along the route the driver is, in metres.
  *
  * A stop that is off the route has no way along the route to be passed or backed away from. Its zone is the
- * ground around it, and it counts as done once the driver, at `pos`, has been in it and is out of it again.
+ * ground around it (see `placedZone`), and it counts as done once the driver, at `pos`, has been in it and is out of it again. Leave `pos`
+ * out for a fix too poor to say where the driver is: one bad fix must not take an alert down, and count a bundle missed with the car parked at it.
  */
 export function zoneExit(o: Occurrence, driverAt: number, radius: Record<Stop['type'], number>, pos?: Pt): ZoneExit | null {
   const r = radius[o.stop.type]
-  if (byPosition(o, radius)) return pos && haversine(pos, o.stop) > r + BACK_OFF_SLACK_M ? 'passed' : null
+  if (byPosition(o, radius)) return pos && haversine(pos, o.stop) > placedZone(o, radius) + BACK_OFF_SLACK_M ? 'passed' : null
   const ahead = o.at - driverAt
   if (ahead < -r) return 'passed'
   if (ahead > r + BACK_OFF_SLACK_M) return 'back'
@@ -152,7 +154,7 @@ export function planSpeech(
  * houses, all their numbers, in order. `stops` is one stop, or a row of no-throw houses.
  *
  * An apartment block is told with how many papers to throw there and then which side of the road it is on, which is `side` (left out
- * when it can't be told, and for every other kind of stop): "Apartment block, 12 papers, left." With no count it is "Apartment block, left."
+ * when it can't be told, and for every other kind of stop): "Apartment block, 12 papers, port." With no count it is "Apartment block, port."
  */
 export function alertSpeech(stops: Stop[], side: RoadSide | null = null): string {
   const first = stops[0]
@@ -167,7 +169,7 @@ export function alertSpeech(stops: Stop[], side: RoadSide | null = null): string
   }
   const who = name(first)
   if (first.type === 'request') return `Special request${who ? `, ${who}` : ''}.${first.note ? ` ${first.note}.` : ''}`
-  if (first.type === 'block') return `Apartment block${who ? `, ${who}` : ''}${first.qty ? `, ${plural(first.qty, 'paper', 'papers')}` : ''}${side ? `, ${side}` : ''}.`
+  if (first.type === 'block') return `Apartment block${who ? `, ${who}` : ''}${first.qty ? `, ${plural(first.qty, 'paper', 'papers')}` : ''}${side ? `, ${sideWords(side).toLowerCase()}` : ''}.`
   return `Bundle drop${who ? `, ${who}` : ''}${first.qty ? `, ${plural(first.qty, 'paper', 'papers')}` : ''}.`
 }
 
@@ -501,8 +503,8 @@ export function legsOnResume(
 /**
  * Whether the voice may name this stop now, given the side thrown where the driver is (`thrownNow`, the side at the driver's own place on
  * the route, not at the stop). The beep and the banner come up early, as the safety warning; the words wait. A no-throw house on the route
- * is said only once the side thrown where the driver is includes the side the house is on: never on a transit stretch, and on a Left or
- * Right stretch only for a house on that side, so the houses of the stretch after a change of side wait until the driver is on it. Both
+ * is said only once the side thrown where the driver is includes the side the house is on: never on a transit stretch, and on a Port or
+ * Starboard stretch only for a house on that side, so the houses of the stretch after a change of side wait until the driver is on it. Both
  * covers either side, and a house whose side can't be told is said, to be safe. A house met by where the driver is (see `byPosition`) is
  * said whatever is thrown, as it is on no stretch of the route. A bundle drop, a special request and an apartment block are always said.
  */
@@ -668,7 +670,7 @@ export const HEAD_PASSED_M = 10
  * What still waits: a no-throw house that is live is the alert, so a bundle drop shows only while no house is live. One with a house
  * before it shows once that house is gone by (and again once the house's zone is over). One with a house at the same spot or after it
  * is gone by no later than the house is, and from then a house outranks it again, so it shows only until the house comes into range,
- * and not at all for a house at the same spot.
+ * and not at all for a house at the same spot. While it waits, the banner showing carries its Dropped button (see `bannerBundle`).
  */
 export function pickCurrent(queue: Occurrence[], driven: number, along: number, pos: Pt | null, radius: Record<Stop['type'], number>): Occurrence | undefined {
   const ahead = (o: Occurrence) => aheadOf(o, Math.max(along, driven), pos, radius)
@@ -743,7 +745,7 @@ export function stopRoadSides(route: Pick<Route, 'points' | 'sideChanges'>, occs
  * For each time the route passes a stop, in route order: whether the side the list would show for it (see `stopRoadSides`) is only a
  * guess. That is a no-throw house sitting on the line of the road (see `stopSide`) with no side picked by hand: its alert takes it to be on
  * the side that is thrown there, since that is the side it matters on, but the map can't say which side of the road it is on. The list
- * must not show that as the house's own side: on a Left or Right stretch, as on Both, it asks for a side to be set. Any other kind of stop
+ * must not show that as the house's own side: on a Port or Starboard stretch, as on Both, it asks for a side to be set. Any other kind of stop
  * has no side to show when it can't be told, so it is never a guess.
  *
  * It is judged on the leg whose side the list shows, the one the alert is for (see `alertLeg`): a house at the head of a court a metre or two

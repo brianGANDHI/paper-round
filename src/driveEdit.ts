@@ -33,7 +33,7 @@ export const EXTENT_MERGE_M = 25
 const SAME_M = 0.01
 
 /** How a side reads in "the entire ... stretch". */
-const SIDE_WORD: Record<Side, string> = { both: 'both-sides', left: 'left', right: 'right', transit: 'transit' }
+const SIDE_WORD: Record<Side, string> = { both: 'both-sides', left: 'port', right: 'starboard', transit: 'transit' }
 
 /** A named part of the route, as the driver is told of it: where it starts and ends along the route. The lead-in before the first name is not one the driver gave a name to. */
 export interface NamedSpan {
@@ -160,8 +160,8 @@ function sideChangeWords(before: Route, after: Route, reachM: number): { note: s
 /**
  * What a change of side does to the no-throw houses, for telling the driver: how many will now stay quiet (a no-throw
  * house means nothing where nothing is thrown, nor on the side of the road that is not thrown), and how many will alert
- * again, going from `before` to `after`. One change can do both: a stretch changed from Left to Right quiets the houses on
- * its left and wakes the ones on its right, and those are counted apart, each house on its own, not as a net number. A
+ * again, going from `before` to `after`. One change can do both: a stretch changed from Port to Starboard quiets the houses on
+ * its port side and wakes the ones on its starboard side, and those are counted apart, each house on its own, not as a net number. A
  * house on a street that is driven more than once can lose or gain an alert on one pass and still have the others, and
  * those are counted apart too, as houses that stay quiet or alert on a pass. Null when it makes no difference.
  *

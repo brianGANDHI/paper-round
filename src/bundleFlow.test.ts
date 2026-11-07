@@ -2,11 +2,14 @@ import { describe, expect, it } from 'vitest'
 import {
   barBundle,
   bundleWhere,
+  caughtUp,
   DROP_LOCK_MS,
   dropAllowed,
   freshStart,
   missedAmong,
+  leftBehindNotice,
   missedNotice,
+  nextRoundRows,
   restartEffect,
   restartedRound,
   restoreBundle,
@@ -282,6 +285,49 @@ describe('what a start or skip to a spot does to the stops, as it is told', () =
     const r = round({ handledStopIds: ['s', 'h', 's#2'], dropped: ['s'] })
     expect(restartEffect(r, occs, handledOf(r), 1000, 15, true)).toEqual({ newly: 0, back: 1 })
     expect(restartEffect(r, occs, handledOf(r), 1000, 15, false)).toEqual({ newly: 0, back: 0 })
+  })
+})
+
+describe('carrying on from where the route was rejoined, which keeps the bundles as they are', () => {
+  // Dropped and missed either side of the spot at 500 m, one to do either side, a house either side, and a stop dropped on its second pass, after the spot.
+  const occs = [occ('d1', 100), occ('m1', 200), occ('t1', 300), occ('n1', 350, 'nothrow'), occ('d2', 700), occ('m2', 800), occ('t2', 850), occ('n2', 900, 'nothrow'), occ('s', 300, 'bundle', {}, 's'), occ('s', 950, 'bundle', {}, 's#2')]
+  const prev = round({ handledStopIds: ['d1', 'm1', 'd2', 'm2', 'n2', 's', 's#2'], dropped: ['d1', 'd2', 's#2'], missed: ['m1', 'm2'], furthest: 900 })
+  const keep = (r = prev) => restartedRound(r, occs, 500, 15, false, true)
+
+  it('keeps the drops and misses on either side of the spot', () => {
+    expect(keep().dropped).toEqual(['d1', 'd2', 's#2'])
+    expect(keep().missed).toEqual(['m1', 'm2'])
+  })
+
+  it('leaves a bundle to do behind the spot to do, and one ahead of it to do', () => {
+    expect(keep().handledStopIds).not.toContain('t1')
+    expect(keep().handledStopIds).not.toContain('t2')
+  })
+
+  it('lets the spot decide the other stops, as a skip does', () => {
+    expect(keep().handledStopIds).toContain('n1')
+    expect(keep().handledStopIds).not.toContain('n2')
+  })
+
+  it('keeps every bundle pass done as it was, the rest of the round moved to the spot', () => {
+    expect([...keep().handledStopIds].sort()).toEqual(['d1', 'd2', 'm1', 'm2', 'n1', 's', 's#2'])
+    expect(keep()).toMatchObject({ startM: 500, furthest: 500 })
+  })
+
+  it('still forgets all at the start of the route', () => {
+    expect(restartedRound(prev, occs, 0, 15, false, true)).toEqual({ handledStopIds: [] })
+  })
+
+  it('leaves the skip from the menu as it was', () => {
+    const skip = restartedRound(prev, occs, 500, 15)
+    expect(skip.handledStopIds).toContain('t1')
+    expect(skip.dropped).toEqual(['d1'])
+  })
+
+  it('tells of the other stops alone, so what the banner says is what is done', () => {
+    const handled = new Set(prev.handledStopIds)
+    expect(restartEffect(prev, occs, handled, 500, 15, false, true)).toEqual({ newly: 1, back: 1 })
+    expect(restartEffect(prev, occs, handled, 500, 15)).toEqual({ newly: 2, back: 4 })
   })
 })
 
@@ -616,30 +662,27 @@ describe('bundles with no amount, in the driver\'s list', () => {
 describe('which stops driven past are bundles missed', () => {
   const passed = [occ('b1', 100), occ('n1', 120, 'nothrow'), occ('r1', 130, 'request'), occ('b2', 140)]
 
-  it('is the bundle drops among them while on the route', () => {
-    expect(missedAmong(passed, true)).toEqual(['b1', 'b2'])
-  })
-
-  it('is none after leaving the route, when they are only skipped', () => {
-    expect(missedAmong(passed, false)).toEqual([])
+  it('is the bundle drops among them', () => {
+    expect(missedAmong(passed)).toEqual(['b1', 'b2'])
   })
 
   it('is none when only no-throw houses and special requests were passed', () => {
-    expect(missedAmong(passed.slice(1, 3), true)).toEqual([])
+    expect(missedAmong(passed.slice(1, 3))).toEqual([])
   })
 
   it('goes by the occurrence, so the second pass of a street is its own', () => {
-    expect(missedAmong([occ('b1', 100, 'bundle', {}, 'b1#2')], true)).toEqual(['b1#2'])
+    expect(missedAmong([occ('b1', 100, 'bundle', {}, 'b1#2')])).toEqual(['b1#2'])
   })
 
   it('is none for nothing passed', () => {
-    expect(missedAmong([], true)).toEqual([])
+    expect(missedAmong([])).toEqual([])
   })
 })
 
 describe('the notice for bundles driven past', () => {
   it('is nothing when there are none', () => {
     expect(missedNotice([])).toBe('')
+    expect(leftBehindNotice('Corner shop')).toBe('Next bundle Corner shop is behind you. Mark it or move it in the Bundles list.')
   })
 
   it('names the venue', () => {
@@ -923,5 +966,59 @@ describe('a round of bundle drops through many changes, one delivery for each st
         holds(r, along, `${where} (${label})`)
       }
     }
+  })
+})
+
+describe('the list of the next round, for setting its order on the start screen', () => {
+  const occs = [occ('A', 100), occ('B', 200), occ('C', 300)]
+
+  it('has every stop to do in the order kept, the first of them next, whatever became of them in the round kept', () => {
+    expect(nextRoundRows(occs, ['C', 'A', 'B'], null).map((r) => [r.id, r.status])).toEqual([
+      ['C', 'next'],
+      ['A', 'todo'],
+      ['B', 'todo'],
+    ])
+  })
+
+  it('gives enough to move, where the rows of the round kept have none left', () => {
+    const finished = round({ handledStopIds: ['A', 'B', 'C'], dropped: ['A', 'B'], missed: ['C'] })
+    expect(bundlesLeft(bundleRows(occs, finished, undefined, null))).toBe(0)
+    expect(bundlesLeft(nextRoundRows(occs, undefined, null))).toBe(3)
+  })
+
+  it('has no Mark dropped or Undo, as those would act on the round kept, which it does not show', () => {
+    const rows = nextRoundRows(occs, undefined, null)
+    expect(rows.map((r, i) => stopRow(r, i + 1).action)).toEqual([null, null, null])
+  })
+
+  it('still says how far each one is from the phone', () => {
+    const near = occ('N', 100, 'bundle', { lat: -33.87, lng: 151.2 })
+    expect(nextRoundRows([near], undefined, { lat: -33.87, lng: 151.2 })[0].distance).toBe(0)
+    expect(nextRoundRows([near], undefined, null)[0].distance).toBeNull()
+  })
+})
+
+describe('the catch-up at the first fix on the route', () => {
+  const zone = { bundle: 40, nothrow: 40, request: 40, block: 40 }
+  const pass = (key: string, type: Occurrence['stop']['type'], at: number, off = 8): Occurrence => ({ key, stop: { id: key, type, lat: 0, lng: 0, pathIdx: 0 }, idx: 0, at, off })
+  const house = pass('house', 'nothrow', 250)
+  const ahead = pass('ahead', 'nothrow', 320)
+
+  it('sweeps the stops behind the car', () => {
+    expect(caughtUp([house, ahead], new Set(), 300, zone)).toEqual(['house'])
+  })
+
+  it('never sweeps a bundle, whatever stretch it is in: it stays to do, as that fix is no proof the car drove the stretch, and the next one is told of if it is left behind', () => {
+    expect(caughtUp([pass('stretch', 'bundle', 250), pass('behind', 'bundle', 100), house], new Set(), 300, zone)).toEqual(['house'])
+  })
+
+  it('goes on sweeping every other kind of stop', () => {
+    expect(caughtUp([pass('n', 'nothrow', 100), pass('r', 'request', 100), pass('b', 'block', 100)], new Set(), 300, zone)).toEqual(['n', 'r', 'b'])
+  })
+
+  it('leaves one close behind the car, and one met by place, and one done', () => {
+    expect(caughtUp([pass('wheels', 'nothrow', 290)], new Set(), 300, zone)).toEqual([])
+    expect(caughtUp([pass('away', 'nothrow', 250, 90), { ...house, placed: true }], new Set(), 300, zone)).toEqual([])
+    expect(caughtUp([house], new Set(['house']), 300, zone)).toEqual([])
   })
 })

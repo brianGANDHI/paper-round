@@ -100,6 +100,37 @@
   box-shadow: 0 1px 0 rgba(0, 0, 0, 0.22);
 }
 
+/* A bundle drop with its alert up while another stop is the banner: its name and its button in a strip of the bundle's blue, which does not flash with the red, at the foot of that banner. */
+.bundle-strip {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 8px 8px;
+  border-radius: 14px;
+  background: #0a63d6;
+}
+
+.bundle-strip .stop-alert-qty {
+  display: grid;
+  place-items: center;
+  padding: 0 14px;
+  border-radius: 14px;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.2);
+  font-size: 19px;
+  letter-spacing: -0.01em;
+}
+
+.bundle-strip-name {
+  overflow: hidden;
+  font-size: 17px;
+  font-weight: 800;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 /* On the narrowest phones the type is a size down, and the button stays at least 56 px tall. */
 @media (max-width: 350px) {
   .stop-alert.ask {
@@ -133,6 +164,16 @@
     min-height: 56px;
     font-size: 23px;
   }
+
+  .bundle-strip .stop-alert-qty {
+    padding: 0 10px;
+    font-size: 16px;
+  }
+
+  .bundle-strip .stop-alert-drop {
+    gap: 6px;
+    padding: 0 8px;
+  }
 }
 
 /* A phone on its side has little height: the banner is a little tighter, the button still at least 56 px. */
@@ -150,6 +191,41 @@
   .stop-alert-drop {
     min-height: 56px;
     font-size: 23px;
+  }
+
+  /* In a strip the name and the papers go one over the other beside the button, so another stop's banner does not push it under the bar along the bottom. */
+  .bundle-strip {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0 8px;
+    align-items: center;
+    padding: 4px 8px;
+  }
+
+  .bundle-strip .stop-alert-act {
+    display: contents;
+  }
+
+  .bundle-strip-name {
+    grid-column: 1;
+    font-size: 15px;
+  }
+
+  .bundle-strip:not(:has(.stop-alert-qty)) .bundle-strip-name {
+    grid-row: 1 / span 2;
+  }
+
+  .bundle-strip .stop-alert-qty {
+    grid-column: 1;
+    justify-self: start;
+    padding: 0;
+    background: none;
+    font-size: 15px;
+  }
+
+  .bundle-strip .stop-alert-drop {
+    grid-row: 1 / span 2;
+    grid-column: 2;
   }
 }
 
@@ -196,11 +272,28 @@
   .screen:has(.stop-alert.ask) .bundles-sheet {
     max-height: calc(100% - 330px);
   }
+
+  .screen:has(.bundle-strip) .bundles-sheet {
+    max-height: calc(100% - 330px);
+  }
+
+  /* A strip for a bundle under a block's strip or two lines of plates is the tallest banner there is, so the sheet keeps that much more room. */
+  .screen:has(.bundle-strip):has(.block-strip) .bundles-sheet {
+    max-height: calc(100% - 420px);
+  }
+
+  .screen:has(.stop-alert.tall .bundle-strip) .bundles-sheet {
+    max-height: calc(100% - 420px);
+  }
 }
 
 /* On a short portrait screen that leaves little room for the list, so the three figures give way to it (the header still says how many are dropped). */
 @media (orientation: portrait) and (max-height: 720px) {
   .screen:has(.stop-alert.ask) .bundles-summary {
+    display: none;
+  }
+
+  .screen:has(.bundle-strip) .bundles-summary {
     display: none;
   }
 }

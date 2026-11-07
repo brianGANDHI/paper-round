@@ -1,5 +1,5 @@
 import { aheadText, alertSpeech, alertText, platesLayout, plateText } from './alerts'
-import { BLOCK_GLYPH } from './colors'
+import { BLOCK_GLYPH, SIDE_SHORT } from './colors'
 import { Icon } from './Icon'
 import type { Stop } from './types'
 import './block.css'
@@ -19,7 +19,7 @@ interface Props {
   side: 'left' | 'right' | null
   /** How many more alerts are waiting behind this one. */
   waiting: number
-  /** The driver tapped Dropped. Given for a bundle drop, it adds the big Dropped button, the one tappable part of an alert. */
+  /** The driver tapped Dropped. Given for a bundle drop, or with `bundleUp`, it adds the big Dropped button, the one tappable part of an alert. */
   onDropped?: () => void
   /**
    * An apartment block still to come while this is the banner of another stop (see `bannerBlock`), with the side of the road it is on
@@ -27,6 +27,10 @@ interface Props {
    * papers are not hidden by the other stop. Left out, or given to a block's own banner, there is no strip.
    */
   blockAhead?: { stop: Stop; side: 'left' | 'right' | null }
+  /**
+   * A bundle drop with its alert up while this is the banner of another stop (see `bannerBundle`): it is shown in a blue strip at the foot of the banner, with `onDropped` on its button.
+   */
+  bundleUp?: Stop
 }
 
 /**
@@ -38,7 +42,7 @@ function BlockStrip({ stop, side }: { stop: Stop; side: 'left' | 'right' | null 
   const marker = side ? (
     <div className="block-strip-side">
       <Icon name={side === 'left' ? 'arrow-left' : 'arrow-right'} size={20} strokeWidth={2.8} />
-      {side === 'left' ? 'Left' : 'Right'}
+      {SIDE_SHORT[side]}
     </div>
   ) : (
     <div className="block-strip-glyph">
@@ -56,6 +60,27 @@ function BlockStrip({ stop, side }: { stop: Stop; side: 'left' | 'right' | null 
         </div>
       )}
       {side === 'right' && marker}
+    </div>
+  )
+}
+
+/**
+ * The strip in another stop's banner for a bundle drop whose alert is up: its name over its papers and Dropped button. Blue, as its own banner is, which does
+ * not flash with the red, so the button is not taken for part of the stop the banner is for.
+ */
+function BundleStrip({ stop, onDropped }: { stop: Stop; onDropped: () => void }) {
+  const { name, number, papers } = alertText(stop)
+  const shown = number ? `${number} ${name}` : name
+  return (
+    <div className="bundle-strip">
+      <div className="bundle-strip-name">{shown}</div>
+      <div className="stop-alert-act">
+        {papers && <span className="stop-alert-qty">{papers}</span>}
+        <button className="stop-alert-drop" aria-label={`Dropped: ${shown}`} onClick={onDropped}>
+          <Icon name="check" size={30} strokeWidth={3.2} />
+          Dropped
+        </button>
+      </div>
     </div>
   )
 }
@@ -85,8 +110,11 @@ function BlockStrip({ stop, side }: { stop: Stop; side: 'left' | 'right' | null 
  * Every other stop outranks an apartment block (see `pickCurrent`), so while a no-throw house's, a bundle drop's or a special request's
  * banner is up, a block still to come is shown in it, in a teal strip under the stop's details with its papers and its side (see
  * `BlockStrip`), and the label says both. A bundle drop keeps its Dropped button under the strip.
+ *
+ * A no-throw house outranks a bundle drop, so a bundle whose alert is up behind another stop's banner has its Dropped button in that banner, in a strip of its own at the foot (see
+ * `BundleStrip`), and the label says both.
  */
-export function AlertBanner({ stops, pass = 1, ahead, side, waiting, onDropped, blockAhead }: Props) {
+export function AlertBanner({ stops, pass = 1, ahead, side, waiting, onDropped, blockAhead, bundleUp }: Props) {
   const stop = stops[0]
   const noThrow = stop.type === 'nothrow'
   const request = stop.type === 'request'
@@ -97,11 +125,14 @@ export function AlertBanner({ stops, pass = 1, ahead, side, waiting, onDropped, 
   const where = `${name}${pass > 1 ? ` · pass ${pass}` : ''}`
   const row = stops.length > 1
   const ask = stop.type === 'bundle' && !!onDropped
+  // Another stop's banner with a bundle's alert up carries its button: a bundle's own has it already.
+  const carried = stop.type === 'bundle' ? undefined : bundleUp
+  const label = [alertSpeech(stops, side), ...(strip ? [alertSpeech([strip.stop], strip.side)] : []), ...(carried ? [alertSpeech([carried], null)] : [])].join(' ')
   const layout = platesLayout(stops.length, PLATES_PER_LINE)
   const marker = side ? (
     <div className="stop-alert-side">
       <Icon name={side === 'left' ? 'arrow-left' : 'arrow-right'} size={26} strokeWidth={2.8} />
-      {side === 'left' ? 'Left' : 'Right'}
+      {SIDE_SHORT[side]}
     </div>
   ) : (
     <div className="stop-alert-glyph">
@@ -159,11 +190,11 @@ export function AlertBanner({ stops, pass = 1, ahead, side, waiting, onDropped, 
   )
   return (
     <div
-      className={`stop-alert ${noThrow ? 'red' : request ? 'purple' : block ? 'teal' : 'blue'}${side === 'right' ? ' right' : ''}${row ? ' row' : ''}${layout.lines > 1 ? ' tall' : ''}${ask ? ' ask' : ''}${strip ? ' with-block' : ''}`}
+      className={`stop-alert ${noThrow ? 'red' : request ? 'purple' : block ? 'teal' : 'blue'}${side === 'right' ? ' right' : ''}${row ? ' row' : ''}${layout.lines > 1 ? ' tall' : ''}${ask ? ' ask' : ''}${strip || carried ? ' with-block' : ''}`}
       role="alert"
-      aria-label={strip ? `${alertSpeech(stops, side)} ${alertSpeech([strip.stop], strip.side)}` : alertSpeech(stops, side)}
+      aria-label={label}
     >
-      {ask ? <div className="stop-alert-body">{body}</div> : block || strip ? <div className="block-body">{body}</div> : body}
+      {ask ? <div className="stop-alert-body">{body}</div> : block || strip || carried ? <div className="block-body">{body}</div> : body}
       {strip && <BlockStrip stop={strip.stop} side={strip.side} />}
       {block && papers && (
         <div className="block-papers">
@@ -179,6 +210,7 @@ export function AlertBanner({ stops, pass = 1, ahead, side, waiting, onDropped, 
           </button>
         </div>
       )}
+      {carried && onDropped && <BundleStrip stop={carried} onDropped={onDropped} />}
     </div>
   )
 }

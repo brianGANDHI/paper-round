@@ -1,19 +1,20 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { AlertBanner } from './AlertBanner'
-import { barBundle, dropAllowed, freshStart, missedNotice, restartedRound, restartEffect, restoreBundle, savedRound } from './bundleFlow'
-import { bundleList, bundleRows, markDropped, nextBundleSpeech, nextInOrder, otherPasses, passStates, type PassStates } from './bundles'
+import { barBundle, caughtUp, dropAllowed, freshStart, leftBehindNotice, missedAmong, missedNotice, nextRoundRows, restartedRound, restartEffect, restoreBundle, savedRound, stillNextNotice } from './bundleFlow'
+import { bundleList, bundleNameOf, bundleRows, bundlesBehind, bundlesLeft, earlierPasses, firstLink, gatedOccurrences, markDropped, NEXT_BEHIND_SPEECH, nextBundleId, nextBundleSpeech, nextHoldsUp, nextInOrder, nextLeftBehind, nextStillAhead, notNextAlerts, otherPasses, passStates, stillNextSpeech, wentByUnseen, type PassStates } from './bundles'
 import { BundlesSheet } from './BundlesSheet'
 import { aheadOf, alertable, alertRadius, ALERT_DISTANCES, courtLegsOf, houseRow, isAlertDistance, isGoneBy, keepAlertsAhead, legsOnResume, pickCurrent, quietReachFor, resumedLegs, roundCounts, zoneExit, type AlertDistance } from './alerts'
-import { bannerBlock, bannerWaiting, shownSide } from './bannerBlock'
+import { bannerBlock, bannerBundle, bannerWaiting, shownSide } from './bannerBlock'
 import { SIDE_LABEL, SIDE_PILL, SIDE_SHORT } from './colors'
 import { useDialogs } from './confirm'
 import { useGps, useWakeLock } from './device'
 import { plural } from './format'
-import { angleBetween, approachingOccurrences, byPosition, haversine, occurrences, sideAt, snapAtDistance, type Occurrence } from './geo'
+import { angleBetween, approachingOccurrences, byPosition, haversine, keepPlaced, occurrences, POSITION_MAX_ACCURACY_M, sideAt, snapAtDistance, type Occurrence } from './geo'
 import { guidedTurn } from './guidance'
 import { pushTrail, trailHeading, type TrailPoint } from './heading'
 import { HeadingBadge } from './HeadingBadge'
 import { Icon } from './Icon'
+import { LoadCard } from './LoadCard'
 import { MapCredit } from './MapCredit'
 import {
   guideToLeft,
@@ -36,7 +37,7 @@ import { OffRouteBanner } from './OffRouteBanner'
 import { holdHeading } from './mapHeading'
 import { MapView, type ViewCmd } from './MapView'
 import { resolveSections } from './namedSections'
-import { advance, makeTrack, offRouteGap, rebaseProgress, startProgress, type Progress } from './progress'
+import { advance, makeTrack, offRouteGap, OUTLIER_ACCURACY_M, rebaseProgress, startProgress, type Progress } from './progress'
 import { keptBeforeDrop } from './dropMemory'
 import { continueFrom, sameCourtLegs, slackFor, withCourtLegs } from './resume'
 import { RoundBar, RoundButtons, type Notice } from './RoundBar'
@@ -46,17 +47,17 @@ import { formatDistance, paintMetres, routeLength } from './routeEdit'
 import { loadAlertDistance, loadHeadingUp, loadKeepAudioAwake, loadVoiceTurns, saveAlertDistance, saveHeadingUp, saveKeepAudioAwake, saveVoiceTurns } from './storage'
 import { RouteChip, Segmented } from './ui'
 import { sideChangeNote, sideExtents, type ExtentKey } from './driveEdit'
-import { createSideCue, sideAtAlong, sideLookAheadM, sideWords } from './sideVoice'
+import { createSideCue, sideAtAlong, sideLookAheadM, sideWords, testVoice } from './sideVoice'
 import { sound } from './sound'
 import { say, speechAvailable, stopSpeaking, unlockSpeech } from './speech'
 import { StartPicker } from './StartPicker'
 import { missingQueries, nameTurns } from './streets'
 import { cueToSay, guidanceToShow, turnKey } from './transitView'
 import { TurnCard } from './TurnCard'
-import { doneNow, endTurnHold, heldKeys, holdGoneBy, holdLeftBehind, judgedAt, NOTHING_HELD, shownQueue, stepTurnHold, type TurnHold } from './turnHold'
+import { doneNow, endTurnHold, heldKeys, holdGoneBy, holdLeftBehind, judgedAt, NOTHING_HELD, reachedAt, shownQueue, stepForNext, stepTurnHold, type TurnHold } from './turnHold'
 import { onTheRoute, routeTurns, TURN_KM_M, TURN_PASSED_M, type TurnCue } from './turns'
-import { alertWordsStale, planVoice } from './voicePlan'
-import { SIDES, type NamedSection, type Pt, type RoundState, type Route, type Side, type StopType, type TurnStreet } from './types'
+import { alertWordsLevel, alertWordsStale, planVoice } from './voicePlan'
+import { SIDES, type LoadList, type NamedSection, type Pt, type RoundState, type Route, type Side, type StopType, type TurnStreet } from './types'
 
 /** The furthest reached is kept with the round this many metres at a time. */
 const SAVE_EVERY_M = 100
@@ -67,7 +68,7 @@ const NOTE_MS = 6000
 const BAR_COVER_PX = 64
 /** What the small amber button in the bar says when the screen is not being kept awake, which stops the GPS. */
 const WAKE_CAUTION = 'Keep the phone awake so GPS keeps updating.'
-/** After a round is started or skipped to a spot, stops between it and the car, if the car's first fix on the route is this far or less ahead of it, in metres, count as gone by. */
+/** After a round is started or skipped to a spot, stops other than bundles between it and the car, if the car's first good fix on the route is this far or less ahead of it, in metres, count as gone by. */
 const CATCH_UP_M = 300
 /** Once the furthest reached is this close to the end of the route, in metres, leaving it is going home, not going wrong. */
 const END_QUIET_M = 50
@@ -83,6 +84,12 @@ const FORWARD_DEG = 110
 const CLOSING_M = 100
 /** A fix is weighed for leaving the route only if the phone has moved this far, in metres, since the last that was, or says it is going. */
 const STEP_MOVED_M = 5
+/**
+ * A next bundle counts as gone by with no alert only over a move along the route the car can have driven: one no more than this many metres beyond the ground
+ * between the two fixes. Further than that the tracker has landed on another street of the route, and what lies between was never near the car. A gap on a road with
+ * sharp bends can fall outside it too, and then the bundle is told of as left behind (see `nextLeftBehind`), not missed.
+ */
+const DRIVEN_SLACK_M = 100
 
 interface Props {
   route: Route
@@ -95,6 +102,9 @@ interface Props {
   /** The order the driver drops the bundles in (stop ids, see `SavedRoute.bundleOrder`), and a change to it from the Bundles list. */
   bundleOrder?: readonly string[]
   onBundleOrder: (order: string[]) => void
+  /** What the driver loads before the round (see `SavedRoute.load`), and a change to it. */
+  load?: LoadList
+  onLoad: (list: LoadList) => void
   onRound: (r: RoundState) => void
   /** The route was changed from the road, such as the throw side of the part being driven: the round carries on with it. */
   onAdjustRoute: (route: Route) => void
@@ -102,7 +112,7 @@ interface Props {
   onGoRoutes: () => void
 }
 
-export function Round({ route, round, routeName, sections, streets, bundleOrder, onBundleOrder, onRound, onAdjustRoute, onGoSetup, onGoRoutes }: Props) {
+export function Round({ route, round, routeName, sections, streets, bundleOrder, onBundleOrder, load, onLoad, onRound, onAdjustRoute, onGoSetup, onGoRoutes }: Props) {
   const [started, setStarted] = useState(false)
   const [overview, setOverview] = useState(false)
   // Alerts wait their turn so a bundle prompt can never hide a no-throw warning.
@@ -141,11 +151,12 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
   /** What the fix effect needs to know and re-reads on its own schedule. */
   const startedRef = useRef(false)
   const finishedRef = useRef(false)
+  const overButBundlesRef = useRef(false)
   const routeEndRef = useRef(0)
   const occsRef = useRef<Occurrence[]>([])
   const radiusRef = useRef<Record<StopType, number>>({ bundle: 40, nothrow: 40, request: 40, block: 40 })
   /** The latest `restartAt`, for the fix effect, which runs on its own schedule. */
-  const restartAtRef = useRef<(metres: number, skip: boolean) => void>(() => {})
+  const restartAtRef = useRef<(metres: number, skip: boolean, keepBundles?: boolean) => void>(() => {})
   /** The picker of where to start, or to skip to: on the start screen, or over the road. */
   const [picker, setPicker] = useState<'start' | 'jump' | null>(null)
   // The position is watched from the start screen's map too, so it can show where you are.
@@ -157,6 +168,11 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
   const [menuOpen, setMenuOpen] = useState(false)
   /** The list of bundle drops is up. */
   const [bundlesOpen, setBundlesOpen] = useState(false)
+  /**
+   * The list is up from the start screen for the order of the next round, as the round kept is over, or has too few bundles left to move (see `nextRoundRows`).
+   * Settled as it opens, so that Mark dropped taking the round down to one left doesn't turn the list into another one under the driver's finger.
+   */
+  const [orderForNext, setOrderForNext] = useState(false)
   /** Free look: the driver has dragged the north-up map, so it stays where they put it instead of following them. Re-centring, or a quiet spell, ends it. */
   const [freeLook, setFreeLook] = useState(false)
   /** Counts the driver's moves of the map while looking around, so the wait before following starts again begins afresh at each. */
@@ -224,12 +240,16 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
   /** The alerts already said out loud, by occurrence, so a row of houses is said once, not house by house. */
   const announced = useRef(new Set<string>())
   const voiceRef = useRef(voice)
+  /** Whether the bar has a notice up, or the list, the menu, the picker or a question covers it, as a word for the bar waits for it (see `nextHoldsUp`). */
+  const barBusyRef = useRef(false)
   /** The alerts that came up but are not said yet, by occurrence: a no-throw house is named only once the side thrown where the driver is includes its side (see `planVoice`). */
   const heldRef = useRef(new Set<string>())
   /** The side last said out loud, so each change of the side thrown is said once (see `createSideCue`). */
   const sideCueRef = useRef(createSideCue())
   /** How fast the phone said it was going at the fix the driver's place is from, for how far ahead the side is said. */
   const speedRef = useRef<number | null>(null)
+  /** Stops the words still to come from Test Voice on the start screen. */
+  const stopVoiceTest = useRef<(() => void) | null>(null)
   const side = sideAt(route, snapIdx)
   // The effect below reads what is showing, and the latest way to save progress, without re-running for them.
   const queueRef = useRef(queue)
@@ -237,8 +257,36 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
   const handledRef = useRef(handled)
   /** Where the round was started or last skipped to, which is kept with it. */
   const startMRef = useRef(round.startM ?? 0)
-  /** Where the round was started or skipped to, until the first fix on the route after that: see CATCH_UP_M. */
+  /** Where the round was started or skipped to, until the first good fix on the route after that: see CATCH_UP_M. */
   const restartRef = useRef<number | null>(null)
+  /**
+   * How far the driver had got at the last fix that could say so, where the car was, and the bundle next in the list as things stood after it, for a next bundle
+   * gone by with no alert (see `wentByUnseen`). Null with nothing to go by: until the first fix after a start, a skip or *Continue Round*, and after a fix that says nothing
+   * of what the car drove past. So the first fix after one of those counts nothing. A fix too poor to go by leaves it as it is, for the next good one to judge the whole stretch.
+   */
+  const lastJudged = useRef<{ reach: number; next: string | null; at: Pt } | null>(null)
+  /**
+   * The bundles the driver may be told of as holding up the list (see `nextHoldsUp` and `nextLeftBehind`), by stop id: those the list came to by itself, by a drop, a miss, *Mark dropped*,
+   * Undo or a skip, and those next with a pass not yet behind the car, on a fix that can say so. Kept through a change of the next and through a skip or a carry-on, so a drop taken back with
+   * Undo is still known. A start clears it. The one case left out is a bundle the driver moved to the top of the list when it was already behind the car (see `changeOrder`): that is their own decision.
+   * Anything else behind the car holds up every bundle after it, ahead of the car or not, so it must not go unsaid.
+   */
+  const mayTellBehind = useRef(new Set<string>())
+  /**
+   * The bundle next in the list at the last look, null with none next, for seeing that the list has come to another by itself; a reorder sets it (see `changeOrder`). Not known until the
+   * route is first reached, and again after a start, so the bundle next then counts as come to: after a reload, a killed app opened further on, or a car joining the route past it,
+   * nothing else knows of it.
+   */
+  const listNext = useRef<string | null | undefined>(undefined)
+  /** The passes of bundles behind the car at the last good fix (see `bundlesBehind`), for `goneBefore`: a pass gone by on the fix the next changes on did not go by before it. */
+  const behindLast = useRef<ReadonlySet<string>>(new Set())
+  /**
+   * The passes already behind the car when the bundle next became next, by the list or a reorder: what it can't be held to have cost (see `nextHoldsUp`). None when that is not known. A pass
+   * the car is put back behind (a skip back, a carry-on, *Take me back*) leaves it, as it can be gone by again.
+   */
+  const goneBefore = useRef<ReadonlySet<string>>(new Set())
+  /** The bundles the driver has been told are holding up the list (see `nextHoldsUp` and `nextLeftBehind`), so each is told once. A start and a restart clear it, and a reorder for the two it changes. */
+  const toldBehind = useRef(new Set<string>())
   /** Set by *Continue Round* until the first fix on the route after it, where a house at the head of a court the driver is between the two legs of is put on the leg ahead (see `legsOnResume`). */
   const resumeRef = useRef(false)
   /**
@@ -254,6 +302,15 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
   const beforeDrop = useRef(new Map<string, PassStates>())
   /** When Dropped was last tapped on an alert, so that a double tap drops only one bundle. */
   const lastDropAt = useRef(-Infinity)
+  const { total, remaining, done, finished } = roundCounts(occs, handled)
+  // A round that has been started part way, or driven some way, carries on from there even when no stop has been done.
+  const carryOn = continueFrom(round, allOccs, handled)
+  // With nothing to carry on, the one button starts afresh (as Start Over does). With nothing done that is where the round would carry on
+  // from anyway, but what a change of side made of the passes at the head of a court is forgotten, so a house it left out alerts again on the new drive.
+  // A round that got to the end of the route with only bundles still to do would carry on with no house left to alert for: the driver is given a new one first.
+  // (The furthest is kept a hundred metres at a time, so the end is that far short of it.)
+  const overButBundles = !finished && carryOn > 0 && carryOn >= (track.cum[track.cum.length - 1] ?? 0) - END_QUIET_M - SAVE_EVERY_M && bundlesLeft(rows) > 0 && occs.every((o) => handled.has(o.key) || o.stop.type === 'bundle')
+  const partial = !overButBundles && remaining > 0 && (done > 0 || carryOn > 0)
   useLayoutEffect(() => {
     queueRef.current = queue
     onRoundRef.current = onRound
@@ -261,8 +318,10 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
     handledRef.current = handled
     startMRef.current = round.startM ?? 0
     voiceRef.current = voice
+    barBusyRef.current = toast !== null || bundlesOpen || menuOpen || picker !== null || dialog !== null
     startedRef.current = started
-    finishedRef.current = roundCounts(occs, handled).finished
+    finishedRef.current = finished
+    overButBundlesRef.current = overButBundles
     routeEndRef.current = track.cum[track.cum.length - 1] ?? 0
     occsRef.current = occs
     radiusRef.current = radius
@@ -276,8 +335,8 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
   /**
    * Keeps the stops done and how far the round has got, and where it was started from, with the bundles dropped and missed it had, and
    * what a change of side made of the passes at the head of a court (see `courtLegsOf`).
-   * `missedKeys` are bundles just driven past with no tap, which must be among the stops done. Anything else that marks stops done (a
-   * skip, a catch-up, leaving the route) leaves the bundles in it skipped: neither dropped nor missed.
+   * `missedKeys` are bundles driven past with no tap, which must be among the stops done. A bundle marked done any other way (the earlier
+   * passes of one of those) is left skipped: neither dropped nor missed.
    */
   const saveRound = useCallback(
     (handledStopIds: string[], furthest?: number, missedKeys: readonly string[] = []) => {
@@ -363,10 +422,10 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
       if (event === 'went-off') {
         // An alert that was showing is for a place the driver is no longer at: it goes, and may come up again when they are back. Not one for a stop
         // already behind the place the route was left at: that is gone by, and no longer alerts when they are back.
-        const gone: string[] = []
+        const gone: Occurrence[] = []
         for (const o of queueRef.current) {
           if (state.left && !byPosition(o, radius) && o.at < state.left.along - slackFor(radius)) {
-            gone.push(o.key)
+            gone.push(o)
             continue
           }
           seen.current.delete(o.key)
@@ -374,13 +433,20 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
           heldRef.current.delete(o.key)
         }
         setQueue([])
-        if (gone.length) saveRound([...handledRef.current, ...gone], savedFurthest.current)
+        // A bundle among them was up with its Dropped button and went by with no tap, so it is missed, as on the road, and the list can still mark it
+        // dropped. Earlier passes of it go with it (see `earlierPasses`), as they do when a pass goes by on the road.
+        if (gone.length) {
+          const keys = gone.map((o) => o.key)
+          saveRound([...handledRef.current, ...keys, ...earlierPasses(occsRef.current, keys, handledRef.current)], savedFurthest.current, missedAmong(gone))
+          const bundles = gone.filter((o) => o.stop.type === 'bundle')
+          if (bundles.length) setToast({ message: missedNotice(bundles.map((o) => bundleNameOf(o.stop))) })
+        }
       }
       if (event === 'back' && before.left) {
         // The turn that was missed is met again, so it is said again, wherever in view of the place the route was left it is: on a stretch of transit that is as far as the first cue, a kilometre.
         for (const key of [...saidTurn.current.keys()]) if (key >= before.left.along - TURN_KM_M) saidTurn.current.delete(key)
         if (forward) {
-          // Stops in the stretch skipped over, if it was further on, are gone by; and the furthest reached, if it had gone on with a rejoin, is where the driver is.
+          // Stops in the stretch skipped over, if it was further on, are gone by, but for the bundles (see `caughtUp`); and the furthest reached, if it had gone on with a rejoin, is where the driver is.
           restartRef.current = before.left.along
           capRef.current = null
           const settle = Math.max(before.left.furthest, now.along)
@@ -393,8 +459,9 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
         }
       }
       if (event === 'carried-on') {
-        // Left alone for a minute on the new part, the round carries on from there, as if it had been skipped to (and says so afterwards: the skip stops what is being said).
-        restartAtRef.current(now.along, true)
+        // Left alone for a minute on the new part, the round carries on from there, as if it had been skipped to, but for the bundles (see `restartedRound`),
+        // and says so afterwards: the skip stops what is being said.
+        restartAtRef.current(now.along, true, true)
         setToast({ message: 'Carrying on from here.' })
       }
       announceOff(event, reading, state)
@@ -478,8 +545,10 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
       heldRef.current.delete(key)
     }
     const waiting = queueRef.current
+    // An alert up by place stays so (see `keepPlaced`): judged along the route it would be gone by, and missed, at once.
+    const live = new Map(keepPlaced(occs, waiting).map((o) => [o.key, o]))
     const next = waiting.flatMap((o) => {
-      const now = byKey.get(o.key)
+      const now = live.get(o.key)
       return now ? [now] : []
     })
     if (next.length !== waiting.length || next.some((o, i) => o !== waiting[i])) setQueue(next)
@@ -509,7 +578,7 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
     saveRound([...handled], far)
   }, [progress, handled, saveRound])
 
-  // What the driver is near. This runs for every move of the driver, and when the stops done, the route or the distance change.
+  // What the driver is near. This runs for every move of the driver, and when the stops done, the route, the distance or the order of the bundles change.
   useEffect(() => {
     if (!progress) return
     // The first fix on the route after Continue Round (the place carried on from is only on paper): a house at the head of a court the driver is
@@ -528,9 +597,21 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
     const driverAt = progress.along
     const pos = progress.at
 
+    // Only the bundle next in the driver's list alerts (see `gatedOccurrences`). One up that no longer is, after a reorder, a drop, a miss or an Undo, goes
+    // without a word: not done, not missed, and it may alert again once it is next. It is gone before anything below can take it for driven past.
+    const nextAtStart = nextBundleId(occs, roundRef.current, bundleOrder)
+    const notNext = notNextAlerts(queueRef.current, nextAtStart)
+    for (const o of notNext) {
+      seen.current.delete(o.key)
+      announced.current.delete(o.key)
+      heldRef.current.delete(o.key)
+    }
+    if (notNext.length) setQueue((q) => q.filter((o) => !notNext.some((n) => n.key === o.key)))
+    const up = notNext.length ? queueRef.current.filter((o) => !notNext.includes(o)) : queueRef.current
+
     // A turn round the tracker is not sure of yet (see turnHold.ts): the alerts up as it began are judged where the driver was put from, and a
     // stop along the route gone by meanwhile is put by, until the turn is sure (they are done) or undone (they are still to come, and may alert again).
-    const step = stepTurnHold(turnHold.current, progress, queueRef.current, track.cum[track.cum.length - 1] ?? 0)
+    const step = stepForNext(stepTurnHold(turnHold.current, progress, up, track.cum[track.cum.length - 1] ?? 0), nextAtStart)
     for (const o of step.release) {
       seen.current.delete(o.key)
       announced.current.delete(o.key)
@@ -539,57 +620,90 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
 
     // An alert goes when you are away from its stop (only a bundle drop's has a button, Dropped, and it stays up till then). Driving on
     // past a stop counts it as done, and backing away from it first lets it alert again when you come back. A bundle drop driven past
-    // like that, without Dropped, is recorded as missed, but only on the route (a sweep after leaving it, or a catch-up, just skips it).
-    const left = queueRef.current.flatMap((o) => {
-      const exit = zoneExit(o, judgedAt(o, driverAt, step.hold), radius, pos)
+    // like that, without Dropped, is recorded as missed. One fix too poor to say where the car is says nothing of a stop met by where it is.
+    const placeFix = progress.accuracy <= POSITION_MAX_ACCURACY_M ? pos : undefined
+    // A fix good enough to go by from one fix to the next: as good as the tracker needs to set aside a jump by itself, and with the tracker not doubting where it has put the
+    // driver, as a good fix just after a throw leaves it, still at the thrown place. Any other can be thrown ahead of the car or back from it, so it does not end a bundle's alert
+    // along the route: that stays up with its Dropped button, and the next good fix judges it.
+    const goodFix = progress.accuracy <= OUTLIER_ACCURACY_M && progress.doubt === null
+    const left = up.flatMap((o) => {
+      const exit = zoneExit(o, judgedAt(o, driverAt, step.hold), radius, placeFix)
+      if (exit && !goodFix && o.stop.type === 'bundle' && !byPosition(o, radius)) return []
       return exit ? [{ o, exit }] : []
     })
     const gone = new Set(left.map((l) => l.o.key))
     // While off the route, or on a part of it that is not where it was left, the place along the route is not where the driver is, so
     // going 'past' a stop along it says nothing: it may alert again. A stop away from the route is met by where the driver is, whatever the route says.
-    const onRoute = offRef.current.phase === 'on'
+    // A bundle back on the route somewhere else is the exception: the phone is on the route and reading near, so its alert going by is a real pass, and
+    // left forgotten it would stay next behind the car, and every bundle after it silent.
+    const phase = offRef.current.phase
+    const onRoute = phase === 'on'
+    const backOn = phase === 'rejoined'
+    const reallyPassed = (o: Occurrence) => onRoute || byPosition(o, radius) || (backOn && o.stop.type === 'bundle')
     let goneBy: Occurrence[] = []
     if (left.length) {
       setQueue((q) => q.filter((o) => !gone.has(o.key)))
       for (const l of left) {
-        if (l.exit === 'back' || (l.exit === 'passed' && !onRoute && !byPosition(l.o, radius))) {
+        if (l.exit === 'back' || (l.exit === 'passed' && !reallyPassed(l.o))) {
           seen.current.delete(l.o.key)
           announced.current.delete(l.o.key)
           heldRef.current.delete(l.o.key)
         }
       }
-      goneBy = left.filter((l) => l.exit === 'passed' && !handled.has(l.o.key) && (onRoute || byPosition(l.o, radius))).map((l) => l.o)
+      goneBy = left.filter((l) => l.exit === 'passed' && !handled.has(l.o.key) && reallyPassed(l.o)).map((l) => l.o)
     }
     const put = holdGoneBy(step.hold, goneBy, radius)
     turnHold.current = put.hold
     setTurnHeld(heldKeys(put.hold))
     // The stops done now, and those put by over a turn round that stood, in one save: `handled` is this render's, so a second save would undo the first.
-    const settled = doneNow(put.now, step.settle, handled, onRoute)
+    const settled = doneNow(put.now, step.settle, handled, onRoute || backOn, radius)
+    const nameOf = (key: string) => bundleNames.get(key) ?? 'a bundle drop'
     let done: ReadonlySet<string> = handled
     if (settled.done.length) {
-      done = new Set([...handled, ...settled.done.map((o) => o.key)])
+      // A pass of a bundle that goes by takes the earlier passes of the stop with it: those driven by while it was not next would keep it to do for ever.
+      const keys = settled.done.map((o) => o.key)
+      done = new Set([...handled, ...keys, ...earlierPasses(occs, keys, handled)])
       saveRound([...done], savedFurthest.current, settled.missed)
-      if (settled.missed.length) setToast({ message: missedNotice(settled.missed.map((key) => bundleNames.get(key) ?? 'a bundle drop')) })
+      if (settled.missed.length) setToast({ message: missedNotice(settled.missed.map(nameOf)) })
     }
 
     // A round just started or skipped to is at that spot only on paper, until the first fix says where the phone really is.
     if (progress.lost && progress.time === null) return
-    // The first fix on the route after the round was started or skipped to a spot finds the car some way past it, by the time it was
-    // confirmed: the stops in between would be neither done nor alerting, so they count as gone by (if the car is not far from the spot).
-    // It builds on the stops just done, for the same reason.
+    // A next bundle the car has gone by with no alert (see `wentByUnseen`) is judged from one fix to the next, but not on the way to the route, off it, on a jump
+    // along it that the off-route machine has yet to believe, or over a turn round not sure yet: where the driver is put along the route then says nothing of what they drove past.
+    // Nor on a fix too poor to go by, thrown forward past a bundle the car has not got to: that says nothing of the stretch, which the next good fix judges whole.
+    const reach = reachedAt(progress, put.hold)
+    const offNow = offRef.current
+    const judged = reachedRef.current && offNow.phase === 'on' && offNow.near === 0 && !put.hold
+    // The first good fix on the route after the round was started or skipped to a spot finds the car some way past it, by the time it was
+    // confirmed: the stops in between would be neither done nor alerting, so they count as gone by (if the car is not far from the spot). It builds on the stops
+    // just done, for the same reason. A poorer fix waits for the next: it can be thrown past a house the car has not got to. No bundle counts: that fix is no proof the car
+    // drove the stretch, as one crossing the road on the way to the spot has not, so a next bundle in it stays next, alerts by place if the car comes to it, and is told of below if it is left behind.
     const from = restartRef.current
-    if (from !== null && !progress.lost) {
+    let unseen: string[] = []
+    if (from !== null && !progress.lost && goodFix) {
       restartRef.current = null
       const ahead = progress.along - from
       if (ahead > 0 && ahead < CATCH_UP_M) {
-        const gone = occs.filter((o) => !done.has(o.key) && !byPosition(o, radius) && o.at < progress.along - slackFor(radius)).map((o) => o.key)
+        const gone = caughtUp(occs, done, progress.along, radius)
         if (gone.length) {
           done = new Set([...done, ...gone])
           saveRound([...done], savedFurthest.current)
         }
       }
+    } else if (judged && goodFix && lastJudged.current && Math.abs(reach - lastJudged.current.reach) - haversine(lastJudged.current.at, pos) <= DRIVEN_SLACK_M) {
+      unseen = wentByUnseen(occs, roundRef.current, bundleOrder, lastJudged.current.reach, reach, pos, radius, seen.current, firstLink(occs, lastJudged.current.next, settled.missed))
     }
-    const fresh = approachingOccurrences(driverAt, pos, occs, done, radius, progress.accuracy).filter((o) => !seen.current.has(o.key))
+    if (unseen.length) {
+      done = new Set([...done, ...unseen, ...earlierPasses(occs, unseen, done)])
+      saveRound([...done], savedFurthest.current, unseen)
+      setToast({ message: missedNotice([...settled.missed, ...unseen].map(nameOf)) })
+    }
+    const next = nextBundleId(occs, roundRef.current, bundleOrder)
+    lastJudged.current = !judged ? null : goodFix ? { reach, next, at: pos } : lastJudged.current
+    // The passes that may alert, with the list as it stands after the stops done just now: a bundle next from this fix on alerts on this fix, if the car is beside it.
+    const gated = gatedOccurrences(occs, next, done, reach, radius)
+    const fresh = approachingOccurrences(driverAt, pos, gated, done, radius, progress.accuracy).filter((o) => !seen.current.has(o.key))
     let beepSeconds = 0
     if (fresh.length) {
       fresh.forEach((o) => seen.current.add(o.key))
@@ -601,6 +715,35 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
       }
       const has = (type: StopType) => fresh.some((o) => o.stop.type === type)
       beepSeconds = has('nothrow') ? sound.noThrow() : has('request') ? sound.request() : has('block') ? sound.block() : sound.bundle()
+    }
+    // A next bundle the car has gone by, and not counted missed, stays next: the driver may mean to go back, or to take it on a later pass, and it alerts then. But every bundle after it
+    // is silent while it is, even those still ahead, so the list must not stand still with nothing said: they are told once, as soon as it costs them a bundle (see `nextHoldsUp`), which
+    // can be many kilometres before it is left behind for good (see `nextLeftBehind`), with nothing else said. That goes for one the list came to by itself as much as one that went by
+    // while it was next: a first pass gone by with no tap leaves that stop next while the car goes by the bundles after it, and the list then comes to them behind it. Not for one the
+    // driver moved to the top of the list when it was already behind the car (see `changeOrder`). Only on a fix that can say so, once the route has been reached. The memory (see
+    // `mayTellBehind`) outlasts a skip or a carry-on, which is how a carry-on past the bundle is told of.
+    if (reachedRef.current) {
+      if (next !== null && (next !== listNext.current || (judged && goodFix && nextStillAhead(occs, next, done, driverAt, radius)))) mayTellBehind.current.add(next)
+      if (next !== listNext.current) goneBefore.current = listNext.current === undefined ? new Set() : behindLast.current
+      listNext.current = next
+    }
+    // Only from a fix that says where the car is: a poor one, thrown back, would have a pass gone by again when it never was.
+    if (goodFix) {
+      const behindNow = bundlesBehind(occs, driverAt, radius)
+      if (judged) goneBefore.current = new Set([...goneBefore.current].filter((key) => behindNow.has(key)))
+      behindLast.current = behindNow
+    }
+    // It waits its turn: for the bar, as it would push off a notice (Undo after a drop, or the name of a bundle just missed), and for the words of any alert, which would take its place:
+    // those on this fix, and with the voice on those of a no-throw row held for the side, which can be named on any fix.
+    const free = !barBusyRef.current && !settled.missed.length && !unseen.length && !fresh.length && (!voiceRef.current || heldRef.current.size === 0)
+    if (judged && goodFix && free && next !== null && mayTellBehind.current.has(next) && !toldBehind.current.has(next) && !up.some((o) => o.stop.id === next && !gone.has(o.key))) {
+      const behindCar = nextLeftBehind(occs, next, done, driverAt, pos)
+      if (behindCar || nextHoldsUp(occs, next, done, driverAt, radius, goneBefore.current)) {
+        toldBehind.current.add(next)
+        const name = bundleNameOf(occs.find((o) => o.stop.id === next)?.stop ?? {})
+        setToast({ message: behindCar ? leftBehindNotice(name) : stillNextNotice(name) })
+        if (voiceRef.current) say(behindCar ? NEXT_BEHIND_SPEECH : stillNextSpeech(name))
+      }
     }
     if (!voiceRef.current) return
     // With the voice on, the side thrown is said as it changes, a few metres before the change so the word is done by then, and once
@@ -624,7 +767,7 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
       occs,
       handled: done,
       radius,
-      queue: queueRef.current.filter((o) => !gone.has(o.key)),
+      queue: up.filter((o) => !gone.has(o.key)),
       fresh,
       announced: announced.current,
       held: heldRef.current,
@@ -635,9 +778,12 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
     // Said whole, so the next alert waits for them instead of cutting them short; a no-throw row is a warning, which cuts off any other
     // alert's words and goes before them, but waits for a side word being said or asked before it (see `SayOptions.warning`); on this fix
     // it is asked for before the side word. Left out if the driver has gone by all they name before their turn comes.
-    if (plan.text) say(plan.text, { urgent: true, whole: true, warning: plan.noThrow, afterMs: beepSeconds * 1000, stale: alertWordsStale(plan.announce, occs, () => progressRef.current, radius) })
+    // (`gated`, as a bundle up by place is never gone by: judged along the route its words would be dropped for being behind the car.)
+    // A no-throw row that failed gets no second try once the car is level with it: named over the next houses it could be taken for one of them.
+    // Other alerts keep theirs, as their words are of use for longer and missing words are what drivers notice.
+    if (plan.text) say(plan.text, { urgent: true, whole: true, warning: plan.noThrow, afterMs: beepSeconds * 1000, stale: alertWordsStale(plan.announce, gated, () => progressRef.current, radius), retryStale: plan.noThrow ? alertWordsLevel(plan.announce, gated, () => progressRef.current, radius) : undefined })
     saySide()
-  }, [progress, handled, occs, allOccs, route, track, radius, headingDeg, saveRound, bundleNames])
+  }, [progress, handled, occs, allOccs, route, track, radius, headingDeg, saveRound, bundleNames, bundleOrder])
 
   // The alert showing is for the nearest no-throw house still ahead, or else the nearest of the others. For a no-throw house it is for
   // the whole row it is in, numbers and all, so the driver sees at once which houses to leave out, with an apartment block still to come
@@ -649,7 +795,10 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
   const current = pickCurrent(shown, driven, along, here0, radius)
   const row = current ? houseRow(route, allOccs, occs, handled, current, radius) : []
   const blockAhead = bannerBlock(shown, current, driven, along, here0, radius)
-  const waiting = bannerWaiting(shown, blockAhead ? [...row, blockAhead] : row, driven, along, here0, radius)
+  // A bundle's alert up behind another stop's banner keeps its Dropped button, in that banner.
+  const bundleUp = bannerBundle(shown, current)
+  const toDrop = current?.stop.type === 'bundle' ? current : bundleUp
+  const waiting = bannerWaiting(shown, [...row, ...(blockAhead ? [blockAhead] : []), ...(bundleUp ? [bundleUp] : [])], driven, along, here0, radius)
   // On the map, the houses the alert is for stand out, with their numbers.
   const activeStops = row.map((o) => o.stop.id)
   // Off the route: a line from the phone to where the route was left, and how far and which way that is.
@@ -705,6 +854,18 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
     },
     [],
   )
+  // Test Voice's words still to come go when the start screen does: the round starts, the voice goes off, or the Round tab is left.
+  useEffect(
+    () => () => {
+      stopVoiceTest.current?.()
+      stopVoiceTest.current = null
+    },
+    [started, voice],
+  )
+  // A call or Siri stops the audio, and with it the signal that keeps the car's audio open. Nothing else would bring it back until the next word was due.
+  useEffect(() => {
+    if (started && voice && keepAudio && fix) sound.nudge()
+  }, [fix, started, voice, keepAudio])
 
   const changeVoice = (on: boolean) => {
     setVoice(on)
@@ -739,7 +900,8 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
     heldRef.current = new Set(plan.held)
     if (plan.text) {
       for (const key of plan.announce) announced.current.add(key)
-      say(plan.text, { urgent: true, whole: true, warning: plan.noThrow, stale: alertWordsStale(plan.announce, occs, () => progressRef.current, radius) })
+      const named = keepPlaced(occs, showing)
+      say(plan.text, { urgent: true, whole: true, warning: plan.noThrow, stale: alertWordsStale(plan.announce, named, () => progressRef.current, radius), retryStale: plan.noThrow ? alertWordsLevel(plan.announce, named, () => progressRef.current, radius) : undefined })
       return
     }
     // On a stretch of transit that includes the turn a long way off, at the cue for where it is.
@@ -767,6 +929,15 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
     else sound.stopKeepAlive()
   }
 
+  /** Test Voice: unlocks sound from the tap, starts the signal if it is on, and says the side words as the road would. */
+  const tryVoice = () => {
+    stopVoiceTest.current?.()
+    sound.unlock()
+    if (keepAudio) sound.startKeepAlive()
+    unlockSpeech()
+    stopVoiceTest.current = testVoice((word) => say(word, { queue: true }))
+  }
+
   const changeAlertDistance = (distance: AlertDistance) => {
     setAlertDistance(distance)
     saveAlertDistance(distance)
@@ -786,16 +957,24 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
   /**
    * Start, or skip, to `metres` along the route: the stops before it count as done and those after it as not done, and the driver
    * is taken to be there. At 0 it is a fresh start, which forgets everything, bundles dropped and missed included. Skipping while driving
-   * keeps the heading the phone has.
+   * keeps the heading the phone has. `keepBundles` is for carrying on from where the driver came back onto the route: the bundles stay as
+   * they are (see `restartedRound`).
    */
-  const restartAt = (metres: number, skip: boolean) => {
+  const restartAt = (metres: number, skip: boolean, keepBundles = false) => {
     // A turn round not sure yet is taken as it stands (see `endTurnHold`): what it held or put by that the driver has gone by is done, a bundle
     // among it missed, before the spot decides the stops (and keeps those before it so).
-    const ended = doneNow([], endTurnHold(turnHold.current, progressRef.current?.along ?? 0, queueRef.current, radius), handledRef.current, true)
+    const ended = doneNow([], endTurnHold(turnHold.current, progressRef.current?.along ?? 0, queueRef.current, radius), handledRef.current, true, radius)
     if (ended.done.length) saveRound([...handledRef.current, ...ended.done.map((o) => o.key)], savedFurthest.current, ended.missed)
     turnHold.current = null
     setTurnHeld(NOTHING_HELD)
     seen.current.clear()
+    toldBehind.current.clear()
+    if (!skip) {
+      mayTellBehind.current.clear()
+      listNext.current = undefined
+    }
+    // A skip back to a spot behind the car has no stretch to catch up: what is after the spot comes up again, as the question that came before it said.
+    const skippedBack = skip && progressRef.current !== null && metres < progressRef.current.along
     const start = startProgress(track, metres)
     progressRef.current = start
     setProgress(start)
@@ -805,7 +984,8 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
     }
     savedFurthest.current = metres
     startMRef.current = metres
-    restartRef.current = metres > 0 ? metres : null
+    restartRef.current = metres > 0 && !skippedBack ? metres : null
+    lastJudged.current = null
     resumeRef.current = false
     // A round started or skipped to a spot has not reached the route yet, and has not left it.
     offRef.current = startOffRoute
@@ -828,9 +1008,9 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
     // back on the way in, which the car passes again, and a fresh start (at 0) gives the passes as `alertable` has them.
     const based = keepAlertsAhead(route, allOccs, occs, fresh, metres, radius).occs
     setLegs({ fresh, occs: based })
-    // Skipping keeps the bundles dropped or missed before the spot (and forgets those after it, which come up again); a fresh start forgets all.
+    // Skipping keeps the bundles dropped or missed before the spot (and forgets those after it, which come up again); carrying on keeps them all; a fresh start forgets all.
     // What that makes of the passes at the head of a court is kept with the round, in place of what it had (a fresh start has none).
-    const next = withCourtLegs(restartedRound(roundRef.current, based, metres, slackFor(radius), freshStart(skip, finishedRef.current)), courtLegsOf(fresh, based))
+    const next = withCourtLegs(restartedRound(roundRef.current, based, metres, slackFor(radius), freshStart(skip, finishedRef.current || overButBundlesRef.current), keepBundles), courtLegsOf(fresh, based))
     // A drop that is kept can still be taken back whole, with every pass it settled, until the driver leaves the Round tab.
     beforeDrop.current = keptBeforeDrop(beforeDrop.current, next)
     commitRound(next)
@@ -893,9 +1073,9 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
     go()
   }
 
-  /** What carrying on from `metres` along the route does to the stops: those before it not yet done count as done, and done ones after it come up again. */
-  const skipEffect = (metres: number): string => {
-    const { newly, back } = restartEffect(round, occs, handled, metres, slackFor(radius))
+  /** What carrying on from `metres` along the route does to the stops: those before it not yet done count as done, and done ones after it come up again. With `keepBundles`, as it does, no bundle is among them. */
+  const skipEffect = (metres: number, keepBundles = false): string => {
+    const { newly, back } = restartEffect(round, occs, handled, metres, slackFor(radius), false, keepBundles)
     return [newly > 0 ? `${plural(newly, 'stop', 'stops')} before it will count as done.` : '', back > 0 ? `${plural(back, 'stop', 'stops')} after it will come up again.` : ''].filter(Boolean).join(' ')
   }
 
@@ -907,11 +1087,11 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
     setPicker(null)
   }
 
-  /** Back on the route somewhere else, and the driver says to carry on from here: as if that place had been skipped to. */
+  /** Back on the route somewhere else, and the driver says to carry on from here: as if that place had been skipped to, but for the bundles, as they may be going back for one. */
   const carryOnHereNow = () => {
     const p = progressRef.current
     if (!p) return
-    restartAt(p.along, true)
+    restartAt(p.along, true, true)
   }
 
   /** Back on the route somewhere else, and the driver says to be taken back to where it was left: the guide carries on to there. */
@@ -972,6 +1152,28 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
     // An alert that was up for it has no more to ask.
     dropBundle(key)
     sound.dropped()
+  }
+
+  /**
+   * A new order from the Bundles list. One that changes the bundle next is the driver's own decision about both, so nothing from before stands for either. The one taken off the top is
+   * forgotten as told of: driven past after that, it is not told of unless the list comes back to it by itself, and then it is, even if it was before. The one put on top does not count as
+   * come to by itself: already behind the car it is not told of, and with a pass ahead it goes back in with the next fix (see `mayTellBehind`). It answers only for what the car goes by
+   * from here on (see `nextHoldsUp`), so the driver is not told straight back of what they have just decided. Before the route is reached nothing is known of where the car is, so the
+   * bundle next then counts as come to, whichever it is.
+   */
+  const changeOrder = (order: string[]) => {
+    const was = nextBundleId(occs, roundRef.current, bundleOrder)
+    const now = nextBundleId(occs, roundRef.current, order)
+    if (was !== now) {
+      if (was !== null) toldBehind.current.delete(was)
+      if (now !== null) {
+        toldBehind.current.delete(now)
+        mayTellBehind.current.delete(now)
+      }
+      listNext.current = reachedRef.current ? now : undefined
+      goneBefore.current = behindLast.current
+    }
+    onBundleOrder(order)
   }
 
   /** Message for a while, or until it is taken back. */
@@ -1089,102 +1291,145 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
     )
   }
 
-  const { total, remaining, done, finished } = roundCounts(occs, handled)
-  // A round that has been started part way, or driven some way, carries on from there even when no stop has been done.
-  const carryOn = continueFrom(round, allOccs, handled)
-  // With nothing to carry on, the one button starts afresh (as Start Over does). With nothing done that is where the round would carry on
-  // from anyway, but what a change of side made of the passes at the head of a court is forgotten, so a house it left out alerts again on the new drive.
-  const partial = remaining > 0 && (done > 0 || carryOn > 0)
-
   if (!started && picker === 'start') {
     return (
       <div className="screen">
-        <StartPicker route={route} sections={sections} occs={occs} handled={handled} round={round} slack={slackFor(radius)} position={fix} mode="start" onPick={(m) => beginAt(m)} onClose={() => setPicker(null)} />
+        {/* A start on a round over but for its bundles is a new round (see `freshStart`), so the picker works out what the spot does from none, or what it said would not be what happens. */}
+        <StartPicker route={route} sections={sections} occs={occs} handled={handled} round={overButBundles ? { handledStopIds: [] } : round} slack={slackFor(radius)} position={fix} mode="start" onPick={(m) => beginAt(m)} onClose={() => setPicker(null)} />
         {dialog}
       </div>
     )
   }
 
+  /** Bundle drop order: the list with its Reorder, of the round kept while it has bundles to move and is not over but for them, and otherwise of the next round. */
+  const openBundleOrder = () => {
+    setOrderForNext(overButBundles || bundlesLeft(rows) < 2)
+    setBundlesOpen(true)
+  }
+
   if (!started) {
-    return (
-      <div className="screen plain">
-        <div className="hero">
-          <div className="hero-icon">
-            <Icon name="navigation" size={42} strokeWidth={1.7} fill />
-          </div>
-          <h1>Ready to Deliver</h1>
-          <RouteChip name={routeName} onClick={onGoRoutes} />
-          <p>
-            {formatDistance(routeLength(route.points))} · {plural(total, 'special stop', 'special stops')}
-            {partial && ` · ${done} of ${total} done`}
-            {partial && carryOn > 0 && ` · carries on from ${formatDistance(carryOn)}`}
-          </p>
-          {finished && <p className="fine">Your last round is finished, so this will start a new one.</p>}
-          <p className="fine">
-            You'll only be alerted for bundle drops, no‑throw houses, special requests and apartment blocks. Keep the phone unlocked and mounted, because GPS pauses when the screen is off.
-          </p>
-          <div className="alert-setting">
-            <div className="brush-label">Alert distance</div>
-            <Segmented
-              label="How close to a stop its alert comes up, in metres"
-              value={String(alertDistance)}
-              options={ALERT_DISTANCES.map((d) => ({ value: String(d), label: String(d) }))}
-              onChange={(v) => changeAlertDistance(Number(v) as AlertDistance)}
-            />
-            <p className="fine">
-              In metres. An alert comes up when you are within {alertDistance} m of a stop, and goes by itself once you are further away than that.
-            </p>
-          </div>
-          {speechAvailable() && (
-            <div className="alert-setting">
-              <div className="brush-label">Voice</div>
-              <Segmented
-                label="Whether turns, house numbers, and leaving or rejoining the route are said out loud"
-                value={voice ? 'on' : 'off'}
-                options={[
-                  { value: 'off', label: 'Off' },
-                  { value: 'on', label: 'On' },
-                ]}
-                onChange={(v) => changeVoice(v === 'on')}
-              />
-              <p className="fine">Turns always show as an arrow on the map. With the voice on it says them out loud too, and the numbers of the houses to look for, and when you leave the route or are back on it.</p>
-              {voice && (
-                <>
-                  <button className="btn secondary block" data-on={keepAudio || undefined} aria-pressed={keepAudio} onClick={() => changeKeepAudio(!keepAudio)}>
-                    <Icon name={keepAudio ? 'check' : 'volume-x'} size={18} />
-                    Keep car audio awake
-                  </button>
-                  <p className="fine">Plays a sound too quiet to hear, so a car or speaker doesn't cut off the start of the voice.</p>
-                </>
-              )}
-            </div>
-          )}
-          {missingStreets > 0 && (
-            <p className="fine">
-              {plural(missingStreets, 'turn has', 'turns have')} no street name yet. Look them up in Setup, under Route, and the turns will say where they lead.
-            </p>
-          )}
-          {partial ? (
-            <>
-              <button className="btn primary block" onClick={() => begin(false)}>
+    const startButtons = (
+      <>
+        {partial ? (
+          <>
+            <button className="btn primary block" onClick={() => begin(false)}>
+              Continue Round
+            </button>
+            <button className="btn plain" onClick={() => begin(true)}>
+              Start Over
+            </button>
+          </>
+        ) : (
+          <>
+            <button className="btn primary block" onClick={() => begin(true)}>
+              {finished || overButBundles ? 'Start New Round' : 'Start Round'}
+            </button>
+            {overButBundles && (
+              <button className="btn plain" onClick={() => begin(false)}>
                 Continue Round
               </button>
-              <button className="btn plain" onClick={() => begin(true)}>
-                Start Over
+            )}
+          </>
+        )}
+        <button className="btn secondary block" onClick={() => setPicker('start')}>
+          <Icon name="flag" size={18} />
+          Choose Where to Start
+        </button>
+      </>
+    )
+    return (
+      <>
+        <div className="screen plain">
+          <div className="hero">
+            <div className="hero-icon">
+              <Icon name="navigation" size={42} strokeWidth={1.7} fill />
+            </div>
+            <h1>Ready to Deliver</h1>
+            <RouteChip name={routeName} onClick={onGoRoutes} />
+            <p>
+              {formatDistance(routeLength(route.points))} · {plural(total, 'special stop', 'special stops')}
+              {partial && ` · ${done} of ${total} done`}
+              {partial && carryOn > 0 && ` · carries on from ${formatDistance(carryOn)}`}
+            </p>
+            {/* A round to carry on has these first: nothing alerts until one is tapped, and what to load is for the start of a round. */}
+            {partial && startButtons}
+            {finished && <p className="fine">Your last round is finished, so this will start a new one.</p>}
+            {overButBundles && <p className="fine">Your last round reached the end with {plural(bundlesLeft(rows), 'bundle drop', 'bundle drops')} still to do, so this will start a new one.</p>}
+            <p className="fine">
+              You'll only be alerted for bundle drops, no‑throw houses, special requests and apartment blocks. Keep the phone unlocked and mounted, because GPS pauses when the screen is off.
+            </p>
+            <LoadCard load={load} onLoad={onLoad} />
+            {rows.length >= 2 && (
+              <button className="btn secondary block" onClick={openBundleOrder}>
+                <Icon name="list" size={18} />
+                Bundle drop order
               </button>
-            </>
-          ) : (
-            <button className="btn primary block" onClick={() => begin(true)}>
-              {finished ? 'Start New Round' : 'Start Round'}
-            </button>
-          )}
-          <button className="btn secondary block" onClick={() => setPicker('start')}>
-            <Icon name="flag" size={18} />
-            Choose Where to Start
-          </button>
+            )}
+            <div className="alert-setting">
+              <div className="brush-label">Alert distance</div>
+              <Segmented
+                label="How close to a stop its alert comes up, in metres"
+                value={String(alertDistance)}
+                options={ALERT_DISTANCES.map((d) => ({ value: String(d), label: String(d) }))}
+                onChange={(v) => changeAlertDistance(Number(v) as AlertDistance)}
+              />
+              <p className="fine">
+                In metres. An alert comes up when you are within {alertDistance} m of a stop, and goes by itself once you are further away than that.
+              </p>
+            </div>
+            {speechAvailable() && (
+              <div className="alert-setting">
+                <div className="brush-label">Voice</div>
+                <Segmented
+                  label="Whether turns, house numbers, and leaving or rejoining the route are said out loud"
+                  value={voice ? 'on' : 'off'}
+                  options={[
+                    { value: 'off', label: 'Off' },
+                    { value: 'on', label: 'On' },
+                  ]}
+                  onChange={(v) => changeVoice(v === 'on')}
+                />
+                <p className="fine">Turns always show as an arrow on the map. With the voice on it says them out loud too, and the numbers of the houses to look for, and when you leave the route or are back on it.</p>
+                {voice && (
+                  <>
+                    <button className="btn secondary block" data-on={keepAudio || undefined} aria-pressed={keepAudio} onClick={() => changeKeepAudio(!keepAudio)}>
+                      <Icon name={keepAudio ? 'check' : 'volume-x'} size={18} />
+                      Keep car audio awake
+                    </button>
+                    <p className="fine">Plays a sound too quiet to hear, so a car or speaker doesn't cut off the start of the voice.</p>
+                    <button className="btn secondary block" onClick={tryVoice}>
+                      <Icon name="volume-2" size={18} />
+                      Test Voice
+                    </button>
+                    <p className="fine">Says the throw side words one at a time with a silence between them, as they come on the road. Try it over the car's speakers before you set off.</p>
+                  </>
+                )}
+              </div>
+            )}
+            {missingStreets > 0 && (
+              <p className="fine">
+                {plural(missingStreets, 'turn has', 'turns have')} no street name yet. Look them up in Setup, under Route, and the turns will say where they lead.
+              </p>
+            )}
+            {!partial && startButtons}
+          </div>
+          {dialog}
         </div>
-        {dialog}
-      </div>
+        {/* Beside the scrolling screen, not in it: the sheet's scrim fills what it is in, which scrolled would take it off the screen. */}
+        {bundlesOpen && (
+          <div className="screen">
+            <BundlesSheet
+              rows={orderForNext ? nextRoundRows(occs, bundleOrder, phoneAt) : rows}
+              heading={orderForNext ? 'Bundles, next round' : undefined}
+              order={bundleOrder}
+              onOrder={changeOrder}
+              onClose={() => setBundlesOpen(false)}
+              onMark={markFromList}
+              onUndo={takeBackDrop}
+            />
+          </div>
+        )}
+      </>
     )
   }
 
@@ -1238,7 +1483,7 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
             moved={off.left ? progress.along - off.left.along : 0}
             leftAt={off.left?.along}
             nowAt={progress.along}
-            effect={off.phase === 'rejoined' ? skipEffect(progress.along) : undefined}
+            effect={off.phase === 'rejoined' ? skipEffect(progress.along, true) : undefined}
             onCarryOn={carryOnHereNow}
             onTakeBack={takeBackNow}
           />
@@ -1252,8 +1497,9 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
             ahead={ahead}
             side={currentSide}
             waiting={waiting}
-            onDropped={current.stop.type === 'bundle' ? () => dropFromAlert(current) : undefined}
+            onDropped={toDrop ? () => dropFromAlert(toDrop) : undefined}
             blockAhead={blockAhead ? { stop: blockAhead.stop, side: blockSide } : undefined}
+            bundleUp={bundleUp?.stop}
           />
         )}
       </div>
@@ -1301,7 +1547,7 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
         />
       )}
 
-      {bundlesOpen && <BundlesSheet rows={rows} order={bundleOrder} onOrder={onBundleOrder} onClose={() => setBundlesOpen(false)} onMark={markFromList} onUndo={takeBackDrop} />}
+      {bundlesOpen && <BundlesSheet rows={rows} order={bundleOrder} onOrder={changeOrder} onClose={() => setBundlesOpen(false)} onMark={markFromList} onUndo={takeBackDrop} />}
 
       {picker === 'jump' && (
         <StartPicker route={route} sections={sections} occs={occs} handled={handled} round={round} slack={slackFor(radius)} position={fix} mode="jump" onPick={(m, name) => void skipTo(m, name)} onClose={() => setPicker(null)} />

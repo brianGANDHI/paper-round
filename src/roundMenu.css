@@ -41,6 +41,19 @@
   .screen:has(.stop-alert.ask) .round-menu {
     max-height: calc(100% - 330px);
   }
+
+  .screen:has(.bundle-strip) .round-menu {
+    max-height: calc(100% - 330px);
+  }
+
+  /* A strip for a bundle under a block's strip or two lines of plates is the tallest banner there is, so the menu keeps that much more room. */
+  .screen:has(.bundle-strip):has(.block-strip) .round-menu {
+    max-height: calc(100% - 420px);
+  }
+
+  .screen:has(.stop-alert.tall .bundle-strip) .round-menu {
+    max-height: calc(100% - 420px);
+  }
 }
 
 /* The groups of rows keep their height when the menu is shorter than they are (under an alert), so the menu scrolls and no row is cut off. */

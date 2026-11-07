@@ -10,10 +10,10 @@ export const SIDE_COLOR: Record<Side, string> = { both: '#007aff', left: '#34c75
 /** Deeper shades of the same colours, so white text on the side pill stays readable at a glance. */
 export const SIDE_PILL: Record<Side, string> = { both: '#0a6ae0', left: '#2b9a4a', right: '#cf6100', transit: '#b4246f' }
 
-export const SIDE_LABEL: Record<Side, string> = { both: 'Both Sides', left: 'Left Side', right: 'Right Side', transit: 'Transit' }
+export const SIDE_LABEL: Record<Side, string> = { both: 'Both Sides', left: 'Port Side', right: 'Starboard Side', transit: 'Transit' }
 
 /** The same in a word, for where there is little room. */
-export const SIDE_SHORT: Record<Side, string> = { both: 'Both', left: 'Left', right: 'Right', transit: 'Transit' }
+export const SIDE_SHORT: Record<Side, string> = { both: 'Both', left: 'Port', right: 'Starboard', transit: 'Transit' }
 
 /**
  * The colour of each kind of stop on the map and in the list. An apartment block is a blue-green teal: not the blue of a bundle drop, the

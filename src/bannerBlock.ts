@@ -48,8 +48,16 @@ export function bannerBlock(
 }
 
 /**
+ * The bundle drop to carry in the banner of another stop: while `current` (the alert showing, see `pickCurrent`) is not a bundle's, the bundle alert in the queue, gone by or not. A live
+ * no-throw house is always the alert, so a bundle at the same spot as one would never get its banner, and its Dropped button is the only way to confirm it: without it a driver who did
+ * everything right has it counted missed, and on a street driven again it stays next and holds up every bundle after it. Null when there is none, or the banner is a bundle's own.
+ */
+export const bannerBundle = (queue: readonly Occurrence[], current: Occurrence | undefined): Occurrence | null =>
+  !current || current.stop.type === 'bundle' ? null : (queue.find((o) => o.stop.type === 'bundle') ?? null)
+
+/**
  * How many alerts are waiting behind the banner, for its badge: the stops in the queue that it does not show (`shown`: the row of houses
- * it is for, and a block shown in it), leaving out those the driver has gone by, which are only waiting to go.
+ * it is for, and a block or a bundle drop shown in it), leaving out those the driver has gone by, which are only waiting to go.
  */
 export function bannerWaiting(
   queue: readonly Occurrence[],

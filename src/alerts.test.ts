@@ -841,6 +841,12 @@ describe('a stop that is off the route', () => {
       expect(zoneExit(off(), 500, zone)).toBeNull()
     })
 
+    it('reaches the road and the slack for a bundle set back from it, when it is met by where the driver is because the road has gone by', () => {
+      const placed: Occurrence = { ...off('bundle', 60), placed: true }
+      expect(zoneExit(placed, 500, zone, at(60 + 15 + BACK_OFF_SLACK_M))).toBeNull()
+      expect(zoneExit(placed, 500, zone, at(60 + 15 + BACK_OFF_SLACK_M + 1))).toBe('passed')
+    })
+
     it('goes by the zone of its own kind of stop', () => {
       const wide = { nothrow: 60, bundle: 20, request: 20, block: 20 }
       expect(zoneExit(off('bundle'), 500, wide, at(40))).toBe('passed')
@@ -1715,15 +1721,15 @@ describe('an apartment block', () => {
 
   describe('out loud', () => {
     it('says how many papers and which side', () => {
-      expect(alertSpeech([block({ qty: 12 })], 'left')).toBe('Apartment block, 12 papers, left.')
-      expect(alertSpeech([block({ qty: 12 })], 'right')).toBe('Apartment block, 12 papers, right.')
-      expect(alertSpeech([block({ qty: 1 })], 'left')).toBe('Apartment block, 1 paper, left.')
+      expect(alertSpeech([block({ qty: 12 })], 'left')).toBe('Apartment block, 12 papers, port.')
+      expect(alertSpeech([block({ qty: 12 })], 'right')).toBe('Apartment block, 12 papers, starboard.')
+      expect(alertSpeech([block({ qty: 1 })], 'left')).toBe('Apartment block, 1 paper, port.')
     })
 
     it('says its number, or what it is called, as the other alerts do', () => {
-      expect(alertSpeech([block({ address: '9 Elm Street', qty: 12 })], 'left')).toBe('Apartment block, 9, 12 papers, left.')
-      expect(alertSpeech([block({ label: 'Oak Towers', qty: 12 })], 'right')).toBe('Apartment block, Oak Towers, 12 papers, right.')
-      expect(alertSpeech([block({ address: '12A Elm Street', qty: 3 })], 'left')).toBe('Apartment block, 12 A, 3 papers, left.')
+      expect(alertSpeech([block({ address: '9 Elm Street', qty: 12 })], 'left')).toBe('Apartment block, 9, 12 papers, port.')
+      expect(alertSpeech([block({ label: 'Oak Towers', qty: 12 })], 'right')).toBe('Apartment block, Oak Towers, 12 papers, starboard.')
+      expect(alertSpeech([block({ address: '12A Elm Street', qty: 3 })], 'left')).toBe('Apartment block, 12 A, 3 papers, port.')
     })
 
     it('leaves the side out when it cannot be told', () => {
@@ -1732,9 +1738,9 @@ describe('an apartment block', () => {
     })
 
     it('leaves the papers out when there is no count', () => {
-      expect(alertSpeech([block()], 'left')).toBe('Apartment block, left.')
-      expect(alertSpeech([block({ address: '9 Elm Street' })], 'right')).toBe('Apartment block, 9, right.')
-      expect(alertSpeech([block({ qty: 0 })], 'left')).toBe('Apartment block, left.')
+      expect(alertSpeech([block()], 'left')).toBe('Apartment block, port.')
+      expect(alertSpeech([block({ address: '9 Elm Street' })], 'right')).toBe('Apartment block, 9, starboard.')
+      expect(alertSpeech([block({ qty: 0 })], 'left')).toBe('Apartment block, port.')
       expect(alertSpeech([block()])).toBe('Apartment block.')
     })
 
@@ -1758,7 +1764,7 @@ describe('an apartment block', () => {
       const house = q('12', 'nothrow', 100, { address: '12 Oak Road' })
       const flats = q('b', 'block', 90, { address: '9 Elm Street', qty: 12 })
       const plan = planSpeech([flats, house], () => [house], new Set(), () => 'left')
-      expect(plan.text).toBe('No throw, 12. Apartment block, 9, 12 papers, left.')
+      expect(plan.text).toBe('No throw, 12. Apartment block, 9, 12 papers, port.')
       // It is not a row of houses, so it is not among those marked as said.
       expect(plan.announce).toEqual(['12'])
     })
@@ -1774,7 +1780,7 @@ describe('an apartment block', () => {
       const bundle = q('d', 'bundle', 80, { qty: 2, address: '7 Elm Street' })
       const flats = q('b', 'block', 90, { qty: 12 })
       const plan = planSpeech([bundle, flats], () => [], new Set(), (o) => (asked.push(o.key), 'right'))
-      expect(plan.text).toBe('Bundle drop, 7, 2 papers. Apartment block, 12 papers, right.')
+      expect(plan.text).toBe('Bundle drop, 7, 2 papers. Apartment block, 12 papers, starboard.')
       expect(asked).toContain('b')
     })
   })
@@ -2512,5 +2518,44 @@ describe('a house at the turn-round of a court', () => {
         })
       })
     })
+  })
+})
+
+describe('an alert met by where the driver is though its stop is beside the route', () => {
+  const zone = alertRadius(40)
+  const stop: Stop = { id: 'b', type: 'bundle', pathIdx: 0, lat: 0, lng: 0 }
+  const pass: Occurrence = { key: 'b', stop, idx: 0, at: 500, off: 8 }
+  const placed: Occurrence = { ...pass, placed: true }
+  /** `m` metres north of the stop (a degree of latitude is about 111.2 km). */
+  const north = (m: number): Pt => ({ lat: m / 111200, lng: 0 })
+
+  it('leaves its zone by the distance from the stop, not by where along the route the driver is, and only ever on past it', () => {
+    // A long way on along the route, with the alert just up: along the route it would be gone by at once.
+    expect(zoneExit(pass, 1000, zone, north(30))).toBe('passed')
+    expect(zoneExit(placed, 1000, zone, north(30))).toBeNull()
+    expect(zoneExit(placed, 1000, zone, north(40 + BACK_OFF_SLACK_M - 1))).toBeNull()
+    expect(zoneExit(placed, 1000, zone, north(40 + BACK_OFF_SLACK_M + 1))).toBe('passed')
+    // And with the driver put back before it along the route: not backed away from.
+    expect(zoneExit(placed, 100, zone, north(30))).toBeNull()
+  })
+
+  it('is as far away as it is, in a straight line, and is never gone by', () => {
+    expect(aheadOf(pass, 1000, north(30), zone)).toBe(-500)
+    expect(aheadOf(placed, 1000, north(30), zone)).toBeCloseTo(30, 0)
+    expect(isGoneBy(pass, 1000, 1000, north(30), zone)).toBe(true)
+    expect(isGoneBy(placed, 1000, 1000, north(30), zone)).toBe(false)
+  })
+
+  it('counts as live for the banner, so its Dropped button shows, where one judged along the route would be gone by and give way', () => {
+    // 30 m from the stop, 1000 m along the route, with a special request 35 m ahead.
+    const request: Occurrence = { key: 'r', stop: { id: 'r', type: 'request', pathIdx: 0, lat: 0, lng: 0 }, idx: 0, at: 1035, off: 8 }
+    expect(pickCurrent([pass, request], 1000, 1000, north(30), zone)?.key).toBe('r')
+    expect(pickCurrent([placed, request], 1000, 1000, north(30), zone)?.key).toBe('b')
+    expect(pickCurrent([placed], 1000, 1000, north(30), zone)).toBe(placed)
+  })
+
+  it('does not change where a no-throw row goes: a bundle alone, as ever', () => {
+    const route = { points: [north(0), north(1000)], sideChanges: [{ idx: 0, side: 'both' as Side }] }
+    expect(houseRow(route, [pass], [pass], new Set(), placed, zone)).toEqual([placed])
   })
 })

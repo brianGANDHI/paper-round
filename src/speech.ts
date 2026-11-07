@@ -15,7 +15,10 @@ import { sound } from './sound'
  * their turn comes are left out, but those a queued cue cut off part way only a moment ago are said again all the same, as they waited
  * out no more than a word, the first time only (see `CUT_GRACE_MS`). Before the words, a tick opens the audio link to a car or speaker (or
  * the keep-alive signal already has), because the first part of a sound sent down a link that has gone idle is lost, which is the start
- * of a spoken turn going missing.
+ * of a spoken turn going missing. After a silence, more than that is done (see `COLD_MS`): a soft opener instead of the tick when nothing
+ * is keeping the link open, and with or without the signal a lead-in, said very quietly just before the words (see `LEAD_IN`). Words that
+ * do not start, whether the phone says they failed or says nothing, are stopped and tried once more, unless it is too late for that by then
+ * (see `SayOptions.retryStale`).
  */
 
 /** The wait between the tick and the first word, in milliseconds, so the word starts while the tick is still on the link. */
@@ -24,8 +27,18 @@ const LEAD_MS = 120
 const CANCEL_GAP_MS = 80
 /** The wait between one cue ending and the next, in milliseconds, so the two don't run together. */
 const FLUSH_GAP_MS = 200
-/** How long a word may take to start before it is tried again, in milliseconds. */
-const WATCHDOG_MS = 2500
+/** How long a word may take to start before it is tried again, in milliseconds. iOS can be slow over the first word, and stopping one about to start loses it. */
+export const WATCHDOG_MS = 4000
+/** How much longer words may take to start with a lead-in before them, in milliseconds, as they start only when it is over. */
+export const LEAD_IN_ALLOW_MS = 1500
+/**
+ * How long words may take to end once started, in milliseconds: this, with `END_WORD_MS` for each word. If iOS sends neither an end nor an
+ * error they are taken to be over, or the voice would wait on them for the rest of the round, as an urgent cue can't break in on a cue
+ * said whole. Generous, as stopping words still being said loses their end, and a long row of houses is slow: a number of four digits
+ * counts here as one word, but takes several to say, with a pause after it.
+ */
+export const END_ALLOW_MS = 3000
+export const END_WORD_MS = 1200
 /** The most cues said whole kept waiting: past this the one that matters least is let go (see `trim` in `createSpeaker`). */
 export const QUEUE_MAX = 4
 
@@ -39,6 +52,23 @@ export const QUEUE_MAX = 4
  * fix) lost nothing, and are not given it then: they keep it for the first cut that takes words from them.
  */
 export const CUT_GRACE_MS = 2000
+
+/**
+ * How long the phone may stay quiet before the start of the next sound can be lost, in milliseconds: about when a Bluetooth link, a car's
+ * silence gate or the phone's own speech has gone back to sleep. Past this with nothing said, words get a lead-in, whatever else has been
+ * played, as only speech wakes the phone's speech. Past this with no sound of any kind either, the opener goes in place of the tick.
+ */
+export const COLD_MS = 2000
+
+/** How long words wait from the start of the opener, in milliseconds: a link gone idle wakes on the opener, and is open by the time it is over. */
+const OPEN_WAIT_MS = 700
+
+/**
+ * Said just before words that come after a silence, so quietly it is not heard, so that whatever is lost of the start of the sound is this and
+ * not the first word. It matters most for a no-throw house: without its first word, "No throw, 17" says the opposite of what it means. It
+ * is said by the phone's speech, as the words are, so it goes down the same way and wakes the same things, which a tick can't.
+ */
+export const LEAD_IN = { text: 'uh', volume: 0.02 } as const
 
 /**
  * The kinds of cue said whole (see `SayOptions`): words that warn of a wrong throw (`warning`), a queued word such as the side now thrown
@@ -107,6 +137,12 @@ export interface SayOptions {
   warning?: boolean
   /** Asked just before the words start: true when they are out of date by then, such as a turn already made. */
   stale?: () => boolean
+  /**
+   * Asked, as well as `stale`, before a second try at words that did not start: true when that try is left out. For words with a tighter
+   * limit once they have failed: a second try starts late, and a no-throw house first named over the houses after it can be taken for one
+   * of them, which should get a paper. A first try is not asked about it, and one that fails counts as true, as `stale` does.
+   */
+  retryStale?: () => boolean
   /** Waits at least this long before the words, in milliseconds: a beep that has just started needs time to finish. */
   afterMs?: number
 }
@@ -117,6 +153,8 @@ interface Cue {
   /** Its kind when it is said whole, or null for an ordinary cue. */
   kind: Kind | null
   stale?: () => boolean
+  /** See `SayOptions.retryStale`. It stays with words a queued cue cut off (see `again`), and no grace is given from it. */
+  retryStale?: () => boolean
   afterMs: number
   /** When it was asked for, so a wait for a beep is counted from then and not from when its turn came. */
   at: number
@@ -137,8 +175,17 @@ export interface SpeakerDeps<U extends Utterance> {
   ready: () => Promise<boolean>
   /** Whether a signal is already keeping the link open. */
   keepingAlive: () => boolean
-  /** Plays the opening tick, and says how long it lasts, in seconds. */
+  /** Plays the opening tick, and says how long it lasts, in seconds: none, if it could not be played. */
   tick: () => number
+  /**
+   * Plays the soft opener, for a link that has been quiet (see `COLD_MS`), and says how long it lasts, in seconds: none, if it could not be
+   * played. The tick stands in for it when left out.
+   */
+  opener?: () => number
+  /** When a beep or a tick last went out, on the same clock as `now`: left out, only speech is counted as sound going out. */
+  lastSound?: () => number
+  /** What to say very quietly just before words after a silence (see `LEAD_IN`). Left out, nothing is. */
+  leadIn?: { text: string; volume: number }
   language: () => string
   wait: (ms: number) => Promise<void>
   /** The time in milliseconds, for how long a cue has waited. The clock by default. */
@@ -154,23 +201,35 @@ export function createSpeaker<U extends Utterance>(deps: SpeakerDeps<U>) {
   let current: Cue | null = null
   /** The utterance being said, held so it isn't lost before it is finished. */
   const held: { current: U | null } = { current: null }
+  /** The lead-in before it, held until it is over or the words start. While it is here, the words have not begun. */
+  const heldLead: { current: U | null } = { current: null }
+  /** The silent word said from a tap, held until it is over. */
+  const heldUnlock: { current: U | null } = { current: null }
+  /** The utterance in `held` has started and not ended, so the phone is speaking now. */
+  let saying = false
+  /** When the phone last spoke, as far as is known (see `COLD_MS`). A silent word or a lead-in cut off short does not count: neither got sound through. */
+  let spokeAt = -Infinity
   /** The newest ordinary cue that is waiting its turn. */
   let waiting: Cue | null = null
   /** An ordinary urgent cue that could not break in, as a cue said whole was being said: it is next after the cues said whole that wait. */
   let waitingUrgent: Cue | null = null
   /** The cues said whole that wait: the highest rank first, and in a rank the oldest first. */
   let queued: Cue[] = []
+  /** The timer on the words in `held`: until they start, for how long they may take to, and then for how long they may take to end. */
   let watchdog: ReturnType<typeof setTimeout> | null = null
   const now = deps.now ?? (() => Date.now())
 
-  /** Whether a cue's words are out of date now (see `SayOptions.stale`). One whose check fails is taken to be, as it can't be said. */
-  const outOfDate = (cue: Cue): boolean => {
+  /** What a cue's check says now, if it has one. A check that fails counts as true: a cue can't be judged by it, so it is not said. */
+  const asked = (check?: () => boolean): boolean => {
     try {
-      return cue.stale?.() ?? false
+      return check?.() ?? false
     } catch {
       return true
     }
   }
+
+  /** Whether a cue's words are out of date now (see `SayOptions.stale`). */
+  const outOfDate = (cue: Cue): boolean => asked(cue.stale)
 
   /** A cue's rank (see `RANK`): an ordinary cue's is below them all. */
   const rankOf = (cue: Cue): number => (cue.kind ? RANK[cue.kind] : -1)
@@ -234,9 +293,31 @@ export function createSpeaker<U extends Utterance>(deps: SpeakerDeps<U>) {
     }
   }
 
+  /** Whether the cue being said has reached the phone and is past its lead-in: until then, stopping it loses none of its words. */
+  const begun = () => held.current !== null && heldLead.current === null
+
+  /**
+   * Stops the phone and lets go of what it was saying, whose late events are then nothing to do with what comes next. Stopped words
+   * count as spoken up to now. A lead-in stopped does not, however long it ran, as what it was there to get through it may not have.
+   */
+  const hush = () => {
+    if (saying) spokeAt = now()
+    saying = false
+    held.current = null
+    heldLead.current = null
+    if (watchdog) clearTimeout(watchdog)
+    watchdog = null
+    try {
+      deps.cancel()
+    } catch {
+      // The phone won't stop. What comes next goes on all the same.
+    }
+  }
+
   const settle = (mine: number) => {
     if (mine !== epoch) return
     held.current = null
+    heldLead.current = null
     if (watchdog) clearTimeout(watchdog)
     watchdog = null
     const next = takeNext()
@@ -257,33 +338,112 @@ export function createSpeaker<U extends Utterance>(deps: SpeakerDeps<U>) {
     return u
   }
 
+  /** Sends something down a link that nothing is keeping open, and says how long the words must wait for it, in milliseconds. */
+  const openLink = (): number => {
+    // Nothing has gone out for a while, so the link has gone idle, and is not woken by as short a sound as the tick.
+    if (deps.opener && now() - Math.max(spokeAt, deps.lastSound?.() ?? -Infinity) > COLD_MS) {
+      const opening = deps.opener() * 1000
+      // An opener that could not be played wakes nothing, so the words have nothing to wait for.
+      return opening > 0 ? Math.max(OPEN_WAIT_MS, LEAD_MS + opening) : LEAD_MS
+    }
+    return LEAD_MS + deps.tick() * 1000
+  }
+
+  /**
+   * Says the lead-in, when the phone has been quiet long enough to need one, to go just ahead of the words. Says whether it did. It is not
+   * worth losing the words for: if the phone won't take it, they are said without it.
+   */
+  function sayLeadIn(): boolean {
+    if (!deps.leadIn || now() - spokeAt <= COLD_MS) return false
+    const lead = voiced(deps.makeUtterance(deps.leadIn.text))
+    lead.volume = deps.leadIn.volume
+    const over = () => {
+      if (heldLead.current !== lead) return false
+      heldLead.current = null
+      return true
+    }
+    lead.onend = () => {
+      if (over()) spokeAt = now()
+    }
+    lead.onerror = over
+    heldLead.current = lead
+    try {
+      deps.speak(lead)
+      return true
+    } catch {
+      heldLead.current = null
+      return false
+    }
+  }
+
   function utter(cue: Cue, mine: number, retry: boolean) {
     const u = voiced(deps.makeUtterance(cue.text))
     let started = false
+    // Each of these is for these words alone: a late event from words stopped, as Safari sends, has nothing to say about what came after them.
     u.onstart = () => {
+      if (held.current !== u) return
       started = true
+      saying = true
+      spokeAt = now()
+      heldLead.current = null
       if (watchdog) clearTimeout(watchdog)
-      watchdog = null
+      watchdog = setTimeout(
+        () => {
+          if (held.current !== u) return
+          hush()
+          settle(mine)
+        },
+        END_ALLOW_MS + END_WORD_MS * cue.text.trim().split(/\s+/).length,
+      )
     }
-    u.onend = () => settle(mine)
-    // Safari reports a cancelled word as an error, not as an end.
-    u.onerror = () => settle(mine)
-    held.current = u
-    try {
-      if (deps.paused()) deps.resume()
-      deps.speak(u)
-    } catch {
+    const ended = () => {
+      if (held.current !== u) return
+      if (saying) spokeAt = now()
+      saying = false
       settle(mine)
-      return
     }
-    watchdog = setTimeout(() => {
-      if (started || mine !== epoch) return
-      deps.cancel()
+    /** The phone has not started the words, so none of them were heard: they are stopped, and said once more if this was the first try. */
+    const tryAgain = () => {
+      hush()
       if (!retry) return settle(mine)
       void deps.wait(CANCEL_GAP_MS).then(() => {
-        if (mine === epoch) utter(cue, mine, false)
+        if (mine !== epoch) return
+        // A wait this long can leave them out of date, as a turn made while the phone would not start, or too late for a second try.
+        if (outOfDate(cue) || asked(cue.retryStale)) return settle(mine)
+        try {
+          utter(cue, mine, false)
+        } catch {
+          settle(mine)
+        }
       })
-    }, WATCHDOG_MS)
+    }
+    u.onend = ended
+    // Part way, the words are over: what is left of them is not worth a start from the beginning. Before they start, the phone has failed
+    // them, as when a call or Siri takes the audio just then. Safari also reports a cancelled word as an error, not as an end, but `hush` lets
+    // go of words before it cancels them, so an error from words stopped here, however late, is not taken for that.
+    u.onerror = () => {
+      if (started) return ended()
+      if (held.current === u) tryAgain()
+    }
+    held.current = u
+    let led = false
+    try {
+      if (deps.paused()) deps.resume()
+      led = sayLeadIn()
+      deps.speak(u)
+    } catch {
+      // The phone may have reported them failed before it threw. That has been dealt with, and going on here as well would start the next beside it.
+      if (held.current === u) settle(mine)
+      return
+    }
+    // Started or even over already, on a phone that reports it as they are handed over: there is nothing to wait for.
+    if (started || held.current !== u) return
+    watchdog = setTimeout(
+      () => {
+        if (held.current === u) tryAgain()
+      },
+      WATCHDOG_MS + (led ? LEAD_IN_ALLOW_MS : 0),
+    )
   }
 
   async function run(cue: Cue, mine: number): Promise<void> {
@@ -291,11 +451,21 @@ export function createSpeaker<U extends Utterance>(deps: SpeakerDeps<U>) {
     current = cue
     try {
       if (cue.stale?.()) return settle(mine)
-      await deps.ready()
+      // Read before the audio is woken: a signal that has been asleep has been keeping nothing open, however soon it wakes now.
+      const alive = deps.keepingAlive()
+      // Speech needs none of this: audio that fails costs the tick, not the words.
+      const awake = await Promise.resolve().then(deps.ready).catch(() => false)
       if (mine !== epoch) return
       let leadMs = LEAD_MS
-      // A beep that has just started opens the link as well as a tick would, so there is no tick on top of it.
-      if (!deps.keepingAlive() && cue.afterMs === 0) leadMs += deps.tick() * 1000
+      // A beep that has just started opens the link as well as a tick would, so there is no tick on top of it. Audio that would not wake
+      // plays nothing now, and would play the tick at some odd moment later.
+      if (!alive && awake && cue.afterMs === 0) {
+        try {
+          leadMs = openLink()
+        } catch {
+          // No tick or opener. The words go all the same.
+        }
+      }
       // A wait for a beep is counted from when the words were asked for: one that has been waiting its turn has less of it to wait.
       await deps.wait(Math.max(leadMs, cue.afterMs - (now() - cue.at)))
       if (mine !== epoch) return
@@ -309,10 +479,7 @@ export function createSpeaker<U extends Utterance>(deps: SpeakerDeps<U>) {
   /** Stops what is being said, or got ready, and says `first` instead, a moment later. */
   const breakIn = (first: Cue) => {
     const mine = ++epoch
-    held.current = null
-    if (watchdog) clearTimeout(watchdog)
-    watchdog = null
-    deps.cancel()
+    hush()
     current = first
     void deps.wait(CANCEL_GAP_MS).then(() => {
       if (mine === epoch) void run(first, mine)
@@ -333,6 +500,7 @@ export function createSpeaker<U extends Utterance>(deps: SpeakerDeps<U>) {
         urgent,
         kind: options.queue ? 'queue' : whole ? (options.warning ? 'warning' : 'whole') : null,
         stale: options.stale,
+        retryStale: options.retryStale,
         afterMs: options.afterMs ?? 0,
         at: now(),
       }
@@ -341,8 +509,9 @@ export function createSpeaker<U extends Utterance>(deps: SpeakerDeps<U>) {
         // Both said whole. One that matters more breaks in, and the words it cuts off are said again in full right after it (see
         // `again`); otherwise it waits, ahead of those that matter less and behind those that matter as much asked before it.
         if (rankOf(cue) > rankOf(current)) {
-          // Begun once handed to the phone (`held`): until then they are waiting out their beep, the lead-in or the gap after a cue.
-          put(again(current, cue, held.current !== null), true)
+          // Begun once handed to the phone and past the lead-in, if they have one: until then they are waiting out their beep, the wait
+          // before the words, the lead-in or the gap after a cue.
+          put(again(current, cue, begun()), true)
           put(cue)
           trim()
           breakIn(queued.shift() ?? cue)
@@ -379,22 +548,27 @@ export function createSpeaker<U extends Utterance>(deps: SpeakerDeps<U>) {
       epoch++
       busy = false
       current = null
-      held.current = null
       waiting = null
       waitingUrgent = null
       queued = []
-      if (watchdog) clearTimeout(watchdog)
-      watchdog = null
-      deps.cancel()
+      hush()
     },
-    /** A silent word, said straight away from a tap: iOS only lets a page speak once it has. */
+    /** A silent word, said straight away from a tap: iOS only lets a page speak once it has. Being silent, it wakes nothing: see `spokeAt`. */
     unlock() {
       const u = voiced(deps.makeUtterance('Ready'))
       u.volume = 0
+      const over = () => {
+        if (heldUnlock.current === u) heldUnlock.current = null
+      }
+      u.onend = over
+      u.onerror = over
+      heldUnlock.current = u
       deps.speak(u)
     },
     /** Whether anything is being got ready or said, or waiting. */
     busy: () => busy,
+    /** The utterances held now, so that the phone does not lose them or their events part way. Only the tests ask: nothing in the app calls this. */
+    holding: (): U[] => [heldUnlock.current, heldLead.current, held.current].filter((u) => u !== null),
   }
 }
 
@@ -410,6 +584,9 @@ function browserSpeaker() {
     ready: () => sound.ready(),
     keepingAlive: () => sound.keepingAlive(),
     tick: () => sound.tick(),
+    opener: () => sound.opener(),
+    lastSound: () => sound.lastSound(),
+    leadIn: LEAD_IN,
     language: voiceLanguage,
     wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     now: () => Date.now(),

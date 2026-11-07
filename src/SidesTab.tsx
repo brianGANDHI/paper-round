@@ -9,8 +9,8 @@ import type { Route, Side } from './types'
 
 const SIDE_OPTIONS: { value: Side; label: string; ariaLabel: string }[] = [
   { value: 'both', label: 'Both', ariaLabel: 'Both sides' },
-  { value: 'left', label: 'Left', ariaLabel: 'Left side' },
-  { value: 'right', label: 'Right', ariaLabel: 'Right side' },
+  { value: 'left', label: 'Port', ariaLabel: 'Port side' },
+  { value: 'right', label: 'Starboard', ariaLabel: 'Starboard side' },
   { value: 'transit', label: 'Transit', ariaLabel: 'Transit, no throwing' },
 ]
 
@@ -78,8 +78,8 @@ export function SidesTab({
     <>
       {!painting && (
         <p className="footnote">
-          Tap a line on the map to change its side right there. Left and right are as you face the way you drive, and the arrows on the map show
-          that direction.
+          Tap a line on the map to change its side right there. Port is your left and starboard your right as you face the way you drive, and the
+          arrows on the map show that direction.
         </p>
       )}
 
@@ -160,7 +160,7 @@ export function SidesTab({
       {!painting && (
         <p className="footnote">
           To change just part of a road, use Paint a Stretch. A section that is picked can be deleted. A no-throw house only alerts on a side
-          you throw, so a Left or Right stretch keeps quiet the no-throw houses on the other side of the road. Transit, the pink line, is for a
+          you throw, so a Port or Starboard stretch keeps quiet the no-throw houses on the other side of the road. Transit, the pink line, is for a
           stretch where you only drive, between places you deliver: nothing is thrown there, and no-throw houses on it stay quiet.
         </p>
       )}

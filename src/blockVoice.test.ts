@@ -22,7 +22,7 @@ const spot = (x: number, y: number): Pt => ({ lat: 51 + y / M_PER_DEG, lng: x / 
 const north: Pt[] = Array.from({ length: 21 }, (_, i) => spot(0, i * 100))
 const sides = (...c: [number, Side][]): SideChange[] => c.map(([idx, side]) => ({ idx, side }))
 
-const BLOCK = 'Apartment block, Lakeside Apartments, 12 papers, left.'
+const BLOCK = 'Apartment block, Lakeside Apartments, 12 papers, port.'
 const block = (y: number): Stop => ({ id: `block ${y}`, type: 'block', pathIdx: 0, ...spot(-15, y), label: 'Lakeside Apartments', qty: 12 })
 const house = (number: string, x: number, y: number): Stop => ({ id: number, type: 'nothrow', pathIdx: 0, ...spot(x, y), address: `${number} Oak Road` })
 
@@ -167,13 +167,13 @@ beforeEach(() => vi.useFakeTimers())
 afterEach(() => vi.useRealTimers())
 
 describe('an apartment block’s words', () => {
-  // Thrown Left, the alert distance 40 m, at 12 m/s: the block comes up at 168 m and is said from 171 m.
+  // Thrown Port, the alert distance 40 m, at 12 m/s: the block comes up at 168 m and is said from 171 m.
   it('give way to a no-throw house that comes up as they are being said, and are said again in full right after the house', async () => {
     const route: Route = { points: north, sideChanges: sides([0, 'left']), stops: [block(200), house('17', -12, 210)] }
     const run = await drive(route, { speed: 12, to: 400 })
     // The house comes up a fix after the block, and its words, a warning, break in on the block's.
     expect(cut(run.heard)).toEqual([BLOCK])
-    expect(whole(run.heard)).toEqual(['Left', 'No throw, 17.', BLOCK])
+    expect(whole(run.heard)).toEqual(['Port', 'No throw, 17.', BLOCK])
     const [, blockCut, houseHeard, blockAgain] = run.heard
     expect(blockCut.endAt).toBe(run.asked.find((a) => a.text === 'No throw, 17.')?.along)
     // The house is named before the car gets to it, and the block straight after, the car not yet 10 m past it.
@@ -187,7 +187,7 @@ describe('an apartment block’s words', () => {
     const route: Route = { points: north, sideChanges: sides([0, 'left']), stops: [block(200), house('17', -12, 225)] }
     const run = await drive(route, { speed: 12, to: 400 })
     expect(cut(run.heard)).toEqual([BLOCK])
-    expect(whole(run.heard)).toEqual(['Left', 'No throw, 17.'])
+    expect(whole(run.heard)).toEqual(['Port', 'No throw, 17.'])
     // The house is named before the car gets to it: the warning that stops a wrong throw comes first.
     expect(run.heard[2].startAt).toBeLessThan(225)
     expect(run.idle).toBe(true)
@@ -197,7 +197,7 @@ describe('an apartment block’s words', () => {
     const route: Route = { points: north, sideChanges: sides([0, 'left']), stops: [house('17', -12, 200), block(210)] }
     const run = await drive(route, { speed: 12, to: 400 })
     expect(cut(run.heard)).toEqual([])
-    expect(whole(run.heard)).toEqual(['Left', 'No throw, 17.', BLOCK])
+    expect(whole(run.heard)).toEqual(['Port', 'No throw, 17.', BLOCK])
     expect(run.overlaps).toBe(0)
   })
 
@@ -213,7 +213,7 @@ describe('an apartment block’s words', () => {
     for (const perWord of [0.35, 0.45]) {
       for (const speed of [6, 10, 14]) {
         for (let gap = 5; gap <= 45; gap += 5) {
-          // On this side with Left thrown, and over the road with both sides thrown.
+          // On this side with Port thrown, and over the road with both sides thrown.
           for (const [x, side] of [[-12, 'left'], [12, 'both']] as const) {
             const route: Route = { points: north, sideChanges: sides([0, side]), stops: [block(200), house('17', x, 200 + gap)] }
             const run = await drive(route, { speed, to: 330, perWord })
@@ -250,7 +250,7 @@ describe('an apartment block’s words', () => {
 })
 
 describe('alerts that come up faster than they can be said', () => {
-  // Thrown Left, a stop every 16 m, each said on its own: a special request with a long note, an apartment block, a bundle drop and a
+  // Thrown Port, a stop every 16 m, each said on its own: a special request with a long note, an apartment block, a bundle drop and a
   // no-throw house (64 m apart, so each is a row of its own), over and over. At 14 m/s one comes up about every 1.1 s, and the words
   // for each take from 2 s to 5 s to say.
   const stops: Stop[] = []
@@ -333,7 +333,7 @@ describe('a no-throw house after a special request with a long note', () => {
 })
 
 describe('the side word in a stretch thick with alerts', () => {
-  // Thrown Left, then Both from 400 m and Left again from 600 m; a stop every 12 to 24 m from 300 m on, taking turns: a special request
+  // Thrown Port, then Both from 400 m and Port again from 600 m; a stop every 12 to 24 m from 300 m on, taking turns: a special request
   // with a long note, an apartment block, a bundle drop and, where `houses`, a no-throw house.
   const stretch = (spacing: number, houses: boolean): Route => {
     const stops: Stop[] = []
@@ -350,7 +350,7 @@ describe('the side word in a stretch thick with alerts', () => {
   }
   const changes: [string, number][] = [
     ['Both', 400],
-    ['Left', 600],
+    ['Port', 600],
   ]
 
   it('breaks in on the alerts being said, and is done by the change', { timeout: 60_000 }, async () => {
@@ -400,7 +400,7 @@ describe('a special request’s or an apartment block’s words, with the side c
   const NOTE = 'Leave it under the mat by the side door please, not in the letterbox'
   const REQUEST: Stop = { id: '301', type: 'request', pathIdx: 0, ...spot(-12, 200), address: '301 Oak Road', note: NOTE }
 
-  // Thrown Left, then Both from `gap` metres past the stop: the side word, asked a little before the change, comes while the stop's words
+  // Thrown Port, then Both from `gap` metres past the stop: the side word, asked a little before the change, comes while the stop's words
   // are being said, and breaks in on them. By the time the side word is over the car may be well past the stop.
   it('are heard whole once, said again right after the side word that broke in on them', { timeout: 60_000 }, async () => {
     let brokeIn = 0
@@ -438,7 +438,7 @@ describe('a special request’s or an apartment block’s words, with the side c
     expect(brokeIn).toBeGreaterThan(80)
   })
 
-  // Thrown Left, then Both and Left by turns every 60 m from just past the request on, and a bundle drop on the left 180 m past it.
+  // Thrown Port, then Both and Port by turns every 60 m from just past the request on, and a bundle drop on the left 180 m past it.
   // Each side word breaks in on the note, which takes longer than 60 m to say: it is said again after the first, but not after the next.
   it('are begun at most twice when the side changes again and again, and do not hold up the alerts after them', { timeout: 60_000 }, async () => {
     const bundle: Stop = { id: '41', type: 'bundle', pathIdx: 0, ...spot(-12, 380), address: '41 Oak Road', qty: 30 }
@@ -470,7 +470,7 @@ describe('a special request’s or an apartment block’s words, with the side c
     expect(cutTwice).toBeGreaterThan(15)
   })
 
-  // Thrown Left, then Both from `first` metres and Left again `gap` metres on. Where the request comes up on the fix where Both is asked
+  // Thrown Port, then Both from `first` metres and Port again `gap` metres on. Where the request comes up on the fix where Both is asked
   // for, Both, asked after the note as the round screen asks, breaks in on it at once, while the note still waits out its beep: that cuts
   // off no word of it, so the note keeps its grace for the cut that does, when the side changes again while it is being said.
   it('are heard whole when they come up on the fix of a side word, and the side changes again 30 to 120 m on', { timeout: 60_000 }, async () => {
@@ -488,7 +488,7 @@ describe('a special request’s or an apartment block’s words, with the side c
               const both = run.asked.find((a) => a.text === 'Both')
               if (!note || note.along !== both?.along) continue
               sameFix++
-              const label = `Both at ${first} m, Left ${gap} m on, at ${speed} m/s from ${offset} m, ${perWord} s a word`
+              const label = `Both at ${first} m, Port ${gap} m on, at ${speed} m/s from ${offset} m, ${perWord} s a word`
               const words = run.heard.filter((h) => h.text === note.text)
               // Both is said first, whole, before a word of the note; the note is heard whole once, and begun at most twice.
               const side = run.heard.filter((h) => h.text === 'Both')
@@ -497,12 +497,12 @@ describe('a special request’s or an apartment block’s words, with the side c
               expect(whole(words), label).toHaveLength(1)
               expect(words.length, label).toBeLessThanOrEqual(2)
               if (words[0].cut) {
-                // Cut off part way only by Left, as it was asked, and said again in full straight after it, though by then the car may
+                // Cut off part way only by Port, as it was asked, and said again in full straight after it, though by then the car may
                 // have gone by the request.
                 cutByNext++
-                const left = run.asked.filter((a) => a.text === 'Left').at(-1)!
+                const left = run.asked.filter((a) => a.text === 'Port').at(-1)!
                 expect(words[0].endAt, label).toBe(left.along)
-                const leftHeard = run.heard.find((h) => h.text === 'Left' && h.start > words[0].start)!
+                const leftHeard = run.heard.find((h) => h.text === 'Port' && h.start > words[0].start)!
                 expect(leftHeard.cut, label).toBe(false)
                 expect(words[1].start - leftHeard.end, label).toBeLessThan(0.5)
               }
@@ -512,7 +512,7 @@ describe('a special request’s or an apartment block’s words, with the side c
         }
       }
     }
-    // The note and Both came up on one fix in about one drive in eight, and in most of those Left came while the note was being said.
+    // The note and Both came up on one fix in about one drive in eight, and in most of those Port came while the note was being said.
     expect(sameFix).toBeGreaterThan(120)
     expect(cutByNext).toBeGreaterThan(60)
   })
@@ -601,18 +601,18 @@ describe('the side word in a street thick with no-throw houses', () => {
 })
 
 describe('the side word when an alert beeps on the same fix', () => {
-  // Left to 300 m, Right to 500 m, Both to 700 m, then Transit; no-throw houses on both sides every 20 m, which beep on the side thrown.
+  // Port to 300 m, Starboard to 500 m, Both to 700 m, then Transit; no-throw houses on both sides every 20 m, which beep on the side thrown.
   const stops: Stop[] = []
   for (let y = 10; y <= 990; y += 20) stops.push(house(String(y), 12, y), house(String(y + 1), -12, y))
   const route: Route = { points: north.slice(0, 11), sideChanges: sides([0, 'left'], [3, 'right'], [5, 'both'], [7, 'transit']), stops }
-  const changes: Record<string, number> = { Right: 300, Both: 500, Transit: 700 }
+  const changes: Record<string, number> = { Starboard: 300, Both: 500, Transit: 700 }
 
   it('is done by the change, though it waits for the beep to end, wherever the fixes fall', { timeout: 60_000 }, async () => {
     let withBeep = 0
     for (let offset = 0; offset < 12; offset += 1) {
       const run = await drive(route, { speed: 12, offset, to: 760 })
       const words = run.heard.filter((h) => h.text in changes)
-      expect(words.map((h) => h.text), `from ${offset} m`).toEqual(['Right', 'Both', 'Transit'])
+      expect(words.map((h) => h.text), `from ${offset} m`).toEqual(['Starboard', 'Both', 'Transit'])
       for (const h of words) {
         expect(h.cut).toBe(false)
         expect(h.endAt, `${h.text} from ${offset} m`).toBeLessThanOrEqual(changes[h.text])
@@ -628,7 +628,7 @@ describe('the side word when an alert beeps on the same fix', () => {
       for (let offset = 0; offset < speed; offset += speed / 4) {
         const run = await drive(route, { speed, offset, to: 760 })
         const words = run.heard.filter((h) => h.text in changes)
-        expect(words.map((h) => h.text)).toEqual(['Right', 'Both', 'Transit'])
+        expect(words.map((h) => h.text)).toEqual(['Starboard', 'Both', 'Transit'])
         for (const h of words) expect(h.startAt, `${h.text} at ${speed} m/s from ${offset} m`).toBeLessThan(changes[h.text])
       }
     }
@@ -636,7 +636,7 @@ describe('the side word when an alert beeps on the same fix', () => {
 })
 
 describe('a no-throw row and a side word asked on the same fix', () => {
-  // Thrown Left, then Both from 300 m; a no-throw house on the left (thrown on both sides of the change) a few metres before the change,
+  // Thrown Port, then Both from 300 m; a no-throw house on the left (thrown on both sides of the change) a few metres before the change,
   // so the house comes up on about the fix where the side word is asked. The alert distance is 30 m or less, so the row has little time.
   it('say the row first, begun before the house, and the side word straight after it', { timeout: 60_000 }, async () => {
     let sameFix = 0

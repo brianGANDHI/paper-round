@@ -1,9 +1,10 @@
 import { normalizeBundleOrder, reconcile } from './bundles'
 import { occurrences } from './geo'
+import { normalizeLoad } from './load'
 import { normalizeSections, tidyText } from './namedSections'
 import { normalizeRoute } from './routeEdit'
 import { normalizeCourtLegs, withCourtLegs } from './resume'
-import type { Library, NamedSection, RoundState, Route, SavedRoute, TurnStreet } from './types'
+import type { Library, LoadList, NamedSection, RoundState, Route, SavedRoute, TurnStreet } from './types'
 
 export const MAX_NAME = 40
 export const DEFAULT_NAME = 'My Round'
@@ -95,6 +96,12 @@ const withOrder = (r: SavedRoute, order: readonly string[] | undefined): SavedRo
   return { ...rest, ...(order?.length ? { bundleOrder: [...order] } : {}) }
 }
 
+/** A route with its list of what to load set; the key is left out when it has none of its own. The list is a copy, not shared. */
+const withLoad = (r: SavedRoute, load: LoadList | undefined): SavedRoute => {
+  const { load: _load, ...rest } = r
+  return { ...rest, ...(load ? { load: structuredClone(load) } : {}) }
+}
+
 /** Give the route in use its named sections. Nothing else about it changes, as naming a part does not alter the route. */
 export function setActiveSections(lib: Library, sections: readonly NamedSection[]): Library {
   return mapRoute(lib, lib.activeId, (r) => withExtras(r, sections, r.streets))
@@ -118,6 +125,17 @@ export function setBundleOrder(lib: Library, routeId: string, order: readonly st
   return mapRoute(lib, routeId, (r) => withOrder(r, clean))
 }
 
+/**
+ * Give the route with this id its list of what to load (see `SavedRoute.load`), tidied as it is kept (`normalizeLoad`). The route and its
+ * round are not touched, so Start Over and Reset Round keep it too: it is the driver's list, not progress. An unknown route changes nothing.
+ */
+export function setLoad(lib: Library, routeId: string, load: LoadList): Library {
+  const clean = normalizeLoad(load)
+  const route = lib.routes.find((r) => r.id === routeId)
+  if (!route) return lib
+  return mapRoute(lib, routeId, (r) => withLoad(r, clean))
+}
+
 export function selectRoute(lib: Library, id: string): Library {
   return lib.routes.some((r) => r.id === id) ? { ...lib, activeId: id } : lib
 }
@@ -134,14 +152,14 @@ export function renameRoute(lib: Library, id: string, name: string): Library {
 }
 
 /**
- * Copy a route, with its named sections, street names and bundle order (the stop ids are the same in the copy), under a new name and
- * switch to the copy. Its round starts fresh.
+ * Copy a route, with its named sections, street names, bundle order (the stop ids are the same in the copy) and list of what to load,
+ * under a new name and switch to the copy. Its round starts fresh.
  */
 export function duplicateRoute(lib: Library, id: string, now = Date.now()): Library {
   const source = lib.routes.find((r) => r.id === id)
   if (!source) return lib
   const made = makeRoute(uniqueName(lib, `${source.name} copy`), structuredClone(source.route), now)
-  const copy = withOrder(withExtras(made, structuredClone(source.sections), structuredClone(source.streets)), source.bundleOrder)
+  const copy = withLoad(withOrder(withExtras(made, structuredClone(source.sections), structuredClone(source.streets)), source.bundleOrder), source.load)
   return { routes: [...lib.routes, copy], activeId: copy.id }
 }
 
@@ -177,7 +195,7 @@ export function importClashes(lib: Library, imported: { name: string }[]): strin
  */
 export function addImported(
   lib: Library,
-  imported: { name: string; route: Route; sections?: NamedSection[]; streets?: TurnStreet[]; bundleOrder?: string[] }[],
+  imported: { name: string; route: Route; sections?: NamedSection[]; streets?: TurnStreet[]; bundleOrder?: string[]; load?: LoadList }[],
   now = Date.now(),
   mode: ImportMode = 'keep',
 ): Library {
@@ -188,15 +206,18 @@ export function addImported(
   for (const item of imported) {
     const existing = mode === 'replace' ? next.routes.find((r) => sameName(r.name, item.name)) : undefined
     // A backup made before sections or street names existed has none, so a route it replaces keeps its own. The same goes for the
-    // bundle order, which a backup carries only when the driver had set one.
+    // bundle order and the list of what to load, which a backup carries only when the driver had set them.
     next = existing
       ? {
           ...next,
           routes: next.routes.map((r) =>
             r.id === existing.id
-              ? withOrder(
-                  withExtras({ ...r, route: item.route, round: freshRound(), updatedAt: now }, item.sections ?? r.sections, item.streets ?? r.streets),
-                  item.bundleOrder ?? r.bundleOrder,
+              ? withLoad(
+                  withOrder(
+                    withExtras({ ...r, route: item.route, round: freshRound(), updatedAt: now }, item.sections ?? r.sections, item.streets ?? r.streets),
+                    item.bundleOrder ?? r.bundleOrder,
+                  ),
+                  item.load ?? r.load,
                 )
               : r,
           ),
@@ -205,7 +226,7 @@ export function addImported(
           ...next,
           routes: [
             ...next.routes,
-            withOrder(withExtras(makeRoute(uniqueName(next, item.name || 'Imported route'), item.route, now), item.sections, item.streets), item.bundleOrder),
+            withLoad(withOrder(withExtras(makeRoute(uniqueName(next, item.name || 'Imported route'), item.route, now), item.sections, item.streets), item.bundleOrder), item.load),
           ],
         }
   }
@@ -252,6 +273,7 @@ export function normalizeLibrary(raw: unknown): Library | null {
     const sections = normalizeSections(r.sections)
     const streets = normalizeStreets(r.streets)
     const bundleOrder = normalizeBundleOrder(r.bundleOrder)
+    const load = normalizeLoad(r.load)
     clean.push({
       id,
       name: cleanName(typeof r.name === 'string' ? r.name : '') || DEFAULT_NAME,
@@ -272,6 +294,7 @@ export function normalizeLibrary(raw: unknown): Library | null {
       ...(sections.length ? { sections } : {}),
       ...(streets.length ? { streets } : {}),
       ...(bundleOrder.length ? { bundleOrder } : {}),
+      ...(load ? { load } : {}),
     })
   }
   if (!clean.length) return null

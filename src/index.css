@@ -336,6 +336,15 @@ p {
   transition: background 0.25s;
 }
 
+/* A little smaller on a phone, so "Starboard" leaves the turn card room for a street name. */
+@media (max-width: 430px) {
+  .side-pill {
+    gap: 4px;
+    padding: 9px 12px;
+    font-size: 16px;
+  }
+}
+
 /* The side being thrown and the next turn, side by side on one line along the top, where they stay when an alert drops in under them. */
 .hud-row {
   align-self: stretch;

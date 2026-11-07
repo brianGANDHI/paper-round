@@ -3,6 +3,7 @@ import {
   ROW_STATUS_LABEL,
   awayText,
   bundleAheadText,
+  bundleRows,
   bundleStops,
   canMarkDropped,
   distanceText,
@@ -20,10 +21,10 @@ import {
   type PassStates,
   type RowStatus,
 } from './bundles'
-import type { Occurrence } from './geo'
-import { handledForResume } from './resume'
+import { byPosition, type Occurrence } from './geo'
+import { handledForResume, slackFor } from './resume'
 import type { NextBundle } from './RoundBar'
-import type { RoundState } from './types'
+import type { Pt, RoundState, StopType } from './types'
 
 /*
  * What the round screen does with bundle drops, kept apart from the screen so it can be tested: how the round is kept so that what
@@ -57,19 +58,27 @@ export function savedRound(prev: RoundState, handledStopIds: readonly string[], 
  * it that was still to do is skipped: neither dropped nor missed. A bundle stop is one delivery however many times the route goes by
  * it, so a stop whose drop stays (it was on a pass before the spot) has its later passes done too, and does not alert again; one
  * dropped on a pass after the spot comes up again on every pass.
+ *
+ * With `keepBundles`, as when the round carries on from where the driver came back onto the route, the spot decides only the other stops:
+ * every pass of a bundle stays exactly as it was, drops and misses kept on either side of the spot. The driver may be working down their list out
+ * of route order, or going back for a bundle: the bundles still to do are not swept, and those dealt with do not come up again.
  */
-export function restartedRound(prev: RoundState, occs: readonly Occurrence[], metres: number, slack: number, fresh = false): RoundState {
+export function restartedRound(prev: RoundState, occs: readonly Occurrence[], metres: number, slack: number, fresh = false, keepBundles = false): RoundState {
   if (metres <= 0) return { handledStopIds: [] }
   const base: RoundState = fresh ? { handledStopIds: [] } : prev
-  return settleDrops({ ...base, handledStopIds: handledForResume(occs, metres, slack), startM: metres, furthest: metres }, occs)
+  const had = new Set(base.handledStopIds)
+  const handledStopIds = keepBundles
+    ? [...handledForResume(occs.filter((o) => o.stop.type !== 'bundle'), metres, slack), ...occs.filter((o) => o.stop.type === 'bundle' && had.has(o.key)).map((o) => o.key)]
+    : handledForResume(occs, metres, slack)
+  return settleDrops({ ...base, handledStopIds, startM: metres, furthest: metres }, occs)
 }
 
 /**
  * Whether a start from a spot begins a new round, forgetting the bundles dropped and missed: it does when it is a start (not a skip
- * while driving) and the round before it was finished, as Start New Round does. A start on a round not finished, such as after the
- * app was closed part way, and any skip, keep what was dropped or missed before the spot.
+ * while driving) and the round before it is `over`, finished or over but for its bundles, as Start New Round does. A start on a round not
+ * over, such as after the app was closed part way, and any skip, keep what was dropped or missed before the spot.
  */
-export const freshStart = (skip: boolean, finished: boolean): boolean => !skip && finished
+export const freshStart = (skip: boolean, over: boolean): boolean => !skip && over
 
 /**
  * What starting or skipping to `metres` along the route does to the stops, as the words that tell the driver say it: how many not yet
@@ -83,13 +92,32 @@ export function restartEffect(
   metres: number,
   slack: number,
   fresh = false,
+  keepBundles = false,
 ): { newly: number; back: number } {
-  const after = new Set(restartedRound(round, occs, metres, slack, fresh).handledStopIds)
+  const after = new Set(restartedRound(round, occs, metres, slack, fresh, keepBundles).handledStopIds)
   return {
     newly: [...after].filter((key) => !handled.has(key)).length,
     back: occs.filter((o) => handled.has(o.key) && !after.has(o.key)).length,
   }
 }
+
+/**
+ * The keys of the stops to count as done at the first fix on the route after a start, a skip or a spell off it, which finds the car `along` metres
+ * along the route: the stops behind the car, not done, as they would otherwise be neither done nor alerting. Never a bundle: that fix is no proof the
+ * car drove the stretch, so a bundle stays to do, and the next one stays next, alerts by place if the car comes to it, and is told of once if it is left
+ * behind (see `nextLeftBehind`). A stop met by where the driver is has no place behind the car to be gone by.
+ */
+export function caughtUp(occs: readonly Occurrence[], done: ReadonlySet<string>, along: number, radius: Record<StopType, number>): string[] {
+  const slack = slackFor(radius)
+  return occs.filter((o) => o.stop.type !== 'bundle' && !done.has(o.key) && !byPosition(o, radius) && o.at < along - slack).map((o) => o.key)
+}
+
+/**
+ * The driver's list for the next round, for setting its order from the start screen when the round kept has too few bundles left to move, as a
+ * finished one has none: the same stops in the same order, all to do. They have no Mark dropped or Undo, as those act on the round kept, which this does not show.
+ */
+export const nextRoundRows = (occs: readonly Occurrence[], order: readonly string[] | undefined, here: Pt | null): BundleRow[] =>
+  bundleRows(occs, { handledStopIds: [] }, order, here).map((r) => ({ ...r, markKey: null, undoKey: null }))
 
 /** How long after a Dropped tap another is ignored: a second tap that quick is the first one again, not a drop of the next bundle at the same spot. */
 export const DROP_LOCK_MS = 600
@@ -98,12 +126,10 @@ export const DROP_LOCK_MS = 600
 export const dropAllowed = (lastAt: number, now: number): boolean => now - lastAt >= DROP_LOCK_MS
 
 /**
- * Which of the stops just driven past in their zone are bundles missed: the bundle drops among them, and only while the driver is on
- * the route. Any other way a bundle ends up done (a sweep after leaving the route, a catch-up, a skip) leaves it skipped, so nothing
- * is recorded as missed for those, and a no-throw house or a special request is never missed.
+ * Which of the stops just driven past in their zone are bundles missed: the bundle drops among them. A no-throw house or a special
+ * request is never missed. Which stops count as driven past, on the route or off it, is for `doneNow`.
  */
-export const missedAmong = (passed: readonly Pick<Occurrence, 'key' | 'stop'>[], onRoute: boolean): string[] =>
-  onRoute ? passed.filter((o) => o.stop.type === 'bundle').map((o) => o.key) : []
+export const missedAmong = (passed: readonly Pick<Occurrence, 'key' | 'stop'>[]): string[] => passed.filter((o) => o.stop.type === 'bundle').map((o) => o.key)
 
 /**
  * Takes back a drop. The bundle goes back to what it was before it was dropped: to do again, or missed again when it was missed (it was
@@ -152,6 +178,12 @@ export function missedNotice(names: readonly string[]): string {
   const list = more > 0 ? `${shown.join(', ')} and ${more} more` : shown.join(' and ')
   return names.length === 1 ? `Missed bundle: ${list}` : `Missed ${names.length} bundles: ${list}`
 }
+
+/** The bar's notice for the next bundle holding up those after it (see `nextHoldsUp`): it stays next, and what to do about it is in the list. */
+export const stillNextNotice = (name: string): string => `Next bundle is still ${shortName(name)}. Mark it or move it in the Bundles list.`
+
+/** The bar's notice for the next bundle left behind (see `nextLeftBehind`): it stays next, and what to do about it is in the list. */
+export const leftBehindNotice = (name: string): string => `Next bundle ${shortName(name)} is behind you. Mark it or move it in the Bundles list.`
 
 /** How far a bundle is, for the list: "340 m ahead", "Here now", or "Behind you". */
 export function bundleWhere(ahead: number): string {

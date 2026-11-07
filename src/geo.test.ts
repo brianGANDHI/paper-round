@@ -10,9 +10,14 @@ import {
   distanceToPath,
   handledUpTo,
   haversine,
+  keepPlaced,
   occurrences,
   passesNear,
+  pastAlerting,
   pathBetween,
+  MAX_STOP_OFFSET_M,
+  placedZone,
+  PLACED_ROAD_M,
   POSITION_MAX_ACCURACY_M,
   offsetPath,
   sideAt,
@@ -956,5 +961,128 @@ describe('how far a round has got, with a stop at the turn-round of a court', ()
 describe('the radius a block is told of at', () => {
   it('is that of a bundle drop when none is given', () => {
     expect(APPROACH_RADIUS.block).toBe(APPROACH_RADIUS.bundle)
+  })
+})
+
+describe('a pass of a stop beside the route that is met by where the driver is', () => {
+  const east = (m: number) => m / 70050
+  const zone = (m: number) => ({ nothrow: m, bundle: m, request: m, block: m })
+  /** A bundle 8 m east of the road, 300 m along it (each 0.001 deg of it is about 111 m), as `occurrences` gives it. */
+  const [pass] = occurrences({ points: road, stops: [{ id: 'b', type: 'bundle', pathIdx: 0, lat: 51 + 0.3 / 111.2, lng: east(8) }] })
+  const placed: Occurrence = { ...pass, placed: true }
+  const north = (m: number): Pt => ({ lat: pass.stop.lat + m / 111200, lng: 0 })
+
+  it('is one for `byPosition`, though it is beside the route, and no pass is unless it is flagged', () => {
+    expect(byPosition(pass, zone(40))).toBe(false)
+    expect(byPosition(placed, zone(40))).toBe(true)
+    expect(byPosition({ ...pass, placed: false }, zone(40))).toBe(false)
+  })
+
+  it('alerts within the alert distance of the stop in a straight line, however far behind the route has it, and not outside it', () => {
+    // 35 m past the stop along the road, it is too far behind to alert along it: 8 m beside and 35 m on is 36 m from the stop.
+    const list = [placed]
+    expect(approachingOccurrences(pass.at + 35, north(35), [pass], new Set(), zone(40), 8)).toEqual([])
+    expect(approachingOccurrences(pass.at + 35, north(35), list, new Set(), zone(40), 8)).toEqual([placed])
+    expect(approachingOccurrences(pass.at + 39, north(39), list, new Set(), zone(40), 8)).toEqual([placed])
+    expect(approachingOccurrences(pass.at + 41, north(41), list, new Set(), zone(40), 8)).toEqual([])
+    // Whatever the route says: the driver a kilometre on along it, but back at the stop.
+    expect(approachingOccurrences(pass.at + 1000, north(0), list, new Set(), zone(40), 8)).toEqual([placed])
+  })
+
+  it('takes a fix that is good enough to say so, and not one that is not, or one for a pass done', () => {
+    expect(approachingOccurrences(pass.at + 35, north(35), [placed], new Set(), zone(40), POSITION_MAX_ACCURACY_M)).toEqual([placed])
+    expect(approachingOccurrences(pass.at + 35, north(35), [placed], new Set(), zone(40), POSITION_MAX_ACCURACY_M + 1)).toEqual([])
+    expect(approachingOccurrences(pass.at + 35, north(35), [placed], new Set([pass.key]), zone(40), 8)).toEqual([])
+  })
+
+  it('keeps a pass the queue has as placed so when the passes are looked up again, on a copy, and leaves the rest', () => {
+    const other: Occurrence = { ...pass, key: 'b#2' }
+    const again = keepPlaced([pass, other], [placed])
+    expect(again).toEqual([placed, other])
+    expect(again[1]).toBe(other)
+    expect(pass.placed).toBeUndefined()
+  })
+
+  it('gives the passes themselves when the queue has none placed', () => {
+    const passes = [pass]
+    expect(keepPlaced(passes, [])).toBe(passes)
+    expect(keepPlaced(passes, [pass])).toBe(passes)
+  })
+})
+
+describe('how far the zone of a pass met by where the driver is reaches', () => {
+  const zone = { bundle: 40, nothrow: 40, request: 40, block: 40 }
+  const stop: Stop = { id: 'B', type: 'bundle', lat: 0, lng: 0, pathIdx: 0 }
+  const pass: Occurrence = { key: 'B', stop, idx: 0, at: 100, off: 60 }
+  const north = (m: number) => ({ lat: m / 111_195, lng: 0 })
+
+  it('is the alert distance for a stop beside the road', () => {
+    expect(placedZone({ ...pass, off: 8, placed: true }, zone)).toBe(40)
+    expect(placedZone({ ...pass, off: 25, placed: true }, zone)).toBe(40)
+  })
+
+  it('reaches the road for a stop set back from it further than that', () => {
+    expect(PLACED_ROAD_M).toBe(15)
+    expect(placedZone({ ...pass, off: 26, placed: true }, zone)).toBe(41)
+    expect(placedZone({ ...pass, placed: true }, zone)).toBe(75)
+  })
+
+  it('stays the alert distance for a stop that is not placed, however far off: it is visited', () => {
+    expect(placedZone({ ...pass, off: 90 }, zone)).toBe(40)
+  })
+
+  it('reaches the road for any bundle Setup counts as along the route, placed or not', () => {
+    expect(MAX_STOP_OFFSET_M).toBe(60)
+    expect(placedZone({ ...pass, off: 45 }, { ...zone, bundle: 10 })).toBe(60)
+    expect(placedZone({ ...pass, off: 60 }, { ...zone, bundle: 10 })).toBe(75)
+  })
+
+  it('stops at what Setup counts as along the route', () => {
+    expect(placedZone({ ...pass, off: 60.1 }, { ...zone, bundle: 10 })).toBe(10)
+  })
+
+  it('stays the alert distance for another kind of stop set back as far', () => {
+    const house: Stop = { ...stop, type: 'nothrow' }
+    expect(placedZone({ ...pass, stop: house, off: 45 }, { ...zone, nothrow: 10 })).toBe(10)
+  })
+
+  it('brings up a bundle from the road, at a short alert distance, set back too far for the road to pass it', () => {
+    const short = { ...zone, bundle: 10 }
+    const back = { ...pass, off: 45 }
+    expect(approachingOccurrences(1000, north(59), [back], new Set(), short, 8)).toEqual([back])
+    expect(approachingOccurrences(1000, north(61), [back], new Set(), short, 8)).toEqual([])
+  })
+
+  it('brings up a placed pass from the road, and not a stop away from the route', () => {
+    const placed = { ...pass, placed: true }
+    expect(approachingOccurrences(1000, north(60), [placed], new Set(), zone, 8)).toEqual([placed])
+    expect(approachingOccurrences(1000, north(76), [placed], new Set(), zone, 8)).toEqual([])
+    const away = { ...pass, off: 90 }
+    expect(approachingOccurrences(1000, north(60), [away], new Set(), zone, 8)).toEqual([])
+  })
+})
+
+describe('how far behind the driver a pass can no longer alert along the route', () => {
+  const zone = (m: number) => ({ nothrow: m, bundle: m, request: m, block: m })
+  const pass: Pick<Occurrence, 'at' | 'stop'> = { at: 500, stop: { id: 'b', type: 'bundle', pathIdx: 0, lat: 0, lng: 0 } }
+
+  it('is 20 m at most, or the zone when that is smaller', () => {
+    expect(pastAlerting(pass, 520, zone(40))).toBe(false)
+    expect(pastAlerting(pass, 520.5, zone(40))).toBe(true)
+    expect(pastAlerting(pass, 520, zone(60))).toBe(false)
+    expect(pastAlerting(pass, 520.5, zone(60))).toBe(true)
+    expect(pastAlerting(pass, 510, zone(10))).toBe(false)
+    expect(pastAlerting(pass, 510.5, zone(10))).toBe(true)
+  })
+
+  it('is never a pass still ahead', () => {
+    expect(pastAlerting(pass, 400, zone(40))).toBe(false)
+  })
+
+  it('is the back of the window `approachingOccurrences` alerts in', () => {
+    const [o] = occurrences({ points: road, stops: [{ id: 'b', type: 'bundle', pathIdx: 0, lat: 51.003, lng: 0 }] })
+    const at = (metres: number): Pt => ({ lat: o.stop.lat + metres / 111200, lng: 0 })
+    expect(approachingOccurrences(o.at + 20, at(20), [o], new Set(), zone(40), 8)).toEqual([o])
+    expect(approachingOccurrences(o.at + 20.5, at(20.5), [o], new Set(), zone(40), 8)).toEqual([])
   })
 })

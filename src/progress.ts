@@ -143,7 +143,7 @@ const MAX_SPEED = 40
 /** A fix that implies going faster than this, in metres a second, is a glitch, if it claims to be accurate. */
 const OUTLIER_SPEED = 30
 /** A fix claiming to be better than this, in metres, can be a glitch. */
-const OUTLIER_ACCURACY_M = 30
+export const OUTLIER_ACCURACY_M = 30
 /** After this many in a row set aside, the next is believed: the driver really did go that far, as when coming out of a tunnel. */
 const OUTLIER_MAX = 2
 /** A fix less accurate than this, in metres, says too little to go by. */

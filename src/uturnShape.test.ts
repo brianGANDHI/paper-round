@@ -566,8 +566,8 @@ describe('what the driver is told', () => {
     for (const side of ['both', 'transit'] as const) expect(uturnHereNotice(side)).toBe(UTURN_ADDED_NOTICE)
   })
 
-  it('adds that Left and Right are as you drive when the brush is Left or Right', () => {
-    expect(UTURN_SIDE_NOTICE).toBe('Left and Right are as you drive, so after the U-turn this is the other side of the street.')
+  it('adds that Port and Starboard are as you drive when the brush is Port or Starboard', () => {
+    expect(UTURN_SIDE_NOTICE).toBe('Port and Starboard are as you drive, so after the U-turn this is the other side of the street.')
     for (const side of ['left', 'right'] as const) expect(uturnHereNotice(side)).toBe(`${UTURN_ADDED_NOTICE} ${UTURN_SIDE_NOTICE}`)
   })
 })
@@ -632,7 +632,7 @@ describe('the hook behind the U-turn here button', () => {
     expect(told.notices).toEqual([UTURN_ADDED_NOTICE])
   })
 
-  it('draws it on the side being drawn, and says what Left and Right mean now when that is Left or Right', () => {
+  it('draws it on the side being drawn, and says what Port and Starboard mean now when that is Port or Starboard', () => {
     for (const side of ['left', 'right'] as const) {
       const { roads, told } = mount(road, { side })
       roads.uturnHere()

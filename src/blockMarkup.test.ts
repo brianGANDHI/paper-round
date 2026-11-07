@@ -1,6 +1,6 @@
 /// <reference types="node" />
 import { readFileSync } from 'node:fs'
-import { createElement } from 'react'
+import { createElement, isValidElement, type ReactElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AlertBanner } from './AlertBanner'
@@ -14,6 +14,7 @@ const sheet = (name: string): string => readFileSync(new URL(name, import.meta.u
 const blockCss = sheet('./block.css')
 const indexCss = sheet('./index.css')
 const bundlesCss = sheet('./bundles.css')
+const roundMenuCss = sheet('./roundMenu.css')
 
 /** The markup a component gives, as text. Nothing is mounted: this is only what the screen would be told to draw. */
 const html = (element: Parameters<typeof renderToStaticMarkup>[0]): string => renderToStaticMarkup(element)
@@ -26,6 +27,99 @@ const alert = (stop: Stop, extra: Partial<Parameters<typeof AlertBanner>[0]> = {
 
 /** The side tile of an alert, the arrow and the word. */
 const sideTile = (out: string): string => /<div class="stop-alert-side">.*?<\/div>/.exec(out)?.[0] ?? ''
+
+describe('a bundle drop with its alert up in the banner of another stop', () => {
+  const house: Stop = { id: 'h1', type: 'nothrow', lat: -33.87, lng: 151.2, pathIdx: 0, label: '14 Oak Road' }
+  const tap = () => {}
+
+  it('has its name, papers and Dropped button in a strip at the foot, and the banner stays the house\'s', () => {
+    const out = alert(house, { bundleUp: bundle, onDropped: tap })
+    expect(out).toMatch(/class="stop-alert red\b/)
+    expect(out).toContain('class="bundle-strip"')
+    expect(out).toContain('Lakeside Convenience Store')
+    expect(out).toContain('aria-label="Dropped: 12 Lakeside Convenience Store"')
+    expect(out).toMatch(/<span class="stop-alert-qty">[^<]*12/)
+  })
+
+  it('has its button do what the banner was handed: it is the only way to confirm the bundle, and markup does not show it', () => {
+    const onDropped = vi.fn()
+    const drawn = (node: unknown): ReactElement<Record<string, unknown>>[] => {
+      if (Array.isArray(node)) return node.flatMap(drawn)
+      if (!isValidElement<Record<string, unknown>>(node)) return []
+      if (typeof node.type === 'function') return drawn((node.type as (props: unknown) => unknown)(node.props))
+      return [node, ...drawn(node.props.children)]
+    }
+    const button = drawn(AlertBanner({ stops: [house], ahead: 120, side: 'left', waiting: 0, bundleUp: bundle, onDropped })).find((e) => e.type === 'button')
+    const press = button?.props.onClick as (() => void) | undefined
+    press?.()
+    expect(onDropped).toHaveBeenCalledTimes(1)
+  })
+
+  it('has the house number in front of the name, in the line and on the button, as its own banner has it on a plate', () => {
+    const out = alert(house, { bundleUp: { ...bundle, label: undefined, address: '12 Main St' }, onDropped: tap })
+    expect(out).toContain('<div class="bundle-strip-name">12 Main St</div>')
+    expect(out).toContain('aria-label="Dropped: 12 Main St"')
+  })
+
+  it('has no number in front of a name with none', () => {
+    const out = alert(house, { bundleUp: { ...bundle, address: undefined }, onDropped: tap })
+    expect(out).toContain('<div class="bundle-strip-name">Lakeside Convenience Store</div>')
+  })
+
+  it('is not there with no button to give it', () => {
+    expect(alert(house, { bundleUp: bundle })).not.toContain('bundle-strip')
+  })
+
+  it('has the name in the strip itself, and the strip stacked under the stop\'s details', () => {
+    const out = alert(house, { bundleUp: bundle, onDropped: tap })
+    expect(out).toContain('<div class="bundle-strip-name">12 Lakeside Convenience Store</div>')
+    expect(out).toMatch(/class="stop-alert red[^"]*\bwith-block\b/)
+    expect(out).toContain('<div class="block-body">')
+  })
+
+  it('has the bundle in the banner\'s label as well', () => {
+    const out = alert(house, { bundleUp: bundle, onDropped: tap })
+    expect(out).toContain(`aria-label="${alertSpeech([house], 'left')} ${alertSpeech([bundle], null)}"`.replace(/'/g, '&#x27;'))
+  })
+
+  it('is not there with no bundle up, or on a bundle\'s own banner', () => {
+    expect(alert(house)).not.toContain('bundle-strip')
+    expect(alert(bundle, { bundleUp: bundle, onDropped: tap })).not.toContain('bundle-strip')
+  })
+
+  it('has its button at least as big as on the bundle\'s own banner, and over the blue, which does not flash', () => {
+    expect(bundlesCss).toMatch(/\.bundle-strip \{[^}]*background: #0a63d6/)
+    expect(bundlesCss).toMatch(/\.stop-alert-drop \{[^}]*min-height: 58px/)
+    expect(bundlesCss).toMatch(/\.stop-alert-drop \{[^}]*pointer-events: auto/)
+  })
+
+  it('keeps the menu as clear of the strip as the list, and both clearer of the tallest banner there is, a strip under a block\'s strip or two lines of plates', () => {
+    const kept = (css: string, selector: string) => declared(media(css, 'not all and (orientation: landscape) and (max-height: 600px)'), selector, 'max-height')
+    expect(kept(roundMenuCss, '.screen:has(.bundle-strip) .round-menu')).toBe('calc(100% - 330px)')
+    expect(kept(roundMenuCss, '.screen:has(.stop-alert.ask) .round-menu')).toBe('calc(100% - 330px)')
+    expect(kept(bundlesCss, '.screen:has(.bundle-strip) .bundles-sheet')).toBe('calc(100% - 330px)')
+    for (const [css, name] of [[bundlesCss, '.bundles-sheet'], [roundMenuCss, '.round-menu']]) {
+      expect(kept(css, `.screen:has(.bundle-strip):has(.block-strip) ${name}`)).toBe('calc(100% - 420px)')
+      expect(kept(css, `.screen:has(.stop-alert.tall .bundle-strip) ${name}`)).toBe('calc(100% - 420px)')
+    }
+  })
+
+  it('puts the name and the papers one over the other beside the button on a phone on its side, so another stop\'s banner does not push it under the bar along the bottom', () => {
+    const side = media(bundlesCss, '(orientation: landscape) and (max-height: 600px)')
+    expect(declared(side, '.bundle-strip', 'display')).toBe('grid')
+    expect(declared(side, '.bundle-strip', 'grid-template-columns')).toBe('minmax(0, 1fr) auto')
+    expect(declared(side, '.bundle-strip .stop-alert-act', 'display')).toBe('contents')
+    expect(declared(side, '.bundle-strip-name', 'grid-column')).toBe('1')
+    expect(declared(side, '.bundle-strip:not(:has(.stop-alert-qty)) .bundle-strip-name', 'grid-row')).toBe('1 / span 2')
+    expect(declared(side, '.bundle-strip .stop-alert-qty', 'grid-column')).toBe('1')
+    expect(declared(side, '.bundle-strip .stop-alert-drop', 'grid-column')).toBe('2')
+    expect(declared(side, '.bundle-strip .stop-alert-drop', 'grid-row')).toBe('1 / span 2')
+  })
+
+  it('keeps a sheet opened over it clear of the taller banner', () => {
+    expect(bundlesCss).toMatch(/\.screen:has\(\.bundle-strip\) \.bundles-sheet/)
+  })
+})
 
 describe('the alert for an apartment block', () => {
   it('is titled Apartment block, in the alert for the stop, with the name and address', () => {
@@ -61,19 +155,19 @@ describe('the alert for an apartment block', () => {
     expect(out).not.toContain('block-papers')
     expect(out).not.toContain('block-count')
     expect(out).toContain('Apartment block')
-    expect(out).toContain('Left')
+    expect(out).toContain('Port')
   })
 
   it('shows the side as the bundle drop alert does, the same arrow and word, on the left', () => {
     const block = sideTile(alert(flats))
-    expect(block).toContain('Left')
+    expect(block).toContain('Port')
     expect(block).toBe(sideTile(alert(bundle)))
     expect(block).toMatch(/^<div class="stop-alert-side"><svg/)
   })
 
   it('puts the side at the right edge for a stop on the right, with the right arrow', () => {
     const out = alert(flats, { side: 'right' })
-    expect(sideTile(out)).toContain('Right')
+    expect(sideTile(out)).toContain('Starboard')
     expect(sideTile(out)).toBe(sideTile(alert(bundle, { side: 'right' })))
     expect(sideTile(out)).not.toBe(sideTile(alert(flats)))
     // The tile is after the text, at the right edge; for the left it comes before.
@@ -107,11 +201,11 @@ describe('the alert for an apartment block', () => {
 
   it('says all of it to a screen reader, in the label of the alert: the stop, its papers and its side', () => {
     const named: Stop = { ...flats, address: 'Oak Road, Springfield' }
-    expect(alert(named, { side: 'left' })).toContain('role="alert" aria-label="Apartment block, Lakeside Apartments, 12 papers, left."')
-    expect(alert({ ...named, label: undefined, address: undefined }, { side: 'right' })).toContain('aria-label="Apartment block, 12 papers, right."')
-    expect(alert({ ...named, qty: undefined }, { side: 'right' })).toContain('aria-label="Apartment block, Lakeside Apartments, right."')
+    expect(alert(named, { side: 'left' })).toContain('role="alert" aria-label="Apartment block, Lakeside Apartments, 12 papers, port."')
+    expect(alert({ ...named, label: undefined, address: undefined }, { side: 'right' })).toContain('aria-label="Apartment block, 12 papers, starboard."')
+    expect(alert({ ...named, qty: undefined }, { side: 'right' })).toContain('aria-label="Apartment block, Lakeside Apartments, starboard."')
     // With a house number, the number is said first, as for the other stops.
-    expect(alert({ ...flats, qty: 30 }, { side: 'left' })).toContain('aria-label="Apartment block, 12, 30 papers, left."')
+    expect(alert({ ...flats, qty: 30 }, { side: 'left' })).toContain('aria-label="Apartment block, 12, 30 papers, port."')
   })
 
   it('says nothing of a side in the label when it cannot be told', () => {
@@ -167,7 +261,7 @@ describe('an apartment block in the banner of a no-throw house', () => {
     expect(s).toMatch(/^<div class="block-strip">/)
     expect(s).toContain('<div class="block-strip-title">Apartment block</div>')
     expect(s).toContain('<span class="block-strip-count">12</span><span class="block-strip-unit">papers</span>')
-    expect(s).toMatch(/<div class="block-strip-side"><svg[^]*?<\/svg>Left<\/div>/)
+    expect(s).toMatch(/<div class="block-strip-side"><svg[^]*?<\/svg>Port<\/div>/)
     // The side comes first, at the left edge.
     expect(s.indexOf('block-strip-side')).toBeLessThan(s.indexOf('block-strip-title'))
   })
@@ -180,14 +274,14 @@ describe('an apartment block in the banner of a no-throw house', () => {
   })
 
   it('says the block in the label of the banner, after the houses, with its papers and side', () => {
-    expect(banner()).toContain('role="alert" aria-label="No throw, 14, 16. Apartment block, Lakeside Apartments, 12 papers, left."')
+    expect(banner()).toContain('role="alert" aria-label="No throw, 14, 16. Apartment block, Lakeside Apartments, 12 papers, port."')
     expect(banner({ blockAhead: { stop: named, side: null } })).toContain('aria-label="No throw, 14, 16. Apartment block, Lakeside Apartments, 12 papers."')
   })
 
   it('has the side at the right edge for a block on the right, whichever side the houses are', () => {
     const s = strip(banner({ blockAhead: { stop: named, side: 'right' } }))
     expect(s).toMatch(/^<div class="block-strip right">/)
-    expect(s).toMatch(/<div class="block-strip-side"><svg[^]*?<\/svg>Right<\/div>/)
+    expect(s).toMatch(/<div class="block-strip-side"><svg[^]*?<\/svg>Starboard<\/div>/)
     expect(s.indexOf('block-strip-side')).toBeGreaterThan(s.indexOf('block-strip-papers'))
   })
 
@@ -207,7 +301,7 @@ describe('an apartment block in the banner of a no-throw house', () => {
   it('is in the banner of a single house as of a row', () => {
     const out = banner({ stops: [house(14)] })
     expect(strip(out)).toContain('<span class="block-strip-count">12</span>')
-    expect(out).toContain('aria-label="No throw, 14. Apartment block, Lakeside Apartments, 12 papers, left."')
+    expect(out).toContain('aria-label="No throw, 14. Apartment block, Lakeside Apartments, 12 papers, port."')
   })
 
   it('is never in the banner of a block of its own, which has its papers already', () => {
@@ -236,7 +330,7 @@ describe('an apartment block in the banner of a bundle drop or a special request
     expect(out).toContain('aria-label="Dropped: Lakeside Convenience Store"')
     // The label says the bundle and then the block, with its papers and its side.
     expect(out).toContain(`aria-label="${alertSpeech([bundle], 'left')} ${alertSpeech([named], 'left')}"`)
-    expect(out).toContain('Apartment block, Lakeside Apartments, 12 papers, left."')
+    expect(out).toContain('Apartment block, Lakeside Apartments, 12 papers, port."')
   })
 
   it("is a teal strip under the special request's note", () => {
@@ -244,7 +338,7 @@ describe('an apartment block in the banner of a bundle drop or a special request
     expect(out).toMatch(/class="stop-alert purple\b[^"]*\bwith-block\b/)
     expect(out.indexOf('Blue gate, deliver by hand')).toBeLessThan(out.indexOf('block-strip'))
     expect(out).toContain('<div class="block-strip right">')
-    expect(out).toContain('Apartment block, Lakeside Apartments, 12 papers, right."')
+    expect(out).toContain('Apartment block, Lakeside Apartments, 12 papers, starboard."')
     expect(out).not.toContain('<button')
   })
 
@@ -666,7 +760,7 @@ describe('the list of stops on the route', () => {
     const [beside, on] = rows(
       list(road('left', { id: 'k', type: 'block', lat: 51.0025, lng: 0.0003, pathIdx: 2, qty: 5 }, { id: 'o', type: 'block', lat: 51.0035, lng: 0, pathIdx: 3, qty: 5 })),
     )
-    expect(chip(beside)).toEqual({ label: 'Right', warn: false })
+    expect(chip(beside)).toEqual({ label: 'Starboard', warn: false })
     expect(chip(on)).toEqual({ label: 'Set side', warn: true })
   })
 
@@ -713,11 +807,11 @@ describe('the list of stops on the route', () => {
 
     it('has the button with its side, to set it by hand, while it is met along the route, more than 60 m out or not', () => {
       const [row] = rows(list(road('left', east(65))))
-      expect(chip(row)).toEqual({ label: 'Right', warn: false })
+      expect(chip(row)).toEqual({ label: 'Starboard', warn: false })
       expect(row).toContain('class="icon-btn edit"')
       expect(row).not.toContain('solo')
       // One that alerts there, on the side thrown, has it too.
-      expect(chip(rows(list(road('right', east(65))))[0])).toEqual({ label: 'Right', warn: false })
+      expect(chip(rows(list(road('right', east(65))))[0])).toEqual({ label: 'Starboard', warn: false })
     })
 
     it('has no side button once it is met by where the driver is, further out than that', () => {
@@ -728,13 +822,13 @@ describe('the list of stops on the route', () => {
 
     it('goes by the alert distance in use for the button too: at 60 m a house 85 m out has it, and one 95 m out not', () => {
       vi.stubGlobal('localStorage', { getItem: () => '60' })
-      expect(chip(rows(list(road('left', east(85))))[0])).toEqual({ label: 'Right', warn: false })
+      expect(chip(rows(list(road('left', east(85))))[0])).toEqual({ label: 'Starboard', warn: false })
       expect(rows(list(road('left', east(95))))[0]).not.toContain('chip-btn')
     })
   })
 
   describe('a no-throw house whose side the map cannot tell', () => {
-    it('asks for a side on a Left or Right stretch, not only on Both', () => {
+    it('asks for a side on a Port or Starboard stretch, not only on Both', () => {
       for (const side of ['left', 'right', 'both'] as const) {
         const [row] = rows(list(road(side, house('on', 51.0025, 0))))
         expect(chip(row), side).toEqual({ label: 'Set side', warn: true })
@@ -744,19 +838,19 @@ describe('the list of stops on the route', () => {
 
     it('does not show the side thrown as if it were the house own', () => {
       const [row] = rows(list(road('left', house('on', 51.0025, 0))))
-      expect(row).not.toMatch(/>Left</)
-      expect(row).not.toContain('Left')
+      expect(row).not.toMatch(/>Port</)
+      expect(row).not.toContain('Port')
     })
 
     it('shows the side of a house beside the road, on either side, without asking', () => {
       const [west, east] = rows(list(road('both', house('w', 51.0025, -0.0003), house('e', 51.0035, 0.0003))))
-      expect(chip(west)).toEqual({ label: 'Left', warn: false })
-      expect(chip(east)).toEqual({ label: 'Right', warn: false })
+      expect(chip(west)).toEqual({ label: 'Port', warn: false })
+      expect(chip(east)).toEqual({ label: 'Starboard', warn: false })
     })
 
     it('stops asking once a side is picked by hand', () => {
       const [row] = rows(list(road('left', house('on', 51.0025, 0, { side: 'right' }))))
-      expect(chip(row)).toEqual({ label: 'Right', warn: false })
+      expect(chip(row)).toEqual({ label: 'Starboard', warn: false })
     })
 
     it('does not ask on a stretch where only transit is driven, where the house never alerts', () => {

@@ -330,7 +330,7 @@ export function Setup({ route, routeName, onChange, sections: named, onSections,
   const changeSide = (index: number, side: Side) => {
     const next = { ...route, sideChanges: setSectionSide(route, index, side) }
     onChange(next)
-    // A no-throw house only alerts for a side that is thrown: on transit none are, and on Left or Right the ones on the other side of the road stay quiet. Say how many change, rather than let it be a surprise.
+    // A no-throw house only alerts for a side that is thrown: on transit none are, and on Port or Starboard the ones on the other side of the road stay quiet. Say how many change, rather than let it be a surprise.
     const note = sideChangeSentence(route, next, reachM)
     setNotice(note || null)
     return note
@@ -536,8 +536,8 @@ export function Setup({ route, routeName, onChange, sections: named, onSections,
       title: 'Which Side of the Road?',
       message: 'As you drive past it the first time. Going the other way it swaps.',
       choices: [
-        { value: 'left', label: 'Left' },
-        { value: 'right', label: 'Right' },
+        { value: 'left', label: 'Port' },
+        { value: 'right', label: 'Starboard' },
         ...(stop.side ? [{ value: 'map', label: 'Work It Out From the Map', detail: 'Use where it sits beside the road' }] : []),
       ],
     })

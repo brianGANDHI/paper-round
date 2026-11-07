@@ -1,7 +1,10 @@
-import { describe, expect, it } from 'vitest'
+/// <reference types="node" />
+import { readFileSync } from 'node:fs'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { alertable, alertRadius, quietReachFor, SPOKEN_ROW_MAX, zoneExit, type AlertDistance } from './alerts'
 import { approachingOccurrences, occurrences, pathLength, snapAtDistance, type Occurrence } from './geo'
-import { alertWordsStale, planVoice, type DriverNow, type VoiceInput } from './voicePlan'
+import { createSpeaker } from './speech'
+import { alertWordsLevel, alertWordsStale, planVoice, type DriverNow, type VoiceInput } from './voicePlan'
 import type { Pt, Route, Side, SideChange, Stop, StopType } from './types'
 
 /** A spot `x` metres east and `y` metres north of a start at 51 degrees north, for routes with exact distances. */
@@ -267,11 +270,11 @@ describe('stops that are not a no-throw house', () => {
   it('names an apartment block with how many papers to throw and which side it is on, whatever is thrown', () => {
     for (const side of ['left', 'right', 'both', 'transit'] as const) {
       const plan = run([stop('9', 'block', { qty: 12, address: '9 Elm Street' })], sides([0, side]))
-      expect(plan.text, side).toBe('Apartment block, 9, 12 papers, left.')
+      expect(plan.text, side).toBe('Apartment block, 9, 12 papers, port.')
       expect(plan.announce).toEqual(['9'])
     }
     const right = run([{ ...stop('9', 'block', { qty: 12 }), ...spot(12, 300) }], sides([0, 'transit']))
-    expect(right.text).toBe('Apartment block, 9, 12 papers, right.')
+    expect(right.text).toBe('Apartment block, 9, 12 papers, starboard.')
   })
 
   it('names an apartment block without a side when it cannot be told', () => {
@@ -302,7 +305,7 @@ describe('whether the words warn of a wrong throw', () => {
   it('is so when they name a no-throw house, on its own, in a row or with another stop', () => {
     expect(plan([at('5', 'nothrow', -12, 300)])).toMatchObject({ text: 'No throw, 5.', noThrow: true })
     expect(plan([at('5', 'nothrow', -12, 300), at('7', 'nothrow', -12, 310)])).toMatchObject({ text: 'No throw, 5, 7.', noThrow: true })
-    expect(plan([at('5', 'nothrow', -12, 300), at('9', 'block', -15, 305, { qty: 12 })])).toMatchObject({ text: 'No throw, 5. Apartment block, 9, 12 papers, left.', noThrow: true })
+    expect(plan([at('5', 'nothrow', -12, 300), at('9', 'block', -15, 305, { qty: 12 })])).toMatchObject({ text: 'No throw, 5. Apartment block, 9, 12 papers, port.', noThrow: true })
   })
 
   it('is not so for any other stop', () => {
@@ -414,8 +417,8 @@ describe('an apartment block on a street driven out and back', () => {
       const run = drive(route)
       expect(run.cameUp.map((c) => c.key), plan).toEqual(['blk', 'blk#2'])
       expect(run.said, plan).toEqual([
-        { along: 110, text: 'Apartment block, Lakeside Apartments, 12 papers, right.' },
-        { along: 410, text: 'Apartment block, Lakeside Apartments, 12 papers, left.' },
+        { along: 110, text: 'Apartment block, Lakeside Apartments, 12 papers, starboard.' },
+        { along: 410, text: 'Apartment block, Lakeside Apartments, 12 papers, port.' },
       ])
     }
   })
@@ -447,8 +450,8 @@ describe('an apartment block away from the route', () => {
     const say = (heading: number | null) =>
       planVoice({ route, allOccs, occs, handled: new Set(), radius, queue, fresh: queue, announced: new Set(), held: new Set(), driver: { idx: 0, along: 0, driven: 0, pos, heading } }).text
     // It is east of the driver: on the right going north, on the left going south, and unknown with no heading or straight ahead.
-    expect(say(0)).toBe('Apartment block, 1, 20 papers, right.')
-    expect(say(180)).toBe('Apartment block, 1, 20 papers, left.')
+    expect(say(0)).toBe('Apartment block, 1, 20 papers, starboard.')
+    expect(say(180)).toBe('Apartment block, 1, 20 papers, port.')
     expect(say(null)).toBe('Apartment block, 1, 20 papers.')
     expect(say(90)).toBe('Apartment block, 1, 20 papers.')
   })
@@ -511,5 +514,144 @@ describe('the check that an alert’s words are out of date by their turn', () =
     const offRoute: Route = { points: north, sideChanges: sides([0, 'left']), stops: [far] }
     const farOccs = alertable(offRoute, occurrences(offRoute), quietReachFor(40))
     expect(alertWordsStale(['B'], farOccs, () => at(900), radius)()).toBe(false)
+  })
+})
+
+describe('the check that a failed no-throw warning is too late for a second try', () => {
+  // Left thrown, two no-throw houses numbered 220 and 240, at 219 and 239 m, on the left.
+  const route: Route = { points: north, sideChanges: sides([0, 'left']), stops: [west(219), west(239)] }
+  const radius = alertRadius(40)
+  const occs = alertable(route, occurrences(route), quietReachFor(40))
+  const at = (along: number, furthest = along, turned: { from: number; to: number } | null = null): DriverNow => ({ along, furthest, at: spot(0, along), turned })
+  const check = (keys: string[], driver: () => DriverNow | null) => alertWordsLevel(keys, occs, driver, radius)
+
+  it('turns true as the car comes level with the last stop the words name, not 10 m on', () => {
+    let driver = at(200)
+    const row = check(['220', '240'], () => driver)
+    expect(row()).toBe(false)
+    // Level with the first house, but not the second.
+    driver = at(219)
+    expect(row()).toBe(false)
+    driver = at(238.9)
+    expect(row()).toBe(false)
+    // Level to the centimetre counts, wherever the second house fell on the road.
+    driver = at(occs.find((o) => o.key === '240')!.at)
+    expect(row()).toBe(true)
+    driver = at(240)
+    expect(row()).toBe(true)
+  })
+
+  it('comes before the check that words are out of date', () => {
+    const level = check(['220'], () => at(221))
+    const stale = alertWordsStale(['220'], occs, () => at(221), radius)
+    expect(level()).toBe(true)
+    expect(stale()).toBe(false)
+  })
+
+  it('goes by the furthest the driver has got, so a wobble back does not bring a second try back', () => {
+    expect(check(['220'], () => at(205, 219))()).toBe(true)
+    expect(check(['220'], () => at(205, 218))()).toBe(false)
+  })
+
+  it('judges the driver where a turn round that is not sure yet put them from, as it may be undone', () => {
+    expect(check(['220'], () => at(412, 205, { from: 205, to: 412 }))()).toBe(false)
+    expect(check(['220'], () => at(412, 219, { from: 219, to: 412 }))()).toBe(true)
+    // A turn from further on than the furthest counts as well, as in the check for words out of date.
+    expect(check(['220'], () => at(412, 205, { from: 219, to: 412 }))()).toBe(true)
+    // Once the turn is sure it is where the tracker puts them.
+    expect(check(['220'], () => at(412, 412))()).toBe(true)
+  })
+
+  it('is false with no place for the driver yet, or no stop it knows', () => {
+    expect(check(['220'], () => null)()).toBe(false)
+    expect(check([], () => at(900))()).toBe(false)
+    expect(check(['gone'], () => at(900))()).toBe(false)
+  })
+
+  it('never takes a stop met by where the phone is as level, even with the phone right on it', () => {
+    const far: Stop = { id: 'B', type: 'block', pathIdx: 0, ...spot(110, 300), qty: 20, address: '1 Tower Street' }
+    const offRoute: Route = { points: north, sideChanges: sides([0, 'left']), stops: [far, west(219)] }
+    const farOccs = alertable(offRoute, occurrences(offRoute), quietReachFor(40))
+    expect(alertWordsLevel(['B'], farOccs, () => at(900), radius)()).toBe(false)
+    expect(alertWordsLevel(['B'], farOccs, () => ({ ...at(900), at: spot(110, 300) }), radius)()).toBe(false)
+    // Every stop must be level, so words that name a house gone by as well as this are still worth a second try.
+    expect(alertWordsLevel(['B', '220'], farOccs, () => at(900), radius)()).toBe(false)
+    expect(alertWordsLevel(['220'], farOccs, () => at(900), radius)()).toBe(true)
+  })
+
+  describe('on a drive up to the house at 239 m at 14 m/s, a fix a second', () => {
+    beforeEach(() => vi.useFakeTimers())
+    afterEach(() => vi.useRealTimers())
+
+    /** The real speaker and checks. Gives where the words were begun, in metres past the house, with the phone failing the first try `failMs` after it is handed over. */
+    async function drive(failMs: number, retryCheck: boolean): Promise<number[]> {
+      type U = { text: string; lang: string; volume: number; voice: unknown; onstart: (() => void) | null; onend: (() => void) | null; onerror: (() => void) | null }
+      const began = Date.now()
+      const carAt = () => 186 + (14 * (Date.now() - began)) / 1000
+      let driver = at(carAt())
+      const begun: number[] = []
+      let tries = 0
+      const speaker = createSpeaker<U>({
+        speak: (u) => {
+          if (++tries === 1) return void setTimeout(() => u.onerror?.(), failMs)
+          setTimeout(() => {
+            begun.push(carAt() - 239)
+            u.onstart?.()
+            setTimeout(() => u.onend?.(), 900)
+          }, 50)
+        },
+        cancel: () => undefined,
+        resume: () => undefined,
+        paused: () => false,
+        voices: () => [],
+        makeUtterance: (text) => ({ text, lang: '', volume: 1, voice: undefined, onstart: null, onend: null, onerror: null }),
+        ready: () => Promise.resolve(true),
+        keepingAlive: () => true,
+        tick: () => 0,
+        language: () => 'en-GB',
+        wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      })
+      const now = () => driver
+      speaker.say('No throw, 240.', {
+        urgent: true,
+        whole: true,
+        warning: true,
+        afterMs: 950,
+        stale: alertWordsStale(['240'], occs, now, radius),
+        retryStale: retryCheck ? alertWordsLevel(['240'], occs, now, radius) : undefined,
+      })
+      for (let s = 0; s < 15; s++) {
+        await vi.advanceTimersByTimeAsync(1000)
+        driver = at(carAt())
+      }
+      return begun
+    }
+
+    it('leaves out a second try that would begin past the house, which the check for words out of date lets through', async () => {
+      // Handed over 1 s in and failed 3.3 s later, at 246 m, with the last fix at 242 m.
+      const [unchecked] = await drive(3300, false)
+      expect(unchecked).toBeGreaterThan(5)
+      expect(await drive(3300, true)).toEqual([])
+    })
+
+    it('keeps a second try that begins before the house', async () => {
+      const begun = await drive(1000, true)
+      expect(begun).toHaveLength(1)
+      expect(begun[0]).toBeLessThan(0)
+    })
+  })
+})
+
+describe('the round screen’s alert words', () => {
+  const lines = readFileSync(new URL('./Round.tsx', import.meta.url), 'utf8').split('\n')
+  const alertSays = lines.filter((l) => l.includes('say(plan.text,'))
+
+  it('give a no-throw row, and only that, the check for a second try, by the same stops as the check for words out of date', () => {
+    expect(alertSays).toHaveLength(2)
+    for (const line of alertSays) {
+      const stops = /stale: alertWordsStale\(plan\.announce, (\w+), \(\) => progressRef\.current, radius\)/.exec(line)?.[1]
+      expect(stops).toBeTruthy()
+      expect(line).toContain(`retryStale: plan.noThrow ? alertWordsLevel(plan.announce, ${stops}, () => progressRef.current, radius) : undefined`)
+    }
   })
 })

@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { Icon, type IconName } from './Icon'
-import { activeRoute, adjustActiveRoute, editActiveRoute, setActiveRound, setActiveSections, setActiveStreets, setBundleOrder } from './library'
+import { activeRoute, adjustActiveRoute, editActiveRoute, setActiveRound, setActiveSections, setActiveStreets, setBundleOrder, setLoad } from './library'
 import { Round } from './Round'
 import { Routes } from './Routes'
 import { Setup } from './Setup'
 import { canSave, loadLibrary, saveLibrary } from './storage'
-import type { Library } from './types'
+import type { Library, LoadList } from './types'
 
 type Tab = 'round' | 'routes' | 'setup'
 
@@ -48,6 +48,8 @@ export default function App() {
   const routeId = current.id
   // The driver's order of bundle drops is kept with the route it was set for, in the round's list or in Setup.
   const onBundleOrder = (order: string[]) => update((lib) => setBundleOrder(lib, routeId, order))
+  // What is loaded before the round is kept with the route it was set for, as the order is.
+  const onLoad = (list: LoadList) => update((lib) => setLoad(lib, routeId, list))
 
   return (
     <div className="app">
@@ -67,6 +69,8 @@ export default function App() {
             streets={current.streets ?? NONE}
             bundleOrder={current.bundleOrder}
             onBundleOrder={onBundleOrder}
+            load={current.load}
+            onLoad={onLoad}
             onRound={(r) => update((lib) => setActiveRound(lib, r))}
             onAdjustRoute={(r) => update((lib) => adjustActiveRoute(lib, r))}
             onGoSetup={() => setTab('setup')}

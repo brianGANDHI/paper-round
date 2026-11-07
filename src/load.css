@@ -1,0 +1,258 @@
+/*
+ * Papers to load: the list on the round's start screen, and the sheet that changes it, which comes up from the bottom over everything.
+ * The sheet is put straight on the page rather than in the start screen, so the rules for that screen's text don't reach it.
+ */
+
+/* ------------------------------------------------------------------ *
+ * The list on the start screen. It sits with the settings there, so it has their width and their kind of label.
+ * ------------------------------------------------------------------ */
+.load-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+/* Edit: 48 px tall, on the line of the label, without the space a button on this screen has above it. */
+.hero .load-card .load-edit {
+  flex: none;
+  min-width: 48px;
+  min-height: 48px;
+  margin-top: 0;
+  padding: 0 12px;
+}
+
+.load-row {
+  position: relative;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  font-size: 16px;
+  line-height: 1.25;
+}
+
+.load-row + .load-row {
+  border-top: 0.5px solid var(--sep);
+}
+
+.load-text {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* The papers line up down the right, as they do in the driver's own list. */
+.load-papers {
+  flex: none;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Said by a screen reader and not seen: the figures beside the lines need no word for the eye. */
+.load-unit {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.load-row.subtotal,
+.load-row.whole {
+  font-weight: 700;
+}
+
+/* The whole goes across the row. On the narrowest phones it takes two lines, shared out so "up" isn't left by itself. */
+.load-row.whole {
+  display: block;
+  overflow-wrap: anywhere;
+  text-wrap: balance;
+  background: var(--fill);
+}
+
+/* ------------------------------------------------------------------ *
+ * The sheet. The height and the shift of the backdrop follow the keyboard (see `useAboveKeyboard`), so the sheet stays above it.
+ * ------------------------------------------------------------------ */
+.load-scrim {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 100%;
+  z-index: 4000;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.4);
+  animation: fade 0.15s ease-out;
+}
+
+.load-sheet {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(100%, 460px);
+  max-height: calc(100% - var(--safe-top) - 8px);
+  padding: 6px max(12px, env(safe-area-inset-right, 0px)) calc(var(--safe-bottom) + 12px) max(12px, env(safe-area-inset-left, 0px));
+  border-radius: 18px 18px 0 0;
+  background: var(--material);
+  box-shadow: 0 -6px 30px rgba(0, 0, 0, 0.18);
+  -webkit-backdrop-filter: saturate(180%) blur(30px);
+  backdrop-filter: saturate(180%) blur(30px);
+  animation: rise 0.22s ease-out;
+}
+
+.load-sheet-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 48px;
+}
+
+.load-sheet-head > div {
+  min-width: 0;
+}
+
+.load-sheet-head h2 {
+  padding-left: 4px;
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.load-sheet-head .btn {
+  flex: none;
+  min-height: 48px;
+}
+
+.load-sheet-whole {
+  padding-left: 4px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--label-2);
+  overflow-wrap: anywhere;
+}
+
+.load-sheet-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.load-sheet-scroll > * {
+  flex: none;
+}
+
+.load-empty {
+  padding: 12px 8px 4px;
+  text-align: center;
+  font-size: 15px;
+  color: var(--label-2);
+}
+
+.load-line {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px 10px;
+  border-radius: 12px;
+  background: var(--card);
+}
+
+.load-line-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.load-line-head .field-label {
+  flex: none;
+}
+
+.load-line-papers {
+  min-width: 0;
+  text-align: right;
+  font-size: 14px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.load-line-row {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.load-line .field-input {
+  min-height: 48px;
+  background: var(--fill);
+}
+
+.load-bundles {
+  flex: none;
+  width: 76px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.load-note {
+  flex: 1;
+  min-width: 0;
+}
+
+.load-line .segmented {
+  flex: 1;
+  min-width: 0;
+}
+
+.load-line .segmented button {
+  min-width: 0;
+  min-height: 48px;
+  padding: 0 4px;
+}
+
+.load-remove {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  color: var(--red);
+  background: var(--fill);
+}
+
+.load-remove:active {
+  opacity: 0.6;
+}
+
+/* On the narrowest phones the type of the kinds and the gaps are a size down, so Unwrapped keeps to its half with the number beside it. */
+@media (max-width: 350px) {
+  .load-line-row {
+    gap: 6px;
+  }
+
+  .load-bundles {
+    width: 68px;
+    padding-left: 6px;
+    padding-right: 6px;
+  }
+
+  .load-line .segmented button {
+    font-size: 14px;
+  }
+}

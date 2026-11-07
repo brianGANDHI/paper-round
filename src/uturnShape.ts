@@ -270,8 +270,8 @@ export function endsWithUturn(points: readonly Pt[]): boolean {
 
 /** What to tell the driver once the U-turn is drawn. */
 export const UTURN_ADDED_NOTICE = 'U-turn added. Tap where the road goes next.'
-/** And, when the brush is Left or Right, that the side means something else now that the car is facing the other way. */
-export const UTURN_SIDE_NOTICE = 'Left and Right are as you drive, so after the U-turn this is the other side of the street.'
+/** And, when the brush is Port or Starboard, that the side means something else now that the car is facing the other way. */
+export const UTURN_SIDE_NOTICE = 'Port and Starboard are as you drive, so after the U-turn this is the other side of the street.'
 
 /** The notice for a U-turn drawn with the brush on `side`. */
 export const uturnHereNotice = (side: Side): string => (side === 'left' || side === 'right' ? `${UTURN_ADDED_NOTICE} ${UTURN_SIDE_NOTICE}` : UTURN_ADDED_NOTICE)

@@ -66,7 +66,7 @@ export interface RoundState {
   dropped?: string[]
   /**
    * The bundle drops the driver drove past with no confirmation, by the same keys. A subset of the stops done, apart from `dropped`.
-   * A bundle done that is in neither was skipped over (by skipping ahead, carrying on from a spot, or catching up). Left out when none.
+   * A bundle done that is in neither was skipped over, by a skip to a spot or a start from one. Left out when none.
    */
   missed?: string[]
   /**
@@ -104,6 +104,24 @@ export interface TurnStreet {
   name: string
 }
 
+/** How a bundle of papers comes to the driver: in a bag, or unwrapped. */
+export const LOAD_KINDS = ['bagged', 'unwrapped'] as const
+export type LoadKind = (typeof LOAD_KINDS)[number]
+
+/** A line of what to load before the round: so many bundles of one kind, such as "102 bagged", with a note if it has one ("1 pallet"). */
+export interface LoadLine {
+  id: string
+  bundles: number
+  kind: LoadKind
+  note?: string
+}
+
+/** What to load before the round: its lines, and how many papers are in a bundle of each kind. */
+export interface LoadList {
+  lines: LoadLine[]
+  papersEach: Record<LoadKind, number>
+}
+
 /** A route kept on the phone, with its own progress through the current run. */
 export interface SavedRoute {
   id: string
@@ -122,6 +140,11 @@ export interface SavedRoute {
    * the route never drops it. Left out until the driver has set one.
    */
   bundleOrder?: string[]
+  /**
+   * What the driver loads before the round. Kept beside the route so editing the route never drops it. Left out until the driver has
+   * changed it, and a route without one shows `DEFAULT_LOAD`. A list with no lines is a list of its own: the route loads nothing.
+   */
+  load?: LoadList
 }
 
 /** Everything saved on the phone: every route, and which one is in use. */

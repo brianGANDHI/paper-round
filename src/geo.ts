@@ -318,6 +318,13 @@ export interface Occurrence {
    * with it. `alertable` uses it to time a no-throw house on the leg it alerts on, which need not be the leg nearest it (see there).
    */
   altAt?: number
+  /**
+   * Met by where the driver is, not along the route, though the stop is beside the route: the last pass still to do of the bundle next in the
+   * driver's list, when every pass of it to do is behind the driver (see `gatedOccurrences`). It is only ever on a copy of a pass, for the time
+   * it is judged, and never on what `occurrences` gives. `byPosition` honours it, so everything that goes by that needs nothing more, but for
+   * how far its zone reaches (see `placedZone`).
+   */
+  placed?: boolean
 }
 
 /** A pass counts as passing a stop if it comes within this much of it, or 1.5 times its closest pass. */
@@ -568,11 +575,46 @@ export const POSITION_MAX_ACCURACY_M = 40
 
 /**
  * Whether a stop is too far from the route for driving the route to bring the driver near enough to be
- * alerted for it. Such a stop alerts by where the driver is instead: within the alert distance of it,
- * however they got there.
+ * alerted for it, or is a pass with no way left along the route to it (see `Occurrence.placed`). Such a stop
+ * alerts by where the driver is instead: within the alert distance of it, however they got there.
  */
-export const byPosition = (o: Pick<Occurrence, 'off' | 'stop'>, radius: Record<Stop['type'], number>): boolean =>
-  o.off > radius[o.stop.type] + LATERAL_SLACK_M
+export const byPosition = (o: Pick<Occurrence, 'off' | 'stop' | 'placed'>, radius: Record<Stop['type'], number>): boolean =>
+  o.placed === true || o.off > radius[o.stop.type] + LATERAL_SLACK_M
+
+/**
+ * How far from the route a stop can be and still count as along it. A stop further off is off the route:
+ * it can be placed there all the same, and alerts by where the driver is rather than along the route.
+ */
+export const MAX_STOP_OFFSET_M = 60
+
+/** How much further than a stop is from the route its zone reaches when it is `placed`, in metres, so a car on the road is in the zone: see `placedZone`. */
+export const PLACED_ROAD_M = 15
+
+/**
+ * How far from a stop, in a straight line, the driver is in its zone when it is met by where they are: the alert distance. A `placed` bundle set
+ * back from the road further than that could never alert from the road, and it holds up every bundle after it in the driver's list, so its zone
+ * reaches the road. So does any bundle within `MAX_STOP_OFFSET_M` of the road, which Setup counts as along it, however short the alert distance
+ * (only the next bundle in the list ever gets this far). Any other stop further from the route than that is visited, and has only its alert distance.
+ */
+export const placedZone = (o: Pick<Occurrence, 'off' | 'stop' | 'placed'>, radius: Record<Stop['type'], number>): number =>
+  o.placed || (o.stop.type === 'bundle' && o.off <= MAX_STOP_OFFSET_M) ? Math.max(radius[o.stop.type], o.off + PLACED_ROAD_M) : radius[o.stop.type]
+
+/**
+ * Whether a pass of a stop is too far behind a driver `driverAt` metres along the route to alert along it any more. A small zone is also small
+ * behind the stop, so a stop already out of it doesn't alert and clear at once.
+ */
+export const pastAlerting = (o: Pick<Occurrence, 'at' | 'stop'>, driverAt: number, radius: Record<Stop['type'], number>): boolean =>
+  o.at - driverAt < -Math.min(PASSED_M, radius[o.stop.type])
+
+/**
+ * The passes `occs` with those the queue has as `placed` kept so (see `Occurrence.placed`): what is queued keeps how it is judged when it is looked
+ * up again in the passes, which know nothing of it, as a bundle driven past and alerting by place would otherwise be judged along the route, and
+ * be gone by the moment it was looked up. With none placed it gives `occs` itself.
+ */
+export function keepPlaced(occs: Occurrence[], queue: readonly Pick<Occurrence, 'key' | 'placed'>[]): Occurrence[] {
+  const placed = new Set(queue.filter((o) => o.placed).map((o) => o.key))
+  return placed.size ? occs.map((o) => (placed.has(o.key) ? { ...o, placed: true } : o)) : occs
+}
 
 /**
  * The stops the driver is approaching: not yet handled, no more than the alert
@@ -580,7 +622,7 @@ export const byPosition = (o: Pick<Occurrence, 'off' | 'stop'>, radius: Record<S
  * and physically close. `driverAt` is how far along the route the driver is.
  *
  * A stop that is off the route (see `byPosition`) is not met along it, so it needs only the driver to be
- * within the alert distance of it. It is met one pass at a time, the first the stop has not been done for,
+ * in its zone (see `placedZone`). It is met one pass at a time, the first the stop has not been done for,
  * and only on a fix that is accurate enough to say so (`accuracy`, in metres). Nearest first.
  */
 export function approachingOccurrences(
@@ -601,10 +643,8 @@ export function approachingOccurrences(
     .filter((o) => {
       if (handled.has(o.key)) return false
       const r = radius[o.stop.type]
-      if (byPosition(o, radius)) return next.get(o.stop.id) === o && accuracy <= POSITION_MAX_ACCURACY_M && haversine(pos, o.stop) <= r
-      const ahead = o.at - driverAt
-      // A small zone is also small behind the stop, so a stop already out of it doesn't alert and clear at once.
-      return ahead <= r && ahead >= -Math.min(PASSED_M, r) && haversine(pos, o.stop) <= r + LATERAL_SLACK_M
+      if (byPosition(o, radius)) return next.get(o.stop.id) === o && accuracy <= POSITION_MAX_ACCURACY_M && haversine(pos, o.stop) <= placedZone(o, radius)
+      return o.at - driverAt <= r && !pastAlerting(o, driverAt, radius) && haversine(pos, o.stop) <= r + LATERAL_SLACK_M
     })
     .sort((a, b) => haversine(pos, a.stop) - haversine(pos, b.stop))
 }

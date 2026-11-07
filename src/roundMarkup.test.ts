@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { AlertBanner } from './AlertBanner'
 import { BundleOrderEditor, BundleOrderList } from './BundleOrderEditor'
+import { nextRoundRows } from './bundleFlow'
 import { BundlesSheet } from './BundlesSheet'
 import { bundleRows, editorRows, type BundleRow, type EditorBundle } from './bundles'
 import type { Occurrence } from './geo'
@@ -483,6 +484,27 @@ describe("the Bundles list in the driver's order", () => {
   it('has the rows in the order the driver put them in, not the route\'s', () => {
     const out = sheet(bundleRows(occs, { handledStopIds: [] }, ['c', 'a', 'b'], here))
     expect(names(out)).toEqual(['School', 'Co-op', 'Spar'])
+  })
+
+  it('has Reorder and no row buttons in the list of the next round, opened on a finished round to set the order', () => {
+    const finished = { handledStopIds: ['a', 'b', 'c'], dropped: ['a', 'b'], missed: ['c'] }
+    const withOrder = { order: undefined, onOrder: () => undefined }
+    expect(sheet(bundleRows(occs, finished, undefined, here), withOrder)).not.toContain('>Reorder<')
+    const out = sheet(nextRoundRows(occs, undefined, here), withOrder)
+    expect(out).toContain('>Reorder<')
+    expect(out).not.toContain('Mark dropped')
+    expect(out).not.toContain('>Undo<')
+    expect(out).toContain('<div class="bundles-count">3 bundles left · 0 of 3 dropped</div>')
+  })
+
+  it('heads the list Bundles, and as it is told to for the list of the next round, for a screen reader too', () => {
+    const rows = nextRoundRows(occs, undefined, here)
+    const plain = sheet(rows)
+    expect(plain).toContain('<h2>Bundles</h2>')
+    expect(plain).toContain('aria-label="Bundle drops"')
+    const next = sheet(rows, { heading: 'Bundles, next round' })
+    expect(next).toContain('<h2>Bundles, next round</h2>')
+    expect(next).toContain('aria-label="Bundles, next round"')
   })
 
   it('says in the header how many are left, and how many of the whole are dropped', () => {

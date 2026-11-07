@@ -3,14 +3,14 @@ import { ALERT_SECONDS } from './sound'
 import type { Route, Side } from './types'
 
 /**
- * Saying the side being thrown out loud, each time it changes, so the driver need not look at the pill to know: "Left", "Right",
+ * Saying the side being thrown out loud, each time it changes, so the driver need not look at the pill to know: "Port", "Starboard",
  * "Both", and "Transit" when throwing stops. Everything here is pure; the round screen holds the state (see `createSideCue`) and does the
  * speaking (see `say` in speech.ts, as a queued word: it breaks in on another alert's words being said, which are said again after it,
  * and a no-throw house's words and it are said in the order asked, neither cutting the other off).
  */
 
 /** The words for each side: exactly these four, and only the word, so the change is heard at a glance. */
-export const SIDE_WORDS: Record<Side, string> = { left: 'Left', right: 'Right', both: 'Both', transit: 'Transit' }
+export const SIDE_WORDS: Record<Side, string> = { left: 'Port', right: 'Starboard', both: 'Both', transit: 'Transit' }
 
 /** What is said for a side. */
 export const sideWords = (side: Side): string => SIDE_WORDS[side]
@@ -23,8 +23,11 @@ export const SIDE_LOOKAHEAD_M = 15
 /** The least and the most the look-ahead is, in metres, whatever the speed: a crawl still wants a little warning and a motorway no more than a few seconds. */
 export const SIDE_LOOKAHEAD_MIN_M = 8
 export const SIDE_LOOKAHEAD_MAX_M = 30
-/** How long a word, with the lead-in before it, takes to say, in seconds. */
-const SAY_SECONDS = 1.2
+/**
+ * How long a word takes to say, in seconds, with the wait before it and the quiet lead-in said after a silence (see `LEAD_IN` in speech.ts),
+ * which a side word usually has, as the changes of side are far enough apart.
+ */
+const SAY_SECONDS = 1.6
 /**
  * The longest an alert's beep lasts, in seconds (a no-throw house's three: see `ALERT_SECONDS`). A side word asked for on the fix an alert
  * comes up on waits for the beep to end, so as not to be lost under it; the look-ahead allows for that wait, or such a word would start only
@@ -35,7 +38,7 @@ export const SIDE_BEEP_SECONDS = Math.max(...Object.values(ALERT_SECONDS))
 /**
  * How far ahead of the driver to look for the side to say, in metres, given their speed in metres a second (`SIDE_LOOKAHEAD_M` when it
  * is not known): the distance the car goes while the word may wait for an alert's beep, starts and is said (`SIDE_BEEP_SECONDS` and
- * 1.2 seconds), kept between `SIDE_LOOKAHEAD_MIN_M` and `SIDE_LOOKAHEAD_MAX_M`.
+ * `SAY_SECONDS`), kept between `SIDE_LOOKAHEAD_MIN_M` and `SIDE_LOOKAHEAD_MAX_M`.
  */
 export function sideLookAheadM(speed: number | null | undefined): number {
   if (typeof speed !== 'number' || !Number.isFinite(speed) || speed < 0) return SIDE_LOOKAHEAD_M
@@ -54,7 +57,7 @@ export function sideAtAlong(route: Pick<Route, 'sideChanges'>, cum: readonly num
 
 /**
  * A different side asked for within this many metres of where the last was said is the position wobbling across the change, not a new
- * change, so it is not said: the driver would hear "Right, Left, Right" at one spot.
+ * change, so it is not said: the driver would hear "Starboard, Port, Starboard" at one spot.
  */
 export const SIDE_SETTLE_M = 6
 
@@ -105,4 +108,24 @@ export function createSideCue(): SideCue {
     },
     last: () => state.last,
   }
+}
+
+/** The sides the Test Voice button says, in turn: the ones that say where to throw. */
+const TEST_SIDES: readonly Side[] = ['left', 'right', 'both']
+
+/**
+ * How long after one word of the test the next is asked for, in milliseconds. A word takes a second or two to say, with what goes before
+ * it, which leaves about 3 seconds of silence: over `COLD_MS` (see speech.ts), so each word is a single word after a silence, as on the road,
+ * and a shorter wait would test only the first of them.
+ */
+export const VOICE_TEST_GAP_MS = 4000
+
+/**
+ * Says the side words one at a time with a silence between them, for the Test Voice button, as each would come on the road. The first is
+ * asked for at once and the rest a gap apart. `say` is what says one word. Returns what to call to leave out those not yet asked for.
+ */
+export function testVoice(say: (word: string) => void): () => void {
+  const timers = TEST_SIDES.slice(1).map((side, i) => setTimeout(() => say(sideWords(side)), (i + 1) * VOICE_TEST_GAP_MS))
+  say(sideWords(TEST_SIDES[0]))
+  return () => timers.forEach((t) => clearTimeout(t))
 }

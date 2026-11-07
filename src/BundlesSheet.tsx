@@ -17,6 +17,8 @@ interface Props {
   onMark: (key: string) => void
   /** "Undo", for a bundle that is marked dropped: the key of the pass that was dropped (`BundleRow.undoKey`). */
   onUndo: (key: string) => void
+  /** What the list is headed, when it is not the bundles of the round: the next round's list (see `nextRoundRows`) must not pass for this one's. */
+  heading?: string
 }
 
 /**
@@ -45,7 +47,7 @@ function tapLock(): (act: () => void) => void {
  * opens with the next bundle in the middle of the view, since a round can have many. An alert still shows above the sheet, with its
  * Dropped button.
  */
-export function BundlesSheet({ rows, order, onOrder, onClose, onMark, onUndo }: Props) {
+export function BundlesSheet({ rows, order, onOrder, onClose, onMark, onUndo, heading }: Props) {
   const totals = rowTotals(rows)
   const list = rows.map((r, i) => stopRow(r, i + 1))
   const unset = unsetRows(rows)
@@ -83,10 +85,10 @@ export function BundlesSheet({ rows, order, onOrder, onClose, onMark, onUndo }: 
 
   return (
     <div className="bundles-scrim" onClick={onClose}>
-      <div className="bundles-sheet" role="dialog" aria-modal="true" aria-label="Bundle drops" onClick={(e) => e.stopPropagation()}>
+      <div className="bundles-sheet" role="dialog" aria-modal="true" aria-label={heading ?? 'Bundle drops'} onClick={(e) => e.stopPropagation()}>
         <div className="bundles-head">
           <div>
-            <h2>Bundles</h2>
+            <h2>{heading ?? 'Bundles'}</h2>
             {totals.total > 0 && <div className="bundles-count">{bundleLeftText(totals)}</div>}
           </div>
           <div className="bundles-head-actions">

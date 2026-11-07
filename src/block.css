@@ -292,8 +292,9 @@
 /*
  * The list of bundle drops and the menu come up from the bottom over a dimmed map, with the alerts above the dimming. Opened while this
  * alert, or another stop's with a block in it, is up they stay below it, as they do under a bundle drop's Dropped button, so their headers
- * are not under the banner. A bundle drop's banner with the strip as well is the tallest there is, the strip's height and its gap more than
- * the room kept under a Dropped button, so they keep that much more. That is anywhere but a phone on its side, where the alert is at the
+ * are not under the banner. A bundle drop's banner with the strip as well is the strip's height and its gap more than the room kept under a
+ * Dropped button, so they keep that much more. (Another stop's banner with a bundle's strip as well keeps more again: see `.bundle-strip` in
+ * bundles.css and roundMenu.css.) That is anywhere but a phone on its side, where the alert is at the
  * left and they are at the right.
  */
 @media not all and (orientation: landscape) and (max-height: 600px) {
@@ -359,4 +360,17 @@
   padding: 0 8px;
   font-size: 15px;
   white-space: normal;
+}
+
+/* "Starboard" is the longest side word: from 361 px up its tile is wider, so the word stays inside it. At 360 px and under there is no width to give, and "Apartment block" needs what there is, so it spills a little and stays readable. */
+@media (min-width: 361px) {
+  .stop-alert.right .stop-alert-side,
+  .stop-alert.ask.right .stop-alert-side,
+  .stop-alert.teal.right .stop-alert-side {
+    width: 80px;
+  }
+
+  .block-strip.right .block-strip-side {
+    width: 72px;
+  }
 }

@@ -1,5 +1,5 @@
 import { plural } from './format'
-import { alongPath, bearing, cumulativeDistances, haversine, sideAt, snapAtDistance, snapWithin, type Occurrence, type Snap } from './geo'
+import { alongPath, bearing, cumulativeDistances, haversine, MAX_STOP_OFFSET_M, sideAt, snapAtDistance, snapWithin, type Occurrence, type Snap } from './geo'
 import { isSide, type Pt, type Route, type Side, type SideChange, type Stop, type StopType } from './types'
 
 /** A tap within this distance of the route counts as being on it, when editing sections. */
@@ -10,11 +10,7 @@ const VERTEX_SNAP_M = 3
 const DUPLICATE_TAP_M = 2
 /** The least road worth giving a side of its own by distance, in metres: anything shorter is a slip, and would leave a sliver of a section. */
 export const PAINT_MIN_M = 15
-/**
- * How far from the route a stop can be and still count as along it. A stop further off is off the route:
- * it can be placed there all the same, and alerts by where the driver is rather than along the route.
- */
-export const MAX_STOP_OFFSET_M = 60
+export { MAX_STOP_OFFSET_M }
 
 export const segmentCount = (r: Pick<Route, 'points'>) => Math.max(0, r.points.length - 1)
 
@@ -416,7 +412,7 @@ export function defaultRepeatSide(side: Side, mode: RepeatMode): Side {
 
 /**
  * A side to start from when changing just part of a section, so it isn't the side the section already has:
- * Left and Right swap, Both goes to Left and Transit to Both.
+ * Port and Starboard swap, Both goes to Port and Transit to Both.
  */
 export function otherSide(side: Side): Side {
   if (side === 'left') return 'right'

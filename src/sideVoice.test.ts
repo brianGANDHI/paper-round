@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cumulativeDistances } from './geo'
 import {
   createSideCue,
@@ -13,6 +13,8 @@ import {
   sideLookAheadM,
   sideWords,
   stepSideCue,
+  testVoice,
+  VOICE_TEST_GAP_MS,
 } from './sideVoice'
 import { ALERT_SECONDS } from './sound'
 import { SIDES, type Pt, type Side, type SideChange } from './types'
@@ -24,12 +26,12 @@ const cum = cumulativeDistances(road)
 const changes = (...c: [number, Side][]): { sideChanges: SideChange[] } => ({ sideChanges: c.map(([idx, side]) => ({ idx, side })) })
 
 describe('the words for a side', () => {
-  it('are exactly Left, Right, Both and Transit', () => {
-    expect(sideWords('left')).toBe('Left')
-    expect(sideWords('right')).toBe('Right')
+  it('are exactly Port, Starboard, Both and Transit', () => {
+    expect(sideWords('left')).toBe('Port')
+    expect(sideWords('right')).toBe('Starboard')
     expect(sideWords('both')).toBe('Both')
     expect(sideWords('transit')).toBe('Transit')
-    expect(Object.values(SIDE_WORDS).sort()).toEqual(['Both', 'Left', 'Right', 'Transit'])
+    expect(Object.values(SIDE_WORDS).sort()).toEqual(['Both', 'Port', 'Starboard', 'Transit'])
   })
 
   it('have a word for every side there is', () => {
@@ -44,10 +46,11 @@ describe('how far ahead the side is looked at', () => {
   })
 
   it('is the distance a word takes to say at the speed, with the wait for an alert’s beep, kept between a least and a most', () => {
-    // 1.2 s for the word and 0.95 s for the longest beep: 2.15 s of driving.
-    expect(sideLookAheadM(5)).toBe(11)
-    expect(sideLookAheadM(10)).toBe(22)
-    expect(sideLookAheadM(12)).toBe(26)
+    // 1.6 s for the word and the lead-in before it, and 0.95 s for the longest beep: 2.55 s of driving.
+    expect(sideLookAheadM(5)).toBe(13)
+    expect(sideLookAheadM(10)).toBe(26)
+    expect(sideLookAheadM(11)).toBe(28)
+    expect(sideLookAheadM(12)).toBe(SIDE_LOOKAHEAD_MAX_M)
     expect(sideLookAheadM(14)).toBe(SIDE_LOOKAHEAD_MAX_M)
     expect(sideLookAheadM(0)).toBe(SIDE_LOOKAHEAD_MIN_M)
     expect(sideLookAheadM(3)).toBe(SIDE_LOOKAHEAD_MIN_M)
@@ -218,5 +221,61 @@ describe('driving a route and saying its sides', () => {
         expect(s.at).toBeGreaterThan(edges[i] - sideLookAheadM(speed) - fixEvery)
       })
     }
+  })
+})
+
+describe('the Test Voice button', () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  const WORDS = [sideWords('left'), sideWords('right'), sideWords('both')]
+
+  it('says the first side word at once, from the tap', () => {
+    const said: string[] = []
+    testVoice((word) => said.push(word))
+    expect(said).toEqual(WORDS.slice(0, 1))
+  })
+
+  it('says each of the three side words in turn, a gap apart, as words of their own', () => {
+    const said: string[] = []
+    testVoice((word) => said.push(word))
+    vi.advanceTimersByTime(VOICE_TEST_GAP_MS - 1)
+    expect(said).toEqual(WORDS.slice(0, 1))
+    vi.advanceTimersByTime(1)
+    expect(said).toEqual(WORDS.slice(0, 2))
+    vi.advanceTimersByTime(VOICE_TEST_GAP_MS)
+    expect(said).toEqual(WORDS)
+    vi.advanceTimersByTime(60_000)
+    expect(said).toEqual(WORDS)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('takes its words from the words for a side, so it says what the road will', () => {
+    const said: string[] = []
+    testVoice((word) => said.push(word))
+    vi.advanceTimersByTime(3 * VOICE_TEST_GAP_MS)
+    for (const word of said) expect(Object.values(SIDE_WORDS)).toContain(word)
+    expect(new Set(said).size).toBe(3)
+    expect(said).not.toContain(sideWords('transit'))
+  })
+
+  it('stops, with its timers cleared, so no word comes after the screen has gone', () => {
+    const said: string[] = []
+    const stop = testVoice((word) => said.push(word))
+    vi.advanceTimersByTime(VOICE_TEST_GAP_MS)
+    expect(said).toHaveLength(2)
+    stop()
+    expect(vi.getTimerCount()).toBe(0)
+    vi.advanceTimersByTime(60_000)
+    expect(said).toHaveLength(2)
+  })
+
+  it('can be stopped twice, and after it is over', () => {
+    const stop = testVoice(() => undefined)
+    vi.advanceTimersByTime(60_000)
+    expect(() => {
+      stop()
+      stop()
+    }).not.toThrow()
   })
 })

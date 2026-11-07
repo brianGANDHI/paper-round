@@ -21,9 +21,11 @@ import {
   setActiveSections,
   setActiveStreets,
   setBundleOrder,
+  setLoad,
   uniqueName,
 } from './library'
-import type { Library, NamedSection, RoundState, Route, Stop, TurnStreet } from './types'
+import { DEFAULT_LOAD, loadOf } from './load'
+import type { Library, LoadList, NamedSection, RoundState, Route, Stop, TurnStreet } from './types'
 
 const drawn = (n = 3): Route => ({
   points: Array.from({ length: n }, (_, i) => ({ lat: -33.87 + i * 0.001, lng: 151.2 })),
@@ -1116,6 +1118,253 @@ describe("the driver's order of the bundle drops", () => {
       const lib = addImported(createLibrary(), [{ name: 'Monday', route: withBundles(), bundleOrder: given }])
       given.push('a')
       expect(activeRoute(lib).bundleOrder).toEqual(['c', 'b'])
+    })
+  })
+})
+
+describe('what the driver loads before the round', () => {
+  // A list of the driver's own, which is not the usual one.
+  const mine = (): LoadList => ({
+    lines: [
+      { id: 'x', bundles: 80, kind: 'bagged', note: 'Front seat' },
+      { id: 'y', bundles: 4, kind: 'unwrapped' },
+    ],
+    papersEach: { bagged: 30, unwrapped: 40 },
+  })
+  const loaded = () => {
+    let lib = addRoute(createLibrary(), 'Saturday', drawn())
+    lib = setLoad(lib, lib.activeId, mine())
+    return lib
+  }
+
+  describe('a route with none of its own', () => {
+    it('has no key, and shows the usual list', () => {
+      const route = activeRoute(addRoute(createLibrary(), 'Saturday', drawn()))
+      expect('load' in route).toBe(false)
+      expect(loadOf(route.load)).toBe(DEFAULT_LOAD)
+    })
+  })
+
+  describe('setting it', () => {
+    it('keeps it with the route, and leaves the route and its round alone', () => {
+      let lib = addRoute(createLibrary(), 'Saturday', drawn())
+      lib = setActiveRound(lib, { handledStopIds: ['a'], furthest: 300, startM: 120 })
+      const before = activeRoute(lib)
+      lib = setLoad(lib, lib.activeId, mine())
+      const after = activeRoute(lib)
+      expect(after.load).toEqual(mine())
+      expect(after.route).toBe(before.route)
+      expect(after.round).toBe(before.round)
+      expect(after.updatedAt).toBe(before.updatedAt)
+    })
+
+    it('sets it for the route it is given, whichever is in use, and no other', () => {
+      let lib = addRoute(addRoute(createLibrary(), 'Monday', drawn()), 'Tuesday', drawn())
+      const monday = lib.routes.find((r) => r.name === 'Monday')!
+      lib = setLoad(lib, monday.id, mine())
+      expect(lib.routes.find((r) => r.name === 'Monday')!.load).toEqual(mine())
+      expect('load' in lib.routes.find((r) => r.name === 'Tuesday')!).toBe(false)
+      expect(lib.activeId).not.toBe(monday.id)
+    })
+
+    it('saves the usual list as the route\'s own once it is edited, not as a link to the usual one', () => {
+      const lib = addRoute(createLibrary(), 'Saturday', drawn())
+      const saved = activeRoute(setLoad(lib, lib.activeId, DEFAULT_LOAD)).load!
+      expect(saved).toEqual(DEFAULT_LOAD)
+      expect(saved).not.toBe(DEFAULT_LOAD)
+      expect(saved.lines[0]).not.toBe(DEFAULT_LOAD.lines[0])
+    })
+
+    it('tidies it: a note typed with stray spaces is kept without them, and a blank one not at all', () => {
+      const lib = addRoute(createLibrary(), 'Saturday', drawn())
+      const typed: LoadList = { ...mine(), lines: [{ id: 'x', bundles: 1, kind: 'bagged', note: '  1   pallet ' }, { id: 'y', bundles: 2, kind: 'bagged', note: '  ' }] }
+      const saved = activeRoute(setLoad(lib, lib.activeId, typed)).load!
+      expect(saved.lines[0].note).toBe('1 pallet')
+      expect('note' in saved.lines[1]).toBe(false)
+    })
+
+    it('keeps a list with no lines: every line taken off is not the same as never having set one', () => {
+      const lib = loaded()
+      const saved = activeRoute(setLoad(lib, lib.activeId, { ...mine(), lines: [] }))
+      expect(saved.load).toEqual({ lines: [], papersEach: { bagged: 30, unwrapped: 40 } })
+      expect(loadOf(saved.load).lines).toEqual([])
+    })
+
+    it('replaces a list set before', () => {
+      let lib = loaded()
+      const other: LoadList = { lines: [{ id: 'z', bundles: 1, kind: 'bagged' }], papersEach: { bagged: 25, unwrapped: 50 } }
+      lib = setLoad(lib, lib.activeId, other)
+      expect(activeRoute(lib).load).toEqual(other)
+    })
+
+    it('changes nothing for a route that is not here', () => {
+      const lib = loaded()
+      expect(setLoad(lib, 'nope', mine())).toBe(lib)
+    })
+
+    it('does not change the library or the list it is given, and does not share it', () => {
+      const lib = loaded()
+      const copy = structuredClone(lib)
+      const given = mine()
+      const next = setLoad(lib, lib.activeId, given)
+      expect(lib).toEqual(copy)
+      given.lines[0].bundles = 1
+      given.papersEach.bagged = 1
+      expect(activeRoute(next).load).toEqual(mine())
+    })
+  })
+
+  describe('keeping it through what happens to the route', () => {
+    it('keeps it when the route is edited, which starts the round over but is not the driver\'s progress', () => {
+      const lib = editActiveRoute(loaded(), drawn(5), 5)
+      expect(activeRoute(lib).load).toEqual(mine())
+      expect(activeRoute(lib).round).toEqual({ handledStopIds: [] })
+    })
+
+    it('keeps it when the route is adjusted while driving', () => {
+      expect(activeRoute(adjustActiveRoute(loaded(), { ...drawn(), sideChanges: [{ idx: 0, side: 'right' }] }, 1)).load).toEqual(mine())
+    })
+
+    it('keeps it when the round is kept, started over or reset', () => {
+      let lib = setActiveRound(loaded(), { handledStopIds: ['a'], furthest: 200 })
+      expect(activeRoute(lib).load).toEqual(mine())
+      lib = setActiveRound(lib, { handledStopIds: [] })
+      expect(activeRoute(lib).load).toEqual(mine())
+    })
+
+    it('keeps it when sections, street names or the bundle order are set', () => {
+      let lib = setActiveSections(loaded(), [named('s1')])
+      lib = setActiveStreets(lib, [street('Oak Road')])
+      lib = setBundleOrder(lib, lib.activeId, ['a'])
+      expect(activeRoute(lib).load).toEqual(mine())
+      lib = setBundleOrder(setActiveStreets(setActiveSections(lib, []), []), lib.activeId, [])
+      expect(activeRoute(lib).load).toEqual(mine())
+    })
+
+    it('keeps what else the route has when it is set', () => {
+      let lib = setActiveStreets(setActiveSections(addRoute(createLibrary(), 'Saturday', drawn()), [named('s1')]), [street('Oak Road')])
+      lib = setBundleOrder(lib, lib.activeId, ['a'])
+      lib = setLoad(lib, lib.activeId, mine())
+      expect(activeRoute(lib).sections).toEqual([named('s1')])
+      expect(activeRoute(lib).streets).toEqual([street('Oak Road')])
+      expect(activeRoute(lib).bundleOrder).toEqual(['a'])
+    })
+
+    it('keeps it when the route is renamed or another is chosen and chosen again', () => {
+      let lib = loaded()
+      const id = lib.activeId
+      lib = renameRoute(lib, id, 'Sunday')
+      lib = selectRoute(selectRoute(lib, lib.routes[0].id), id)
+      expect(activeRoute(lib).load).toEqual(mine())
+    })
+  })
+
+  describe('copying a route', () => {
+    it('copies it, independently of the original', () => {
+      let lib = loaded()
+      const original = lib.activeId
+      lib = duplicateRoute(lib, original)
+      const copy = activeRoute(lib)
+      expect(copy.id).not.toBe(original)
+      expect(copy.load).toEqual(mine())
+      lib = setLoad(lib, copy.id, { ...mine(), lines: [] })
+      expect(lib.routes.find((r) => r.id === original)!.load).toEqual(mine())
+      expect(lib.routes.find((r) => r.id === original)!.load).not.toBe(copy.load)
+    })
+
+    it('has no key for a route with none of its own', () => {
+      const lib = addRoute(createLibrary(), 'Saturday', drawn())
+      expect('load' in activeRoute(duplicateRoute(lib, lib.activeId))).toBe(false)
+    })
+  })
+
+  describe('reading it back from the phone', () => {
+    const read = (load: unknown) => normalizeLibrary({ routes: [{ id: 'x', name: 'A', route: drawn(), round: { handledStopIds: [] }, updatedAt: 0, load }] })!.routes[0]
+
+    it('keeps a list that was saved', () => {
+      expect(read(mine()).load).toEqual(mine())
+    })
+
+    it('has none when there was none, or when it is nothing usable, so the route shows the usual list', () => {
+      for (const junk of [undefined, null, 'list', 5, {}, [], { lines: 'x' }, { lines: [null, 7] }]) {
+        const route = read(junk)
+        expect('load' in route, JSON.stringify(junk)).toBe(false)
+        expect(loadOf(route.load), JSON.stringify(junk)).toBe(DEFAULT_LOAD)
+      }
+    })
+
+    it('keeps the lines that can be read from a damaged list, and the rest of the route', () => {
+      const route = read({ lines: [null, { id: 'x', bundles: 9, kind: 'bagged' }, { id: 'y', bundles: 'lots', kind: 'bagged' }], papersEach: { bagged: 'x', unwrapped: 40 } })
+      expect(route.load).toEqual({ lines: [{ id: 'x', bundles: 9, kind: 'bagged' }], papersEach: { bagged: 25, unwrapped: 40 } })
+      expect(route.route.points).toHaveLength(3)
+    })
+
+    it('keeps a list with no lines', () => {
+      expect(read({ ...mine(), lines: [] }).load).toEqual({ lines: [], papersEach: { bagged: 30, unwrapped: 40 } })
+    })
+
+    it('reads a route saved before the list existed as one with none', () => {
+      const lib = normalizeLibrary({ routes: [{ id: 'x', name: 'A', route: drawn(), round: { handledStopIds: [] }, updatedAt: 0 }] })!
+      expect('load' in lib.routes[0]).toBe(false)
+    })
+
+    it('survives being written out and read back', () => {
+      expect(activeRoute(normalizeLibrary(JSON.parse(JSON.stringify(loaded())))!).load).toEqual(mine())
+    })
+  })
+
+  describe('adding routes from a backup', () => {
+    it('adds a route with its list, and one without as before', () => {
+      const lib = addImported(createLibrary(), [
+        { name: 'Monday', route: drawn(), load: mine() },
+        { name: 'Tuesday', route: drawn() },
+      ])
+      expect(lib.routes.find((r) => r.name === 'Monday')!.load).toEqual(mine())
+      expect('load' in lib.routes.find((r) => r.name === 'Tuesday')!).toBe(false)
+    })
+
+    it('adds it as a new route in keep mode, leaving the one here with its own', () => {
+      const other: LoadList = { ...mine(), lines: [] }
+      let here = addRoute(createLibrary(), 'Monday', drawn())
+      here = setLoad(here, here.activeId, mine())
+      const lib = addImported(here, [{ name: 'Monday', route: drawn(), load: other }], 9, 'keep')
+      expect(lib.routes.find((r) => r.name === 'Monday')!.load).toEqual(mine())
+      expect(lib.routes.find((r) => r.name === 'Monday 2')!.load).toEqual(other)
+    })
+
+    describe('over a route of the same name', () => {
+      const here = () => {
+        const lib = addRoute(createLibrary(), 'Monday', drawn())
+        return setLoad(lib, lib.activeId, mine())
+      }
+      const monday = (lib: Library) => lib.routes.find((r) => r.name === 'Monday')!
+
+      it('takes the one in the backup', () => {
+        const other: LoadList = { ...mine(), papersEach: { bagged: 10, unwrapped: 20 } }
+        expect(monday(addImported(here(), [{ name: 'monday', route: drawn(), load: other }], 9, 'replace')).load).toEqual(other)
+      })
+
+      it('keeps its own when the backup has none, as a backup made before it existed has none', () => {
+        expect(monday(addImported(here(), [{ name: 'Monday', route: drawn() }], 9, 'replace')).load).toEqual(mine())
+      })
+
+      it('takes a list with no lines from the backup, which is a list of its own', () => {
+        const none: LoadList = { ...mine(), lines: [] }
+        expect(monday(addImported(here(), [{ name: 'Monday', route: drawn(), load: none }], 9, 'replace')).load).toEqual(none)
+      })
+    })
+
+    it('replaces the blank starter with a route that has a list', () => {
+      const lib = addImported(createLibrary(), [{ name: 'Monday', route: drawn(), load: mine() }])
+      expect(lib.routes).toHaveLength(1)
+      expect(activeRoute(lib).load).toEqual(mine())
+    })
+
+    it('does not share the list it is given', () => {
+      const given = mine()
+      const lib = addImported(createLibrary(), [{ name: 'Monday', route: drawn(), load: given }])
+      given.lines.pop()
+      expect(activeRoute(lib).load).toEqual(mine())
     })
   })
 })

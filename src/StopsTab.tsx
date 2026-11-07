@@ -86,9 +86,9 @@ interface Props {
   onNext: () => void
 }
 
-const SIDE_WORD: Record<RoadSide, string> = { left: 'Left', right: 'Right' }
+const SIDE_WORD: Record<RoadSide, string> = { left: 'Port', right: 'Starboard' }
 
-/** The side of the road a stop is on for each pass: "Left", "Left, then Right" on a street driven both ways. */
+/** The side of the road a stop is on for each pass: "Port", "Port, then Starboard" on a street driven both ways. */
 function sidesText(sides: (RoadSide | null)[]): string {
   if (sides.every((x) => x === null)) return 'side not known'
   return sides.map((x) => (x ? SIDE_WORD[x] : '?')).join(', then ')
@@ -147,7 +147,7 @@ export function StopsTab(p: Props) {
             s.id,
             {
               // A no-throw house on the line of the road alerts as if it were on the side thrown, but the map can't say which side it is on:
-              // the list says so, and asks for a side, on a Left or Right stretch as on Both, instead of showing the side thrown as its own.
+              // the list says so, and asks for a side, on a Port or Starboard stretch as on Both, instead of showing the side thrown as its own.
               sides: stopRoadSides(p.route, occs, s.id).map((side, i) => (guessed[i] ? null : side)),
               reasons: stopQuietReasons(p.route, occs, s.id, reachM),
               // Nothing is thrown where it is only transit, so a no-throw house there never alerts and needs no side.
