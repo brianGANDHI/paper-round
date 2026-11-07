@@ -37,6 +37,8 @@ import { OffRouteBanner } from './OffRouteBanner'
 import { holdHeading } from './mapHeading'
 import { MapView, type ViewCmd } from './MapView'
 import { resolveSections } from './namedSections'
+import { SectionBanner } from './SectionBanner'
+import { carriedOn, NOTHING_WATCHED, RESUMED_WATCH, SECTION_ROAD_M, sectionSpeech, startedAt, watchSection, type SectionNote, type SectionWatch } from './sectionWatch'
 import { advance, makeTrack, offRouteGap, OUTLIER_ACCURACY_M, rebaseProgress, startProgress, type Progress } from './progress'
 import { keptBeforeDrop } from './dropMemory'
 import { continueFrom, sameCourtLegs, slackFor, withCourtLegs } from './resume'
@@ -64,6 +66,10 @@ const SAVE_EVERY_M = 100
 /** How long a message with a way to undo what it says stays up, and one without, in milliseconds. */
 const UNDO_MS = 12000
 const NOTE_MS = 6000
+/** How long the banner for a named section ending or starting stays up. */
+const SECTION_NOTE_MS = 8000
+/** How long it waits for the list or the menu to close, after which it is old news. */
+const SECTION_HOLD_MS = 30000
 /** What the bar along the bottom covers of the map, in pixels (its height and the gap under it), until it has been measured. */
 const BAR_COVER_PX = 64
 /** What the small amber button in the bar says when the screen is not being kept awake, which stops the GPS. */
@@ -165,6 +171,8 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
   const { confirm, choose, dialog } = useDialogs()
   /** A message the bar along the bottom shows for a while, with a way to take back the change it tells of, if there is one (a closure that does it). */
   const [toast, setToast] = useState<Notice | null>(null)
+  /** A named section just ended or started, for its banner (see `watchSection`). */
+  const [sectionNote, setSectionNote] = useState<SectionNote | null>(null)
   const [menuOpen, setMenuOpen] = useState(false)
   /** The list of bundle drops is up. */
   const [bundlesOpen, setBundlesOpen] = useState(false)
@@ -287,6 +295,10 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
   const goneBefore = useRef<ReadonlySet<string>>(new Set())
   /** The bundles the driver has been told are holding up the list (see `nextHoldsUp` and `nextLeftBehind`), so each is told once. A start and a restart clear it, and a reorder for the two it changes. */
   const toldBehind = useRef(new Set<string>())
+  /** What has been told of the named sections, and the section the car was in at the last look (see `watchSection`). */
+  const sectionWatch = useRef<SectionWatch>(NOTHING_WATCHED)
+  /** Whether the car was going the way the route runs at the last fix, or can't say. */
+  const forwardRef = useRef(true)
   /** Set by *Continue Round* until the first fix on the route after it, where a house at the head of a court the driver is between the two legs of is put on the leg ahead (see `legsOnResume`). */
   const resumeRef = useRef(false)
   /**
@@ -485,6 +497,7 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
     // The way the route runs here, when the phone is on it, and whether the phone is going that way (or can't say).
     const routeBearing = onTheRoute(now.gap, now.accuracy, now.lost) ? (track.bearings[now.idx] ?? null) : null
     const forward = course === null || routeBearing === null || angleBetween(course, routeBearing) <= FORWARD_DEG
+    forwardRef.current = forward
     // Being taken back to where the route was left, the furthest reached stays where it was then, until the driver is back there: it
     // would jump on with the place they came back onto the route at, and the turns on the way back would be hidden. Back on the route
     // and going on along it, it is let go.
@@ -745,6 +758,17 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
         if (voiceRef.current) say(behindCar ? NEXT_BEHIND_SPEECH : stillNextSpeech(name))
       }
     }
+    // The car into another named section, or out of the last. Only a fix that can say where the car is, as a thrown one would tell of a section it is nowhere near. A round over
+    // needs none: the section ends where the last stop is done, wherever the car then goes.
+    let sectionWords = ''
+    if ((judged && goodFix && progress.gap <= SECTION_ROAD_M) || finishedRef.current) {
+      const step = watchSection(sectionWatch.current, resolved.list, { along: driverAt, time: progress.time ?? 0, forward: forwardRef.current, routeEnd: track.cum[track.cum.length - 1] ?? 0, over: finishedRef.current })
+      sectionWatch.current = step.watch
+      if (step.note) {
+        setSectionNote(step.note)
+        sectionWords = sectionSpeech(step.note)
+      }
+    }
     if (!voiceRef.current) return
     // With the voice on, the side thrown is said as it changes, a few metres before the change so the word is done by then, and once
     // where the round starts. It is queued: it breaks in on another alert's words being said, which are said again in full after it (see
@@ -754,6 +778,8 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
     const word = progress.lost ? null : sideCueRef.current.update(sideAt(route, progress.idx), sideAtAlong(route, track.cum, progress.along + sideLookAheadM(speedRef.current)), progress.along)
     const saySide = () => {
       if (word) say(sideWords(word), { queue: true, afterMs: beepSeconds * 1000, stale: () => sideCueRef.current.last() !== word })
+      // Last of all: a section is not worth holding up a warning or a turn for, and the banner shows it either way.
+      if (sectionWords) say(sectionWords, { minor: true, afterMs: beepSeconds * 1000 })
     }
     if (!fresh.length && heldRef.current.size === 0) {
       saySide()
@@ -783,7 +809,7 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
     // Other alerts keep theirs, as their words are of use for longer and missing words are what drivers notice.
     if (plan.text) say(plan.text, { urgent: true, whole: true, warning: plan.noThrow, afterMs: beepSeconds * 1000, stale: alertWordsStale(plan.announce, gated, () => progressRef.current, radius), retryStale: plan.noThrow ? alertWordsLevel(plan.announce, gated, () => progressRef.current, radius) : undefined })
     saySide()
-  }, [progress, handled, occs, allOccs, route, track, radius, headingDeg, saveRound, bundleNames, bundleOrder])
+  }, [progress, handled, occs, allOccs, route, track, radius, headingDeg, saveRound, bundleNames, bundleOrder, resolved])
 
   // The alert showing is for the nearest no-throw house still ahead, or else the nearest of the others. For a no-throw house it is for
   // the whole row it is in, numbers and all, so the driver sees at once which houses to leave out, with an apartment block still to come
@@ -969,6 +995,9 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
     setTurnHeld(NOTHING_HELD)
     seen.current.clear()
     toldBehind.current.clear()
+    // A carry-on is the same drive going on, so what has been told stands; a skip goes somewhere to drive it, and a section is told as it is come to.
+    sectionWatch.current = keepBundles ? carriedOn(sectionWatch.current) : startedAt(metres)
+    setSectionNote(null)
     if (!skip) {
       mayTellBehind.current.clear()
       listNext.current = undefined
@@ -1051,6 +1080,7 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
       // Carried on, so the driver is taken to be where the last stop done was (or where the round was started from), which tells the passes of a street driven twice apart.
       const carryOn = continueFrom(round, allOccs, handled)
       reachAlong.current = carryOn
+      sectionWatch.current = RESUMED_WATCH
       watchRef.current = restartWatch(watchRef.current)
       const start = startProgress(track, carryOn)
       progressRef.current = start
@@ -1175,6 +1205,14 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
     }
     onBundleOrder(order)
   }
+
+  // A section's banner has its time on the screen: the list, the menu, the picker and a question cover the map, so it waits for them to close, for a while.
+  const sectionCovered = bundlesOpen || menuOpen || picker !== null || dialog !== null
+  useEffect(() => {
+    if (!sectionNote) return
+    const id = setTimeout(() => setSectionNote(null), sectionCovered ? SECTION_HOLD_MS : SECTION_NOTE_MS)
+    return () => clearTimeout(id)
+  }, [sectionNote, sectionCovered])
 
   /** Message for a while, or until it is taken back. */
   useEffect(() => {
@@ -1502,6 +1540,7 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
             bundleUp={bundleUp?.stop}
           />
         )}
+        {sectionNote && !sectionCovered && <SectionBanner {...sectionNote} />}
       </div>
 
       {/* The bottom is kept slim: the few buttons for driving and the map's credit over one bar, which also carries any notice or GPS problem, so the top stays for what the driver is looking out for. */}

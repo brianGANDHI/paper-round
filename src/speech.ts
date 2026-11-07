@@ -135,6 +135,11 @@ export interface SayOptions {
    * behind those asked before them. A queued cue is a single word, so it holds them up only for a moment.
    */
   warning?: boolean
+  /**
+   * Of less account than any other words: it is said only if nothing else is. It is left out if another cue is waiting, unless that is one of these, which it replaces. Any other cue
+   * takes its place while it waits, and any other cue breaks in on it as it is said, and it is not said again. For what the screen shows anyway, which must not hold up a warning or a turn.
+   */
+  minor?: boolean
   /** Asked just before the words start: true when they are out of date by then, such as a turn already made. */
   stale?: () => boolean
   /**
@@ -152,6 +157,8 @@ interface Cue {
   urgent: boolean
   /** Its kind when it is said whole, or null for an ordinary cue. */
   kind: Kind | null
+  /** See `SayOptions.minor`. */
+  minor: boolean
   stale?: () => boolean
   /** See `SayOptions.retryStale`. It stays with words a queued cue cut off (see `again`), and no grace is given from it. */
   retryStale?: () => boolean
@@ -499,12 +506,17 @@ export function createSpeaker<U extends Utterance>(deps: SpeakerDeps<U>) {
         text,
         urgent,
         kind: options.queue ? 'queue' : whole ? (options.warning ? 'warning' : 'whole') : null,
+        minor: options.minor ?? false,
         stale: options.stale,
         retryStale: options.retryStale,
         afterMs: options.afterMs ?? 0,
         at: now(),
       }
       if (!busy) return void run(cue, epoch)
+      if (cue.minor) {
+        if (!waiting || waiting.minor) waiting = cue
+        return
+      }
       if (cue.kind && current?.kind) {
         // Both said whole. One that matters more breaks in, and the words it cuts off are said again in full right after it (see
         // `again`); otherwise it waits, ahead of those that matter less and behind those that matter as much asked before it.
@@ -524,7 +536,7 @@ export function createSpeaker<U extends Utterance>(deps: SpeakerDeps<U>) {
         trim()
         // An alert's words break in on an ordinary cue, as any urgent cue does, after the cues waiting that matter as much or more. A
         // queued cue waits for it.
-        if (cue.kind !== 'queue') {
+        if (cue.kind !== 'queue' || current?.minor) {
           waiting = null
           breakIn(queued.shift() ?? cue)
         }
@@ -539,6 +551,8 @@ export function createSpeaker<U extends Utterance>(deps: SpeakerDeps<U>) {
         const first = queued.shift() ?? cue
         if (first !== cue) waitingUrgent = cue
         breakIn(first)
+      } else if (current?.minor) {
+        breakIn(cue)
       } else {
         waiting = cue
       }

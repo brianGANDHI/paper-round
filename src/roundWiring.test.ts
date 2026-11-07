@@ -14,11 +14,12 @@ import { Round } from './Round'
 import { OffRouteBanner } from './OffRouteBanner'
 import { RoundBar, RoundButtons } from './RoundBar'
 import { RoundMenu } from './RoundMenu'
+import { SectionBanner } from './SectionBanner'
 import { VOICE_TEST_GAP_MS, sideWords } from './sideVoice'
 import { sound } from './sound'
 import { say, stopSpeaking, unlockSpeech } from './speech'
 import { StartPicker } from './StartPicker'
-import type { LoadList, Pt, RoundState, Route, Stop } from './types'
+import type { LoadList, NamedSection, Pt, RoundState, Route, Stop } from './types'
 import { Segmented } from './ui'
 
 /*
@@ -170,7 +171,7 @@ const legs = (speed: number, ...spots: XY[]): Step[] => spots.slice(1).flatMap((
  * The round screen on a route, with what `App` does for it: a round, an order and a list that come back as props. The car and the driver's taps go in
  * through what the screen uses, and each is settled before the next.
  */
-function roundScreen(route: Route, { order, round = { handledStopIds: [] }, load }: { order?: string[]; round?: RoundState; load?: LoadList } = {}) {
+function roundScreen(route: Route, { order, round = { handledStopIds: [] }, load, sections = [] }: { order?: string[]; round?: RoundState; load?: LoadList; sections?: NamedSection[] } = {}) {
   play.slots = []
   play.fix = null
   let time = 1_000_000
@@ -181,7 +182,7 @@ function roundScreen(route: Route, { order, round = { handledStopIds: [] }, load
     route,
     round,
     routeName: 'Test',
-    sections: [],
+    sections,
     streets: [],
     bundleOrder: order,
     load,
@@ -3203,5 +3204,365 @@ describe('the app', () => {
     const load: LoadList = { ...DEFAULT_LOAD, papersEach: { bagged: 30, unwrapped: 60 } }
     round().onLoad(load)
     expect(round().load).toEqual(load)
+  })
+})
+
+describe('the banner where a named section starts and ends, on the real screen', () => {
+  const POINTS: XY[] = [[0, 0], [0, 3000]]
+  const place = (id: string, name: string, y: number): NamedSection => ({ id, name, ...spot([0, y]) })
+  const SECTIONS = [place('a', 'Oak Estate', 500), place('b', 'Beach Road', 1500)]
+  const onStreet = (stops: Stop[] = [bundle('Z', [8, 2900])]) => routeOf(POINTS, stops)
+  const drivingFrom = (route = onStreet(), sections = SECTIONS) => {
+    const s = roundScreen(route, { sections })
+    s.press('Start Round')
+    return s
+  }
+  const shown = (s: ReturnType<typeof roundScreen>) => {
+    const banner = s.find<Parameters<typeof SectionBanner>[0]>(SectionBanner)
+    return banner ? [banner.ended, banner.started] : null
+  }
+  const saidOf = (word: string) => vi.mocked(say).mock.calls.map(([text]) => text).filter((text) => text.includes(word))
+
+  it('says nothing for the part before the first section, and starts the first as the car comes to it', () => {
+    const s = drivingFrom()
+    s.drive(up(480))
+    expect(shown(s)).toBeNull()
+    s.drive(up(520, 480))
+    expect(shown(s)).toEqual([null, 'Oak Estate'])
+    expect(saidOf('Oak Estate')).toEqual(['Start of Oak Estate.'])
+  })
+
+  it('ends one and starts the next on one banner, and the voice says them in that order', () => {
+    const s = drivingFrom()
+    s.drive(up(1480))
+    s.drive(up(1520, 1480))
+    expect(shown(s)).toEqual(['Oak Estate', 'Beach Road'])
+    expect(saidOf('Beach Road')).toEqual(['End of Oak Estate. Start of Beach Road.'])
+  })
+
+  it('ends the last at the end of the route', () => {
+    const s = drivingFrom()
+    s.drive(up(2960))
+    expect(shown(s)).toEqual(['Beach Road', null])
+    expect(saidOf('Beach Road').at(-1)).toBe('End of Beach Road.')
+  })
+
+  it('goes by itself after a few seconds, and does not come back', () => {
+    const s = drivingFrom()
+    s.drive(up(520))
+    s.drive(up(560, 530))
+    expect(shown(s)).toEqual([null, 'Oak Estate'])
+    s.drive(up(620, 570))
+    expect(shown(s)).toBeNull()
+    s.drive(up(1400, 630))
+    expect(shown(s)).toBeNull()
+  })
+
+  it('shows with the voice off, and nothing is said', () => {
+    play.voice = false
+    const s = drivingFrom()
+    s.drive(up(520))
+    expect([shown(s), saidOf('Oak Estate')]).toEqual([[null, 'Oak Estate'], []])
+  })
+
+  it('is told of the section a round starts in', () => {
+    const s = drivingFrom(onStreet(), [place('a', 'Oak Estate', 0), place('b', 'Beach Road', 1500)])
+    s.drive(up(30))
+    expect(shown(s)).toEqual([null, 'Oak Estate'])
+  })
+
+  it('asks for its words after those of an alert on the same fix, once the beep is over, as of less account than any', () => {
+    const s = drivingFrom(onStreet([noThrowAt('H', [8, 532]), bundle('Z', [8, 2900])]))
+    s.drive(up(500))
+    const calls = vi.mocked(say).mock.calls
+    const alert = calls.findIndex(([text]) => text.startsWith('No throw'))
+    const section = calls.findIndex(([text]) => text === 'Start of Oak Estate.')
+    expect(alert).toBeGreaterThanOrEqual(0)
+    expect(section).toBe(alert + 1)
+    expect(calls[section][1]).toEqual({ minor: true, afterMs: 300 })
+  })
+
+  it('asks for its words after the side word on the same fix', () => {
+    const base = routeOf([[0, 0], [0, 500], [150, 500], [150, 900]], [bundle('Z', [158, 880])])
+    const route = { ...base, sideChanges: [{ idx: 0, side: 'left' as const }, { idx: 1, side: 'right' as const }] }
+    const s = roundScreen(route, { sections: [place('a', 'Oak Estate', 100), place('b', 'Beach Road', 475)] })
+    s.press('Start Round')
+    s.drive(up(480))
+    const said = vi.mocked(say).mock.calls.map(([text]) => text)
+    expect(said.indexOf('Starboard')).toBeGreaterThanOrEqual(0)
+    expect(said.indexOf('End of Oak Estate. Start of Beach Road.')).toBe(said.indexOf('Starboard') + 1)
+  })
+
+  it('says nothing at all on a route with no sections', () => {
+    const s = drivingFrom(onStreet(), [])
+    s.drive(up(2960))
+    expect(shown(s)).toBeNull()
+    expect(saidOf('Start of')).toEqual([])
+  })
+
+  it('comes under the alert of a stop, which it leaves up, and asks for its words after those of the alert', () => {
+    const s = drivingFrom(onStreet([noThrowAt('H', [8, 505]), bundle('Z', [8, 2900])]))
+    s.drive(up(520))
+    expect([s.banner(), shown(s)]).toEqual([['H'], [null, 'Oak Estate']])
+    const order = s.all().filter((e) => e.type === AlertBanner || e.type === SectionBanner).map((e) => e.type)
+    expect(order).toEqual([AlertBanner, SectionBanner])
+    const said = vi.mocked(say).mock.calls.map(([text]) => text)
+    expect(said.findIndex((t) => t.startsWith('No throw'))).toBeLessThan(said.indexOf('Start of Oak Estate.'))
+  })
+
+  it('takes no notice of a poor fix thrown over the line, and tells when the car gets there', () => {
+    const s = drivingFrom()
+    s.drive(up(1450, 0))
+    s.drive(up(1490, 1460))
+    s.drive([{ x: 0, y: 1560, speed: 10, heading: 0, accuracy: 50 }])
+    expect(saidOf('Beach Road')).toEqual([])
+    s.drive(up(1520, 1500))
+    expect(saidOf('Beach Road')).toEqual(['End of Oak Estate. Start of Beach Road.'])
+  })
+
+  it('waits for the list to close, for its time on the screen', () => {
+    const s = drivingFrom()
+    s.drive(up(480))
+    s.openList()
+    s.update()
+    s.drive(up(520, 490))
+    expect(shown(s)).toBeNull()
+    s.drive(up(800, 530))
+    expect(shown(s)).toBeNull()
+    s.list()?.onClose()
+    s.update()
+    expect(shown(s)).toEqual([null, 'Oak Estate'])
+  })
+
+  it('waits for the menu to close, for its time on the screen', () => {
+    const s = drivingFrom()
+    s.drive(up(520))
+    expect(shown(s)).toEqual([null, 'Oak Estate'])
+    s.find<Parameters<typeof RoundBar>[0]>(RoundBar)?.onMenu()
+    s.update()
+    expect(shown(s)).toBeNull()
+    s.drive(up(700, 530))
+    expect(shown(s)).toBeNull()
+    s.find<Parameters<typeof RoundMenu>[0]>(RoundMenu)?.onClose()
+    s.update()
+    expect(shown(s)).toEqual([null, 'Oak Estate'])
+  })
+
+  it('waits for the picker to close, for its time on the screen', () => {
+    const s = drivingFrom()
+    s.drive(up(520))
+    s.find<Parameters<typeof RoundBar>[0]>(RoundBar)?.onMenu()
+    s.update()
+    const menu = s.find<Parameters<typeof RoundMenu>[0]>(RoundMenu)
+    menu?.onClose()
+    menu?.onSkip()
+    s.update()
+    expect(shown(s)).toBeNull()
+    s.drive(up(700, 530))
+    expect(shown(s)).toBeNull()
+    s.find<Parameters<typeof StartPicker>[0]>(StartPicker)?.onClose()
+    s.update()
+    expect(shown(s)).toEqual([null, 'Oak Estate'])
+  })
+
+  it('waits for a question to be answered, for its time on the screen', async () => {
+    const s = drivingFrom()
+    s.drive(up(520))
+    s.askReset()
+    expect(shown(s)).toBeNull()
+    s.drive(up(700, 530))
+    expect(shown(s)).toBeNull()
+    s.press('Cancel')
+    await vi.advanceTimersByTimeAsync(0)
+    s.update()
+    expect(shown(s)).toEqual([null, 'Oak Estate'])
+  })
+
+  it('has its 8 seconds once the list closes, and then goes', () => {
+    const s = drivingFrom()
+    s.drive(up(480))
+    s.openList()
+    s.update()
+    s.drive(up(520, 490))
+    s.list()?.onClose()
+    s.update()
+    s.drive(up(590, 530))
+    expect(shown(s)).toEqual([null, 'Oak Estate'])
+    s.drive(up(620, 600))
+    expect(shown(s)).toBeNull()
+  })
+
+  it('gives up waiting for a list left open, as old news', () => {
+    const s = drivingFrom()
+    s.drive(up(480))
+    s.openList()
+    s.update()
+    s.drive(up(520, 490))
+    s.drive(up(860, 530))
+    s.list()?.onClose()
+    s.update()
+    expect(shown(s)).toBeNull()
+  })
+
+  it('says nothing while back on the route somewhere else, and tells when the driver says to carry on: of the section left and the one the car is in', () => {
+    const s = drivingFrom()
+    s.drive(up(560))
+    s.drive(legs(10, [0, 560], [200, 560], [200, 1530], [0, 1530], [0, 1680]))
+    expect(s.offRoute()?.phase).toBe('rejoined')
+    expect(saidOf('Beach Road')).toEqual([])
+    s.offRoute()?.onCarryOn()
+    s.update()
+    s.drive(up(1720, 1690))
+    expect(saidOf('Beach Road')).toEqual(['End of Oak Estate. Start of Beach Road.'])
+  })
+
+  it('tells of a line gone over on the way back from a stop off the road, once the round carries on', () => {
+    const s = drivingFrom(onStreet([bundle('F', [90, 1000]), bundle('Z', [8, 2900])]), [place('a', 'Oak Estate', 500), place('b', 'Beach Road', 1300)])
+    s.drive(up(1000))
+    s.drive(legs(2, [0, 1000], [85, 1000], [0, 1000]))
+    s.drive(up(1800, 1010))
+    s.offRoute()?.onCarryOn()
+    s.update()
+    s.drive(up(1900, 1810))
+    expect(saidOf('Beach Road')).toEqual(['End of Oak Estate. Start of Beach Road.'])
+  })
+
+  it('tells of a line gone over in poor GPS round the head of a street, a little late', () => {
+    const points: XY[] = [[0, 0], [0, 800], [0, 0], [0, -1500]]
+    const drive = legs(10, ...points)
+    const s = drivingFrom(routeOf(points, [bundle('Z', [8, -1400])]), [place('a', 'Oak Estate', 300), { ...place('b', 'Beach Road', 700), pass: 2 }])
+    s.drive(drive.slice(0, 64))
+    s.drive(drive.slice(64, 96).map((f) => ({ ...f, accuracy: 60 })))
+    s.drive(drive.slice(96, 120))
+    expect(saidOf('Beach Road')).toEqual(['End of Oak Estate. Start of Beach Road.'])
+  })
+
+  it('tells nothing going the wrong way over a line on being taken back, and tells when the car comes over it going forward', () => {
+    const s = drivingFrom(onStreet(), [place('a', 'Oak Estate', 500), place('b', 'Beach Road', 1500)])
+    s.drive(up(1400))
+    s.drive(legs(10, [0, 1400], [200, 1400], [200, 1700], [0, 1700], [0, 1850]))
+    expect(s.offRoute()?.phase).toBe('rejoined')
+    s.offRoute()?.onTakeBack()
+    s.update()
+    s.drive(legs(10, [0, 1850], [0, 1395]).map((f) => ({ ...f, heading: 180 })))
+    expect(saidOf('Beach Road')).toEqual([])
+    s.drive(up(1560, 1400))
+    expect(saidOf('Beach Road')).toEqual(['End of Oak Estate. Start of Beach Road.'])
+  })
+
+  it('tells of no section on a diagonal to a stop off the road, level with a line the car has not come to', () => {
+    const s = drivingFrom(onStreet([bundle('F', [80, 1560]), bundle('Z', [8, 2900])]))
+    s.drive(up(1460))
+    s.drive(legs(5, [0, 1460], [75, 1555]))
+    expect(saidOf('Beach Road')).toEqual([])
+  })
+
+  it('ends the section where the last stop is done, and tells nothing after that', () => {
+    const s = drivingFrom(onStreet([bundle('Z', [8, 700])]))
+    s.drive(up(690))
+    s.tapDropped()
+    s.drive(up(1000, 700))
+    expect(saidOf('End of')).toEqual(['End of Oak Estate.'])
+    s.drive(up(1600, 1010))
+    expect(saidOf('Beach Road')).toEqual([])
+  })
+
+  it('waits for the car to get to the section skipped to, and tells of no section on the way there', async () => {
+    const s = drivingFrom()
+    s.drive(up(100))
+    await skipTo(s, 1500)
+    s.drive(up(1540, 1420))
+    expect(vi.mocked(say).mock.calls.map(([text]) => text).filter((text) => /^(Start|End) of/.test(text))).toEqual(['Start of Beach Road.'])
+    expect(shown(s)).toEqual([null, 'Beach Road'])
+  })
+
+  it('says nothing before a round has started, with the picker fetching a fix on a round finished last time', () => {
+    const route = onStreet([bundle('Z', [8, 700])])
+    const s = roundScreen(route, { sections: SECTIONS, round: { handledStopIds: ['Z'], furthest: 2900 } })
+    s.press('Choose Where to Start')
+    s.drive(up(720, 600))
+    expect(saidOf('End of')).toEqual([])
+  })
+
+  it('does not tell again of the end told at the last stop when an earlier drop is taken back and the round goes on', () => {
+    const s = drivingFrom(onStreet([bundle('A', [8, 600]), bundle('Z', [8, 700])]))
+    s.drive(up(595))
+    s.tapDropped()
+    s.drive(up(690, 600))
+    s.tapDropped()
+    s.drive(up(720, 700))
+    expect(saidOf('End of')).toEqual(['End of Oak Estate.'])
+    s.openList()?.onUndo('A')
+    s.list()?.onClose()
+    s.update()
+    s.drive(up(1520, 730))
+    expect(saidOf('Beach Road')).toEqual(['Start of Beach Road.'])
+    expect(saidOf('End of')).toEqual(['End of Oak Estate.'])
+  })
+
+  it('ends the section where the last stop is done off the road, with the car still there', () => {
+    const s = drivingFrom(onStreet([bundle('Z', [90, 700])]))
+    s.drive(up(700))
+    s.drive(legs(2, [0, 700], [85, 700]))
+    s.tapDropped()
+    s.drive(legs(2, [85, 700], [80, 700]))
+    expect(saidOf('End of')).toEqual(['End of Oak Estate.'])
+  })
+
+  it('believes the driver at a carry-on however far along the route the car came back onto it, and tells at once', () => {
+    const points: XY[] = [[0, 0], [0, 4000], [400, 4000], [400, 0]]
+    const s = drivingFrom(routeOf(points, [bundle('Z', [408, 100])]), [place('a', 'Oak Estate', 500), { ...place('b', 'Beach Road', 700), pass: 2 }])
+    s.drive(up(600))
+    s.drive(legs(10, [0, 600], [400, 600], [400, 450]))
+    expect(s.offRoute()?.phase).toBe('rejoined')
+    expect(saidOf('Beach Road')).toEqual([])
+    s.offRoute()?.onCarryOn()
+    s.update()
+    s.drive(legs(10, [400, 440], [400, 400]))
+    expect(saidOf('Beach Road')).toEqual(['End of Oak Estate. Start of Beach Road.'])
+  })
+
+  it('tells nothing at the first look of Continue Round: the driver is carrying on in the section', () => {
+    const s = roundScreen(onStreet(), { sections: SECTIONS, round: { handledStopIds: [], furthest: 560 } })
+    s.press('Continue Round')
+    s.drive(up(640, 550))
+    expect(saidOf('Oak Estate')).toEqual([])
+    s.drive(up(1520, 650))
+    expect(saidOf('Beach Road')).toEqual(['End of Oak Estate. Start of Beach Road.'])
+  })
+
+  it('tells of the section skipped to, and again of one driven over again after a skip back', async () => {
+    const s = drivingFrom()
+    s.drive(up(1520))
+    await skipTo(s, 500)
+    s.drive(up(530, 500))
+    expect(shown(s)).toEqual([null, 'Oak Estate'])
+    s.drive(up(1520, 540))
+    expect(shown(s)).toEqual(['Oak Estate', 'Beach Road'])
+  })
+
+  it('does not tell the driver again of a section they carried on in', () => {
+    const s = drivingFrom()
+    s.drive(up(560))
+    expect(saidOf('Oak Estate')).toEqual(['Start of Oak Estate.'])
+    // Off the road and back onto it a little further on, in the same section.
+    s.drive(legs(10, [0, 560], [300, 560], [300, 760], [0, 760]))
+    s.offRoute()?.onCarryOn()
+    s.update()
+    s.drive(up(900, 770))
+    expect(saidOf('Oak Estate')).toEqual(['Start of Oak Estate.'])
+  })
+
+  it('tells again after a reset, as the round starts over', async () => {
+    const s = drivingFrom()
+    s.drive(up(520))
+    s.askReset()
+    s.press('Reset')
+    await vi.advanceTimersByTimeAsync(0)
+    s.update()
+    expect(shown(s)).toBeNull()
+    s.drive(up(400, 0))
+    s.drive(up(520, 410))
+    expect(saidOf('Oak Estate')).toEqual(['Start of Oak Estate.', 'Start of Oak Estate.'])
   })
 })

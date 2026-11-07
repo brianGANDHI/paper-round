@@ -4,6 +4,7 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { AlertBanner } from './AlertBanner'
+import { SectionBanner } from './SectionBanner'
 import { BundleOrderEditor, BundleOrderList } from './BundleOrderEditor'
 import { nextRoundRows } from './bundleFlow'
 import { BundlesSheet } from './BundlesSheet'
@@ -591,5 +592,27 @@ describe("the Bundles list in the driver's order", () => {
   it('has a Reorder button of 44 px or more, beside Done', () => {
     // It has to beat `.btn.small` (34 px) in index.css, so its selector names all three classes.
     expect(Number.parseInt(declared(bundlesCss, '.btn.small.bundles-reorder', 'min-height') ?? '0', 10)).toBeGreaterThanOrEqual(44)
+  })
+})
+
+describe('the banner where a named section starts and ends', () => {
+  const html = (ended: string | null, started: string | null) => renderToStaticMarkup(createElement(SectionBanner, { ended, started }))
+
+  it('has the end over the start, each with its word and name, and the words of the voice for a screen reader', () => {
+    const out = html('Oak Estate', 'Beach Road')
+    expect(out.indexOf('Oak Estate')).toBeLessThan(out.indexOf('Beach Road'))
+    expect(out.match(/section-row (\w+)/g)).toEqual(['section-row ended', 'section-row started'])
+    expect(out).toMatch(/End<\/span><span class="section-name">Oak Estate/)
+    expect(out).toMatch(/Start<\/span><span class="section-name">Beach Road/)
+    expect(out).toContain('aria-label="End of Oak Estate. Start of Beach Road."')
+  })
+
+  it('has only the row there is something for', () => {
+    expect(html(null, 'Beach Road')).not.toContain('section-row ended')
+    expect(html('Oak Estate', null)).not.toContain('section-row started')
+  })
+
+  it('takes no touch, as it sits over the map', () => {
+    expect(readFileSync(new URL('./sectionBanner.css', import.meta.url), 'utf8')).not.toContain('pointer-events: auto')
   })
 })

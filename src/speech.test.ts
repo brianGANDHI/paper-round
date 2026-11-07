@@ -1066,6 +1066,122 @@ describe('the cues said whole, by what matters on the road', () => {
   })
 })
 
+describe('words of less account, said only if nothing else is', () => {
+  const spoken = (log: string[]) => log.filter((line) => line.startsWith('speak ')).map((line) => line.slice(6))
+
+  it('are said with nothing else to say', async () => {
+    const { speaker, log } = fake({ keepAlive: true })
+    speaker.say('Section.', { minor: true })
+    await advance(300)
+    expect(spoken(log)).toEqual(['Section.'])
+  })
+
+  it('wait for what is being said', async () => {
+    const { speaker, log, start, end } = fake({ keepAlive: true })
+    speaker.say('First.')
+    await advance(300)
+    start()
+    speaker.say('Section.', { minor: true })
+    end()
+    await advance(400)
+    expect(spoken(log)).toEqual(['First.', 'Section.'])
+  })
+
+  it('are left out with another cue waiting, which they do not replace', async () => {
+    const { speaker, log, start, end } = fake({ keepAlive: true })
+    speaker.say('First.')
+    await advance(300)
+    start()
+    speaker.say('Turn right.')
+    speaker.say('Section.', { minor: true })
+    end()
+    await advance(400)
+    start()
+    end()
+    await advance(400)
+    expect(spoken(log)).toEqual(['First.', 'Turn right.'])
+  })
+
+  it('replace others of their kind that wait: the newest is what the screen shows', async () => {
+    const { speaker, log, start, end } = fake({ keepAlive: true })
+    speaker.say('First.')
+    await advance(300)
+    start()
+    speaker.say('Older section.', { minor: true })
+    speaker.say('Newer section.', { minor: true })
+    end()
+    await advance(400)
+    expect(spoken(log)).toEqual(['First.', 'Newer section.'])
+  })
+
+  it('give way to an ordinary cue while they wait', async () => {
+    const { speaker, log, start, end } = fake({ keepAlive: true })
+    speaker.say('First.')
+    await advance(300)
+    start()
+    speaker.say('Section.', { minor: true })
+    speaker.say('Turn right.')
+    end()
+    await advance(400)
+    start()
+    end()
+    await advance(400)
+    expect(spoken(log)).toEqual(['First.', 'Turn right.'])
+  })
+
+  it('go before a turn asked just after them only if they have nothing to hold up', async () => {
+    const { speaker, log } = fake({ keepAlive: true })
+    speaker.say('Section.', { minor: true })
+    speaker.say('Turn right.')
+    await advance(400)
+    expect(spoken(log)).toEqual(['Turn right.'])
+  })
+
+  it('are broken in on by an ordinary cue, and are not said again', async () => {
+    const { speaker, log, start, end } = fake({ keepAlive: true })
+    speaker.say('Section.', { minor: true })
+    await advance(300)
+    start()
+    speaker.say('Turn right.')
+    await advance(400)
+    expect(log.slice(-3)).toEqual(['cancel', 'ready', 'speak Turn right.'])
+    start()
+    end()
+    await advance(400)
+    expect(spoken(log)).toEqual(['Section.', 'Turn right.'])
+  })
+
+  it('are broken in on by a queued word', async () => {
+    const { speaker, log, start } = fake({ keepAlive: true })
+    speaker.say('Section.', { minor: true })
+    await advance(300)
+    start()
+    speaker.say('Port', { queue: true })
+    await advance(400)
+    expect(log.slice(-3)).toEqual(['cancel', 'ready', 'speak Port'])
+  })
+
+  it('are broken in on by a warning of a wrong throw', async () => {
+    const { speaker, log, start } = fake({ keepAlive: true })
+    speaker.say('Section.', { minor: true })
+    await advance(300)
+    start()
+    speaker.say('No throw, 14.', { urgent: true, whole: true, warning: true })
+    await advance(400)
+    expect(log.slice(-3)).toEqual(['cancel', 'ready', 'speak No throw, 14.'])
+  })
+
+  it('still let an ordinary cue wait for one that is not of less account', async () => {
+    const { speaker, log, start } = fake({ keepAlive: true })
+    speaker.say('First.')
+    await advance(300)
+    start()
+    speaker.say('Turn right.')
+    await advance(300)
+    expect(log).not.toContain('cancel')
+  })
+})
+
 describe('waiting for a beep that came with the words', () => {
   it('is counted from when the words were asked for, so words that waited their turn do not wait the beep out again', async () => {
     const { speaker, log, start, end } = fake({ keepAlive: true })
