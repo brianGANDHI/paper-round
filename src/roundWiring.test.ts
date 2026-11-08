@@ -1429,6 +1429,35 @@ describe('never inventing a miss, on the real screen', () => {
     })
   })
 
+  describe('visited on a street the route drives again later', () => {
+    // East along the street, round, and along it again as far as x = 1000, 4.7 m north of the first pass, as a road drawn twice by hand is. C is 85 m north of
+    // the street, and H, next after it, is further along the first pass, with no pass of its own on the second.
+    const twice: XY[] = [[0, 0], [1500, 0], [1500, 500], [-200, 500], [-200, 4.7], [1000, 4.7], [1000, -600]]
+    const visited = (speed: number, dwell: number) => {
+      vi.clearAllMocks()
+      const s = roundScreen(routeOf(twice, [bundle('C', [900, 85]), bundle('H', [1300, 8])]), { order: ['C', 'H'] })
+      s.press('Start Round')
+      s.drive(legs(10, [0, 0], [900, 0]))
+      s.drive(legs(speed, [900, 0], [900, 80]))
+      s.tapDropped()
+      s.drive(Array.from({ length: dwell }, () => ({ x: 900, y: 80, speed: 0, heading: 0 })))
+      s.drive(legs(speed, [900, 80], [900, 0]))
+      return s
+    }
+
+    it('comes back on the pass it left: H is not told of as behind the car, nor missed, and the round does not carry on from the later pass', { timeout: 60_000 }, () => {
+      // Back onto the street, the later pass was in reach a fix or two before the one the car left, and the only place there was to put it.
+      for (const [speed, dwell] of [[1, 0], [2, 0], [2, 30], [5, 0], [5, 30]]) {
+        const s = visited(speed, dwell)
+        s.drive(legs(10, [900, 0], [1100, 0]))
+        expect([speed, dwell, s.notices.filter((n) => n.includes('Next bundle')), s.props.round.missed ?? [], s.nextName()]).toEqual([speed, dwell, [], [], 'H'])
+        expect(s.props.round.furthest ?? 0, `${speed} m/s, ${dwell} s`).toBeLessThan(1200)
+        s.drive(legs(10, [1100, 0], [1300, 0]))
+        expect(s.banner(), `${speed} m/s, ${dwell} s`).toEqual(['H'])
+      }
+    })
+  })
+
   describe('a next bundle away from the route, visited with the off-route banner up', () => {
     const K = bundle('K', [300, 1700])
     const STOPS = [K, bundle('Z', [8, 2400])]
@@ -1561,7 +1590,12 @@ describe('never holding the list in silence, on the real screen', () => {
   it('tells of the next bundle left by a cut across to the next street, with the guard against a false miss', () => {
     const s = started(routeOf([[0, 0], [0, 1000], [140, 1000], [140, 0]], [bundle('A', [8, 500]), bundle('B', [8, 700])]))
     s.drive(up(300))
-    s.drive(legs(12, [0, 300], [140, 300], [140, 250]))
+    // (Nothing is said while the car only comes up to the street: being near it is not being on it. Driving on along it, the driver is asked first.)
+    s.drive(legs(12, [0, 300], [140, 300], [140, 150]))
+    expect([s.offRoute()?.phase, s.notices, s.props.round.missed ?? [], s.nextName()]).toEqual(['rejoined', [], [], 'A'])
+    s.offRoute()?.onCarryOn()
+    s.update()
+    s.drive(legs(12, [140, 150], [140, 120]))
     expect([s.notices, s.props.round.missed ?? [], s.nextName()]).toEqual([[behind('A')], [], 'A'])
   })
 

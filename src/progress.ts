@@ -8,8 +8,9 @@ import type { Pt } from './types'
  * twice apart, since they lie on the same line. So every fix is judged against where the driver was a moment ago:
  * a spot that is much further on than the phone can have moved, or behind it, counts against it; so does a spot
  * where the route runs the opposite way to the one the phone is heading. A jump somewhere else is only believed
- * once it has been seen several fixes in a row, and a fix too far from the route to say anything leaves the
- * position where it was. A driver who turns round, in a court or at the end of a street, is put on the way back
+ * once the phone has been seen driving along it several fixes in a row, whether it comes from a place the driver
+ * was at or from being lost, since being near a place says nothing of being on it. A fix too far from the route to say
+ * anything leaves the position where it was. A driver who turns round, in a court or at the end of a street, is put on the way back
  * once the phone has been heading against the way out for a few fixes, however short of the route's own turning
  * point they turned (and where that is close by, as a U-turn drawn on the spot is, once it has been heading along the
  * way back for two fixes); but only for sure once they have gone 100 m along it, since a car backing up on the way out
@@ -64,8 +65,13 @@ export interface Progress {
   seen: number | null
   /** True when the phone is too far from the route to say where along it the driver is. */
   lost: boolean
-  /** A jump to somewhere else along the route that has been seen but is not yet believed: where, and how many fixes in a row. */
-  doubt: { along: number; fixes: number } | null
+  /** True when it is lost from a place the driver was really at, which `along` still is: not a round started part way, or begun away from the route. */
+  left?: boolean
+  /**
+   * A jump to somewhere else along the route that has been seen but is not yet believed: where, how many fixes in a row, and where along the route
+   * and where on the ground the run of them began, to tell a phone driving along that place from one only going by it (see DOUBT_RUN_M).
+   */
+  doubt: { along: number; fixes: number; from?: number; start?: Pt } | null
   /** How many fixes in a row have had the phone moving but the driver going backwards along the route (or against its heading), which they can't be. */
   backward: number
   /** How many fixes in a row have been set aside as further from the last than a car can have gone. */
@@ -136,6 +142,16 @@ const DOUBT_FIXES = 3
 const BACKWARD_FIXES = 3
 /** Two sightings of a jump are the same one when they are this close along the route, in metres, plus how far the phone moved. */
 const DOUBT_NEAR_M = 40
+/**
+ * A jump is only believed from a phone driving along the place doubted, since being near a place says nothing of being on it: a car going up to a
+ * stop set back from the street and back, or across a street it has yet to drive, is near that street for many fixes, and where the route drives
+ * the street twice it is in reach of the later pass as much as of the earlier one. A moving phone says so by its heading: within about 45 degrees of
+ * the way the place runs (DRIVEN_ON_SHARE), or the run of sightings starts again. One crawling, too slow for a heading to mean much, says so by how
+ * far along the place it has got for the ground it has covered, once it has gone this far from where the run began, in metres.
+ */
+const DOUBT_RUN_M = 10
+/** A phone further than this from the place doubted, in metres (or twice its accuracy, if more), is not on it, whichever way it is going: it is on a road beside it. */
+const DOUBT_FIT_M = 40
 /** The furthest reached only moves on while the phone is this near the route, in metres. */
 const FURTHEST_GAP_M = 30
 /** No car moves faster than this, in metres a second: how far the phone can have moved between two fixes is capped by it. */
@@ -313,28 +329,29 @@ export function advance(track: Track, prev: Progress | null, fix: GpsFix, headin
   // turn round, so one that was not sure is not held for any more. Left within TURN_SURE_M of the end of the route, where the way back runs
   // out before it could be sure, it is the driver going home from the end of the round, having turned round short of the route's own turn:
   // the furthest reached goes on to where they were, or the round would never be taken for over, and leaving it would be leaving the route.)
-  if (!cands.length) {
-    return {
-      idx: prev?.idx ?? nearest.idx,
-      t: prev?.t ?? nearest.t,
-      along: prev?.along ?? nearest.along,
-      furthest: prev?.turned && cum[cum.length - 1] - prev.along < TURN_SURE_M ? Math.max(prev.furthest, prev.along) : (prev?.furthest ?? 0),
-      gap: nearest.dist,
-      offBy: nearest.dist,
-      at: fix,
-      accuracy: fix.accuracy,
-      time,
-      seen: time,
-      lost: true,
-      doubt: null,
-      backward: 0,
-      outliers: 0,
-      recent: [],
-    }
-  }
+  const stayLost = (doubt: Progress['doubt']): Progress => ({
+    idx: prev?.idx ?? nearest.idx,
+    t: prev?.t ?? nearest.t,
+    along: prev?.along ?? nearest.along,
+    furthest: prev?.turned && cum[cum.length - 1] - prev.along < TURN_SURE_M ? Math.max(prev.furthest, prev.along) : (prev?.furthest ?? 0),
+    gap: nearest.dist,
+    offBy: nearest.dist,
+    at: fix,
+    accuracy: fix.accuracy,
+    time,
+    seen: time,
+    lost: true,
+    left: !!prev && (!prev.lost || !!prev.left),
+    doubt,
+    backward: 0,
+    outliers: 0,
+    recent: [],
+  })
+  if (!cands.length) return stayLost(null)
 
   const backSlack = BACK_SLACK_M + accuracy
   const forwardSlack = moved + 2 * accuracy + SLACK_M
+  const going = fix.speed === null || fix.speed === undefined || fix.speed >= STILL_SPEED
   const fresh = !prev || prev.lost
   // With nothing to go by the round is taken to be at its start, so the earliest pass of a place is the likely one.
   const prior = prev ? prev.along : 0
@@ -404,23 +421,55 @@ export function advance(track: Track, prev: Progress | null, fix: GpsFix, headin
   const uy = xy[byFit.idx + 1][1] - xy[byFit.idx][1]
   const drivenOn = Math.abs((p[0] - hx) * ux + (p[1] - hy) * uy) / (Math.hypot(ux, uy) || 1) >= DRIVEN_ON_SHARE * byCost.dist
   const lostTouch = prev && !fresh && byCost.dist > Math.max(LOST_TOUCH_M, accuracy + LOST_TOUCH_EXTRA_M) && byFit.dist <= GOOD_FIT_M && byFit !== byCost && drivenOn
-  const jump = lostTouch ? byFit : byCost
+  // Coming back from being lost, with a jump being doubted (see below) that fits the phone far better than the place that has come into reach near
+  // where the driver left, the jump stays the one to judge: that place is only cheap for being near.
+  const lastStep = prev ? haversine(prev.at, fix) : 0
+  const stillDoubted = fresh && prev?.doubt && Math.abs(prev.doubt.along - byFit.along) <= DOUBT_NEAR_M + lastStep && byFit.geo + RECOVERY_MARGIN < byCost.geo
+  const jump = lostTouch || stillDoubted ? byFit : byCost
   let pick = byCost
   let doubt: Progress['doubt'] = null
   // Whether the driver was moved on at once from a place that lost touch with the phone (see below).
   let skippedOn = false
-  if (prev && !fresh) {
+  // Coming back from being lost, a place further from where the driver left the route than the phone is from it is a jump like any other: they have
+  // not driven the route to it, so it is doubted until the phone is driving along it, and the driver stays lost meanwhile. Taken at once, as the only
+  // place in reach at that moment, it was the later pass of the street the phone was coming back to: the two lines a few metres apart, the later one
+  // came into reach a fix or two before the other, and the driver was put kilometres on, with the furthest reached gone with them for the round.
+  const left = prev?.lost && prev.left ? pointOn(xy, prev) : null
+  /** How far the phone now is from the place it was lost from, in metres. */
+  const away = left && Math.hypot(p[0] - left[0], p[1] - left[1])
+  if (prev && (!fresh || away !== null)) {
     const delta = jump.along - prev.along
-    // A move along the route much bigger than the phone's own is not believed at once: the driver stays where they were
-    // until it has been seen fix after fix.
-    if (delta > forwardSlack + JUMP_M || delta < -(backSlack + JUMP_M)) {
-      const before = prev.doubt !== null && Math.abs(prev.doubt.along - jump.along) <= DOUBT_NEAR_M + moved ? prev.doubt : null
-      const fixes = (before?.fixes ?? 0) + 1
-      if (fixes < DOUBT_FIXES) {
-        doubt = { along: jump.along, fixes }
-        pick = { idx: prev.idx, t: prev.t, along: prev.along, dist: jump.dist, geo: jump.geo, cost: jump.cost }
+    /** Whether moving to this place is a move along the route much bigger than the phone's own, which is not believed at once: the driver stays where they were until the phone has been seen driving along it (see DOUBT_RUN_M). */
+    const leaps = (c: Candidate) => c.along - prev.along > forwardSlack + (away ?? 0) + JUMP_M || c.along - prev.along < -(backSlack + (away ?? 0) + JUMP_M)
+    /** How the phone's heading lines up with this place: 1 going the way it runs, -1 against it, 0 across it. Taken to go with it where that can't be told: no heading at all, or too slow for one to mean much. */
+    const linedUp = (c: Candidate) => (going && heading !== null ? Math.cos((angleBetween(bearings[c.idx], heading) * Math.PI) / 180) : 1)
+    const goesWith = (c: Candidate) => linedUp(c) >= DRIVEN_ON_SHARE
+    // (Where the cheapest place runs against the phone and the one that fits it runs with it, it is that one that can come to be believed: a car that
+    // missed the turn into a loop back down the street it is on was held until it had gone by the whole of the loop's way down.)
+    const place = leaps(jump) && !goesWith(jump) && leaps(byFit) && goesWith(byFit) ? byFit : jump
+    if (leaps(place)) {
+      const before = prev.doubt !== null && Math.abs(prev.doubt.along - place.along) <= DOUBT_NEAR_M + (prev.lost ? lastStep : moved) ? prev.doubt : null
+      const ground = before?.start ? haversine(before.start, fix) : 0
+      // Whether the phone is driving along it: near enough to be on it, and by its heading, or crawling, too slow for a heading to mean much, by how far
+      // along it it has got, either way, for the ground it has covered. Null till that can be said; and till the phone has gone TURN_SURE_M against the way
+      // it runs, since the driver follows the route forwards, but one who has come back onto a later street the wrong way round is on it all the same,
+      // and is to be asked.
+      const driving =
+        place.dist > Math.max(DOUBT_FIT_M, 2 * accuracy)
+          ? false
+          : !going
+            ? ground < DOUBT_RUN_M
+              ? null
+              : Math.abs(place.along - (before?.from ?? place.along)) >= DRIVEN_ON_SHARE * ground
+            : goesWith(place) || (linedUp(place) <= -DRIVEN_ON_SHARE ? (ground >= TURN_SURE_M ? true : null) : false)
+      const run = driving === false ? null : before
+      const fixes = (run?.fixes ?? 0) + 1
+      if (fixes < DOUBT_FIXES || !driving) {
+        doubt = { along: place.along, fixes, from: run?.from ?? place.along, start: run?.start ?? fix }
+        if (away !== null) return stayLost(doubt)
+        pick = { idx: prev.idx, t: prev.t, along: prev.along, dist: place.dist, geo: place.geo, cost: place.cost }
       } else {
-        pick = jump
+        pick = place
       }
     } else if (lostTouch && delta > 0) {
       // A smaller move on, from a place that has lost touch with the phone to the one that fits it, is taken at once: the car has gone on past
@@ -440,7 +489,6 @@ export function advance(track: Track, prev: Progress | null, fix: GpsFix, headin
   // way, since the way back is further along the route the earlier they turned.
   let backward = 0
   // A phone that says it has stopped is only jittering, which is not the driver going back.
-  const going = fix.speed === null || fix.speed === undefined || fix.speed >= STILL_SPEED
   if (prev && !fresh && going) {
     const speed = typeof fix.speed === 'number' ? fix.speed : null
     const way = heading === null ? null : angleBetween(bearings[pick.idx], heading)
@@ -508,7 +556,10 @@ export function advance(track: Track, prev: Progress | null, fix: GpsFix, headin
   // and on the first fix of a car backing up there, heading against the way out, it is the cheapest place, with neither the run of fixes going back
   // nor the fold: unless it is a turn round not sure yet, the alerts that were up count as gone by (the house just ahead is never alerted, the
   // bundle just behind is missed) while the car only reverses a few metres.
-  else if (prev && !fresh && !turned && !undone && pick.along - prev.along > forwardSlack && angleBetween(bearings[pick.idx], bearings[prev.idx]) > AGAINST_DEG) turned = { from: prev.along, to: pick.along }
+  // (Against the stretch the driver came up, too, if they are put at the very start of the next. At the junction of a stub at the end of a street driven out
+  // and back, a car backing up is held at the stub's first point, and the way back, believed once it has lost touch, is only at right angles to the stub:
+  // with no turn round to hold them, the alerts up went by, and a line 200 m on along the way back told of a section the car had never reached.)
+  else if (prev && !fresh && !turned && !undone && pick.along - prev.along > forwardSlack && (angleBetween(bearings[pick.idx], bearings[prev.idx]) > AGAINST_DEG || (prev.idx > 0 && prev.along - cum[prev.idx] <= JOINT_M && angleBetween(bearings[pick.idx], bearings[prev.idx - 1]) > AGAINST_DEG))) turned = { from: prev.along, to: pick.along }
   // So is the move on at once past the junction of a court (see above). A car that missed the turn into the court and stopped 25 to 45 m up the
   // street, to back up or turn round and come back to it, is put on the street beyond the court there; with nothing to doubt, the court's alerts
   // that were up counted as gone by (the no-throw house in it done, never alerted as the car drove in; the bundle drop missed). Held, they
@@ -518,8 +569,11 @@ export function advance(track: Track, prev: Progress | null, fix: GpsFix, headin
   // And put back by cost alone at or before where a turn round not sure yet was made from (a car that backed up and drove on, taken back by the
   // jump or the junction rather than by the run of fixes going back), the turn is undone, so the stops of the way back put by meanwhile come up
   // again when the car really drives them. (Only for a turn that moved the driver on further than the phone can have moved: the run of fixes going
-  // back also sets turns a metre or two long on the very pass the driver is on, and one of those is no turn to undo.)
-  else if (turned && turned === prev?.turned && turned.to - turned.from > forwardSlack && pick.along <= turned.from + accuracy) turned = null
+  // back also sets turns a metre or two long on the very pass the driver is on, and one of those is no turn to undo.) So it is for being put back
+  // anywhere TURN_SURE_M or more short of where the turn put them: a turn is sure that far past it, and this far short of it the driver is not on that
+  // way back at all. Thrown 4 km on by a turn and put straight back a few metres past where it was made from, the driver was neither, and the
+  // turn stood until they had driven all the way to it: kilometres with the furthest reached held, the stops going by put by, and no tell.
+  else if (turned && turned === prev?.turned && turned.to - turned.from > forwardSlack && (pick.along <= turned.from + accuracy || pick.along <= turned.to - TURN_SURE_M)) turned = null
   if (turned && pick.along - turned.to >= TURN_SURE_M) turned = null
   // The furthest reached only follows what the last few fixes agree on, so a pass guessed wrong for a fix or two can't push it on; nor a turn
   // round that is not sure yet, which may be undone.

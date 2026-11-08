@@ -2009,7 +2009,9 @@ describe('a tracker that is unsure where the driver is', () => {
     expect(events(d)).toContain('back')
     const back = first(d, 'back')
     expect(back.progress!.along).toBeLessThan(300)
-    expect(d.beats[back.i + 1].progress!.along).toBeGreaterThan(1500)
+    // (It is not there at all: the tracker is holding it, until the phone is driving along the place it doubts.)
+    expect(back.progress!.doubt).not.toBeNull()
+    expect(d.beats.slice(back.i).some((b) => b.progress!.along > 1500)).toBe(true)
   })
 })
 

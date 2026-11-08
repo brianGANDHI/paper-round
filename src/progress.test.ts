@@ -2099,3 +2099,200 @@ describe('a car that turns round where the route itself turns round close by', (
     for (const p of back) expect(p.along).toBeLessThan(300)
   })
 })
+
+describe('a car that leaves the route and comes back: being near a place is not being on it', () => {
+  interface Fix {
+    x: number
+    y: number
+    speed: number
+    heading: number
+  }
+  /** The car's fixes, one a second, along a straight line at about `speed`, landing on `to`. */
+  const line = (from: [number, number], to: [number, number], speed: number): Fix[] => {
+    const count = Math.ceil(Math.hypot(to[0] - from[0], to[1] - from[1]) / speed - 1e-9)
+    const heading = ((Math.atan2(to[0] - from[0], to[1] - from[1]) * 180) / Math.PI + 360) % 360
+    return Array.from({ length: count }, (_, k) => ({ x: from[0] + ((to[0] - from[0]) * (k + 1)) / count, y: from[1] + ((to[1] - from[1]) * (k + 1)) / count, speed, heading }))
+  }
+  const still = (at: [number, number], seconds: number): Fix[] => Array.from({ length: seconds }, () => ({ x: at[0], y: at[1], speed: 0, heading: 0 }))
+  /** Each fix played through the tracker, with a course as a phone gives one (none under 1.5 m/s), and `noise` metres of error that drifts. */
+  function play(track: Track, fixes: Fix[], { noise = 0, seed = 1, course = true }: { noise?: number; seed?: number; course?: boolean } = {}): Progress[] {
+    const r = random(seed)
+    let err = [0, 0]
+    let p: Progress | null = null
+    const out: Progress[] = []
+    fixes.forEach((f, k) => {
+      err = err.map((e) => 0.7 * e + Math.sqrt(1 - 0.7 * 0.7) * gaussian(r) * noise)
+      p = advance(track, p, { ...spot([f.x + err[0], f.y + err[1]]), accuracy: Math.max(8, noise * 1.5), time: k * 1000, speed: f.speed }, course && f.speed >= 1.5 ? f.heading : null)
+      out.push(p!)
+    })
+    return out
+  }
+
+  // East along a street to x = 1500, round, and along the same street again the same way, `apart` m north of the first pass, as a road drawn twice by hand is.
+  const twice = (apart: number) => makeTrack(through([0, 0], [1500, 0], [1500, 500], [-200, 500], [-200, apart], [1500, apart], [1500, -600]))
+  /** Up the street to x = 900, straight up to a stop `out` m north of it, a while there, back down, and on along the street. */
+  const visit = (out: number, speed: number, dwell = 0): Fix[] => [
+    ...line([0, 0], [900, 0], 10),
+    ...line([900, 0], [900, out], speed),
+    ...still([900, out], dwell),
+    ...line([900, out], [900, 0], speed),
+    ...line([900, 0], [1200, 0], 10),
+  ]
+  /** That the driver was on the first pass all along, and got where the car did. */
+  const stayedOnFirstPass = (steps: Progress[], label: string) => {
+    expect(Math.max(...steps.map((p) => p.along)), label).toBeLessThan(1300)
+    expect(steps.at(-1)!.furthest, label).toBeLessThan(1300)
+    expect(steps.at(-1)!.along, label).toBeGreaterThan(1150)
+    expect(steps.at(-1)!.furthest, label).toBeGreaterThan(1150)
+    expect(steps.at(-1)!.lost, label).toBe(false)
+  }
+
+  it('comes back to the pass it left, not the later one a few metres nearer the stop, at any speed, for any wait', () => {
+    // 85 m out and back, 57.4 m from the later pass and 62.1 m from the one it left at the first fix in reach: the later pass was the only place there
+    // was. The driver was put 2.9 km on, with the furthest reached gone with them for the round.
+    for (const speed of [1, 1.5, 2, 3, 4, 5, 7, 10]) {
+      for (const dwell of [0, 30, 120]) {
+        for (const short of [5, 20, 30, 35]) stayedOnFirstPass(play(twice(4.7), visit(90 - short, speed, dwell)), `${speed} m/s, ${dwell} s, ${short} m short`)
+      }
+    }
+  })
+
+  it('comes back to the pass it left through the error of real fixes', () => {
+    for (let seed = 1; seed <= 12; seed++) {
+      for (const speed of [1, 2, 5]) stayedOnFirstPass(play(twice(4.7), visit(85, speed, 30), { noise: 5, seed }), `seed ${seed}, ${speed} m/s`)
+    }
+  })
+
+  it('is not put on a street it only goes across, on the way to a stop beyond it and on the way back', () => {
+    // The later pass is 40 m north: at the stop the phone is out of reach of the pass it left, and 45 m from that one, for as long as it stays.
+    for (const speed of [1, 2, 3, 5, 10]) {
+      for (const dwell of [0, 30]) stayedOnFirstPass(play(twice(40), visit(85, speed, dwell)), `${speed} m/s, ${dwell} s`)
+    }
+  })
+
+  it('is not put on a street it only drives beside, the way it runs, too far off to be on it', () => {
+    // Up off the street and along a road 50 m north of the later pass: heading its way, in reach of it, and out of reach of the pass it left.
+    const steps = play(twice(50), [...line([0, 0], [900, 0], 10), ...line([900, 0], [900, 100], 5), ...line([900, 100], [1100, 100], 10), ...line([1100, 100], [1100, 0], 5), ...line([1100, 0], [1200, 0], 10)])
+    stayedOnFirstPass(steps, 'beside the later pass')
+    expect(steps.some((p) => p.doubt !== null)).toBe(true)
+  })
+
+  it('holds the place it left until then, with no furthest reached on the street it goes across', () => {
+    const steps = play(twice(40), visit(85, 3, 30))
+    const held = steps.filter((p) => p.doubt !== null)
+    expect(held.length).toBeGreaterThan(0)
+    for (const p of held) expect(p.along).toBeLessThan(910)
+    expect(Math.max(...steps.map((p) => p.furthest))).toBeLessThan(1210)
+  })
+
+  // East along a street, north up the end of it, and back west along the next street, 500 m north.
+  const uAround = makeTrack(through([0, 0], [1000, 0], [1000, 500], [0, 500]))
+  const across = (speed: number): Fix[] => [...line([0, 0], [300, 0], 10), ...line([300, 0], [300, 500], speed)]
+
+  it('believes a cut across to a later street once the phone is driving along it, the way it runs, and not while it comes up to it', () => {
+    for (const speed of [3, 10]) {
+      const drive = [...across(speed), ...line([300, 500], [200, 500], speed)]
+      const steps = play(uAround, drive)
+      const reached = across(speed).length
+      for (const p of steps.slice(0, reached)) expect(p.along, `${speed} m/s`).toBeLessThan(310)
+      const on = steps.findIndex((p) => p.along > 1500)
+      // (The corner is the first fix of the run, or a fix before it, and two more make three.)
+      expect(on - reached, `${speed} m/s`).toBeLessThan(3)
+      expect(steps.at(-1)!.along, `${speed} m/s`).toBeGreaterThan(2000)
+      expect(steps.at(-1)!.lost).toBe(false)
+    }
+  })
+
+  it('believes one down a later street the wrong way only once the phone has gone 100 m along it', () => {
+    const steps = play(uAround, [...across(10), ...line([300, 500], [700, 500], 10)])
+    const reached = across(10).length
+    const on = steps.findIndex((p) => p.along > 1500)
+    expect(on).toBeGreaterThan(reached + 8)
+    expect(on).toBeLessThan(reached + 13)
+    expect(steps.at(-1)!.along).toBeLessThan(1900)
+    expect(steps.at(-1)!.along).toBeGreaterThan(1700)
+  })
+
+  it('comes back at once where the ground the phone has covered explains how far along the route it is', () => {
+    // Off the street 100 m and round a block 300 m long, back onto the street further on: the driver has covered that ground, so there is nothing to doubt.
+    const track = makeTrack(through([0, 0], [1000, 0]))
+    const steps = play(track, [...line([0, 0], [300, 0], 10), ...line([300, 0], [300, -100], 10), ...line([300, -100], [600, -100], 10), ...line([600, -100], [600, 0], 10)])
+    const back = steps.findIndex((p, k) => k > 0 && steps[k - 1].lost && !p.lost)
+    expect(steps.slice(0, back).some((p) => p.doubt !== null)).toBe(false)
+    expect(steps[back].along).toBeGreaterThan(590)
+    expect(steps[back].along).toBeLessThan(610)
+  })
+
+  it('puts a car that missed the turn into a loop on the street beyond, not on the way down of the loop that runs against it', () => {
+    // Round a block 300 m a side and back down the street to the junction: once the car is a little past the junction the way down is the cheaper place to
+    // go, and it can't be driven the way the car is going, so the place doubted is the one that goes with the car. (Held until that had gone by, or 100 m.)
+    const track = makeTrack(through([0, 0], [0, 300], [300, 300], [300, 600], [0, 600], [0, 300], [0, 1500]))
+    for (let seed = 1; seed <= 12; seed++) {
+      const steps = play(track, line([0, 0], [0, 800], 10), { noise: 6, seed })
+      const on = steps.findIndex((p) => p.along > 1500)
+      expect(steps.filter((p) => p.along > 610 && p.along < 1490), `seed ${seed}`).toEqual([])
+      expect(on, `seed ${seed}`).toBeLessThan(40)
+    }
+  })
+
+  it('takes up a round started part way at once, wherever the phone comes onto the route: there is no place it left to doubt from', () => {
+    // At the start of the street coming back, a long way on from the spot started from and right by it on the ground, heading across it.
+    const track = makeTrack(through([0, 0], [1000, 0], [1000, 100], [0, 100]))
+    const p = advance(track, startProgress(track, 100), { ...spot([100, 140]), accuracy: 8, time: 1000, speed: 10 }, 0)!
+    expect(p).toMatchObject({ lost: false, doubt: null })
+    expect(p.along).toBeGreaterThan(1990)
+  })
+
+  it('holds a car backing up from the junction of a stub at the end of a street out and back: the way back is a turn round not sure yet', () => {
+    // Held at the stub's first point, which runs at right angles to the way back, not against it: the turn must still be doubted, and taken back as the car drives on.
+    const track = makeTrack(through([0, 0], [0, 840], [120, 840], [0, 840], [0, 0], [500, 0]))
+    const up = line([0, 0], [0, 838], 6)
+    const steps = play(track, [...up, ...line([0, 838], [0, 798], 3), ...still([0, 798], 3), ...line([0, 798], [0, 835], 6)])
+    const backing = steps.slice(up.length)
+    const put = backing.filter((p) => p.along > 1000)
+    expect(put.length).toBeGreaterThan(0)
+    for (const p of put) {
+      expect(p.turned?.from).toBeCloseTo(840, 3)
+      expect(p.furthest).toBeLessThan(845)
+    }
+    expect(steps.at(-1)!.along).toBeLessThan(900)
+    expect(steps.at(-1)!.turned ?? null).toBeNull()
+    expect(steps.at(-1)!.furthest).toBeLessThan(845)
+  })
+
+  it('undoes a turn round once it has been put back well short of where the turn put it, not only at or before where it was made from', () => {
+    // Thrown far on by a turn not sure yet, and put back a little way past where it was made from: it is on neither, and the turn must not stand until
+    // the car has driven all the way to it, with the furthest reached held for all of that.
+    const track = makeTrack(through([0, 0], [6000, 0]))
+    const driving = play(track, line([0, 0], [500, 0], 10))
+    const thrown: Progress = { ...driving.at(-1)!, turned: { from: 400, to: 4400 } }
+    const steps: Progress[] = []
+    let p = thrown
+    for (let k = 1; k <= 30; k++) {
+      p = advance(track, p, { ...spot([500 + 10 * k, 0]), accuracy: 8, time: (driving.length + k) * 1000, speed: 10 }, 90)!
+      steps.push(p)
+    }
+    expect(steps[0].turned).toBeNull()
+    expect(steps.at(-1)!.along).toBeGreaterThan(780)
+    expect(steps.at(-1)!.furthest).toBeGreaterThan(760)
+  })
+
+  it('keeps a turn round that is sure to come, with the driver put a little short of where it put them', () => {
+    const track = makeTrack(through([0, 0], [6000, 0]))
+    const driving = play(track, line([0, 0], [500, 0], 10))
+    const turned = { from: 300, to: 550 }
+    const p = advance(track, { ...driving.at(-1)!, turned }, { ...spot([505, 0]), accuracy: 8, time: (driving.length + 1) * 1000, speed: 5 }, 90)!
+    expect(p.turned).toEqual(turned)
+  })
+
+  it('is lost from a place it was at only once it has been on the route: a round that begins away from it has none', () => {
+    const track = makeTrack(through([0, 0], [1000, 0]))
+    const steps = play(track, line([500, 200], [500, 0], 10))
+    expect(steps[0]).toMatchObject({ lost: true, left: false })
+    expect(steps.at(-1)!.lost).toBe(false)
+    const again = advance(track, steps.at(-1)!, { ...spot([500, 100]), accuracy: 8, time: 100_000, speed: 10 }, 0)
+    expect(again).toMatchObject({ lost: true, left: true })
+    expect(advance(track, again, { ...spot([500, 110]), accuracy: 8, time: 101_000, speed: 10 }, 0)).toMatchObject({ lost: true, left: true })
+    expect(startProgress(track, 200).left).toBeUndefined()
+  })
+})
