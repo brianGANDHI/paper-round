@@ -104,5 +104,22 @@ export function watchSection(watch: SectionWatch, list: readonly ResolvedSection
   return { watch: { ...watch, last: { id: here.id, along, time }, told, quiet: false, trusted: false, closed: false }, note: noted(ended, started) }
 }
 
-/** What the voice says: the end first, as that is how it comes. */
-export const sectionSpeech = ({ ended, started }: SectionNote): string => [ended !== null && `End of ${ended}.`, started !== null && `Start of ${started}.`].filter(Boolean).join(' ')
+/**
+ * The names said as the section they are, not as themselves: Optimise Route starts and ends a round at the section named Start, which would be told as
+ * "Start of Start." A Map, so that a name such as "constructor" finds nothing, as it would on a plain object.
+ */
+const SAID_AS: ReadonlyMap<string, string> = new Map([
+  ['start', 'the Start section'],
+  ['end', 'the End section'],
+])
+
+/**
+ * How a section's name is said. It is the one Optimise Route takes as its start by the same rule as `isStartSection` in optimise/run.ts: the name
+ * trimmed, in any case. The rule is written out here rather than taken from there, as End needs it too, and the round's voice is kept from hanging on
+ * the optimiser's code. Every other name is said as it is.
+ */
+const spokenName = (name: string): string => SAID_AS.get(name.trim().toLowerCase()) ?? name
+
+/** What the voice says: the end first, as that is how it comes. A screen reader is told the same, from the banner. */
+export const sectionSpeech = ({ ended, started }: SectionNote): string =>
+  [ended !== null && `End of ${spokenName(ended)}.`, started !== null && `Start of ${spokenName(started)}.`].filter(Boolean).join(' ')

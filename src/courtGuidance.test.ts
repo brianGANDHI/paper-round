@@ -326,16 +326,22 @@ describe('the turns of a short court, as the round shows and says them', () => {
   })
 
   it('does the same nearly every time for a car tracked from its fixes, as the round has it, at 3 to 6 m/s', { timeout: 60_000 }, () => {
-    // Measured: in order with the U-turn in time in 96 to 97% of drives at each speed (it was 43 to 57%); the U-turn said in time in 97 to 99%
-    // (85 to 92%); and the turn in or the U-turn after the turn out in 0.2 to 1.2% (13 to 28%). What is left is the tracker's: a fix that puts
-    // the car on the road past the court for a moment as it comes to the corner (the road out of the court meets the road in there), so the turn out
-    // is said first; one that puts it back in the court on the road after it; and in an 8 m court at 6 m/s no fix inside it before it turns round.
+    // Measured: in order with the U-turn in time in 98 to 99% of drives at each speed (it was 43 to 57%); the U-turn said in time in 99.2 to 99.7%
+    // (85 to 92%); and the turn in or the U-turn after the turn out in 0.7 to 1.2% (13 to 28%). What is left is the tracker's. A fix that puts the
+    // car on the road past the court for a moment as it comes to the corner (the road out of the court meets the road in there) has the turn out said
+    // first, in 24 of the 3,840 drives at 3 to 6 m/s, all in courts at 120 to 125 degrees, or the U-turn not said at all, in 17 at 55 to 90 degrees
+    // (2 of them from a fix that lags at the corner until the car has turned round). One that puts the car back at the corner of a 16 m court at 55
+    // to 60 degrees, with the phone heading within 60 degrees of the road, brings the turn in's card back for a fix after the U-turn's, in 6 drives.
+    // In an 8 m court at 6 m/s there may be no fix inside it before the car turns round: one a little ahead of the car, past the U-turn with the
+    // phone still heading in, keeps the U-turn up (see `upcomingTurn`), so it is said in time in 316 of those 320 drives where it was 286, and only
+    // as the car turns round in the other 4. The same hold brings its card back for a fix after the turn out in 12 (2), where the road out heads
+    // within 60 degrees of the way into the court. The voice says neither card again.
     for (const court of [3, 4.5, 6]) {
       const t = tally(COURTS, { court, tracker: 'phone' }, SEEDS)
       const why = `${court} m/s: ${JSON.stringify(t)}`
       expect(t.drives).toBe(COURTS.length * SEEDS.length)
       expect(t.right / t.drives, why).toBeGreaterThanOrEqual(0.94)
-      expect(t.inTime / t.drives, why).toBeGreaterThanOrEqual(0.95)
+      expect(t.inTime / t.drives, why).toBeGreaterThanOrEqual(0.98)
       expect(t.afterOut / t.drives, why).toBeLessThanOrEqual(0.02)
     }
   })
@@ -343,7 +349,7 @@ describe('the turns of a short court, as the round shows and says them', () => {
   it('says the U-turn in time far more often for a car crawling through with no course, and seldom anything after the turn out', { timeout: 60_000 }, () => {
     // A phone going under 1.5 m/s is taken to be standing still until it has moved 6 m, so the tracker moves on in steps of about that, and in a court
     // 8 to 12 m deep it may have the car past the U-turn, or round it, by its first step in. Measured: the U-turn said before the car turns round in
-    // 57% of drives (17.5% before), from 34% at 8 m to 88% at 16 m; and the turn in or the U-turn after the turn out in 5.5% (14.7%).
+    // 59% of drives (17.5% before), from 35% at 8 m to 88% at 16 m; and the turn in or the U-turn after the turn out in 5.5% (14.7%).
     const t = tally(COURTS, { court: 1.2, tracker: 'phone' }, SEEDS)
     const why = JSON.stringify(t)
     expect(t.inTime / t.drives, why).toBeGreaterThanOrEqual(0.5)

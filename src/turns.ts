@@ -57,6 +57,19 @@ export const UTURN_MAX_DEG = 225
 export const UTURN_CORNER_DEG = 70
 /** The stretch of route, in metres, within which a corner turns the heading: a point on it, or rounded off on a radius of up to about 20 m. */
 const CORNER_M = 20
+/**
+ * A U-turn comes back near where it went in: where it ends is no further than this from where it starts, in metres. That takes in the way back on the
+ * other carriageway (`UTURN_GAP_M`, and the corners either side of it) and a half circle on a radius of up to about 27 m, which is tight enough to steer
+ * round. A road that follows a long curve through a half turn ends further off than that, and has only gone round a bend, however far its heading has come.
+ */
+export const UTURN_BACK_M = 55
+/**
+ * Swings joined into one U-turn that end further apart than this, in metres, have to come round by `UTURN_SQUARE_DEG` as well: the way back across a wide
+ * median runs straight back. Two corners of a road, 40 m or so apart with a bend or two to bridge the gap, can add up to 165 degrees and end this far apart,
+ * and they are two corners.
+ */
+export const UTURN_SQUARE_M = 45
+export const UTURN_SQUARE_DEG = 171
 
 /** How far ahead a turn is shown (and its first cue given), in metres. */
 export const TURN_SHOW_M = 200
@@ -123,6 +136,8 @@ export function pointAt(points: Pt[], cum: number[], d: number): Pt {
  * is left out, and so is a road that curves gently over a long way, however far round it goes in the end.
  * The exception is a U-turn drawn as two corners the same way, with a short way across between them (the way back on the
  * other side of the road, up to about 30 m off): those are one turn, see `joinUturns`. A loop round a block is not.
+ * Nor is a swing that goes a half turn round without coming back near where it went in (see `UTURN_BACK_M`): that is a long curve, and
+ * only the corners in it are turns (see `cornersOf`).
  */
 export function routeTurns(points: Pt[]): Turn[] {
   if (points.length < 3) return []
@@ -151,16 +166,23 @@ export function routeTurns(points: Pt[]): Turn[] {
       swings.push({ first: j, last: j, sum: bend, bends: [{ joint: j, bend }] })
     }
   }
-  const all = swings.flatMap(splitLobes).map((s) => ({
-    at: ((s.first + s.last + 2) / 2) * STEP_M,
-    from: (s.first + 1) * STEP_M,
-    to: (s.last + 1) * STEP_M,
-    angle: swingTurn(s),
-    heading: heading[s.first],
-    sharpest: sharpestWithin(s.bends),
-  }))
-  return joinUturns(all).filter((t) => Math.abs(t.angle) >= MIN_TURN_DEG)
+  const apart: Apart = (from, to) => haversine(pointAt(points, cum, from), pointAt(points, cum, to))
+  const all = swings
+    .flatMap(splitLobes)
+    .flatMap((s) => (Math.abs(swingTurn(s)) >= UTURN_DEG && apart((s.first + 1) * STEP_M, (s.last + 1) * STEP_M) > UTURN_BACK_M ? cornersOf(s, apart) : [s]))
+    .map((s) => ({
+      at: ((s.first + s.last + 2) / 2) * STEP_M,
+      from: (s.first + 1) * STEP_M,
+      to: (s.last + 1) * STEP_M,
+      angle: swingTurn(s),
+      heading: heading[s.first],
+      sharpest: sharpestWithin(s.bends),
+    }))
+  return joinUturns(all, apart).filter((t) => Math.abs(t.angle) >= MIN_TURN_DEG)
 }
+
+/** How far apart two places along the route are on the ground, in metres, given how far along it each is. */
+type Apart = (from: number, to: number) => number
 
 /** One change of heading at a joint of the walked route (see `routeTurns`), in degrees: positive to the right. */
 interface Bend {
@@ -296,6 +318,39 @@ function sharpestWithin(bends: { joint: number; bend: number }[]): number {
   return most
 }
 
+/**
+ * The corners of a swing that goes a half turn round and doesn't come back: a long curve, drawn as one swing because no stretch of it runs straight. It is
+ * no U-turn, and the road it follows only bends, but a corner in it (often where a street joins the curve) is a corner: each run of bends that turns
+ * the heading by `MIN_TURN_DEG` or more within `CORNER_M` of route is a swing of its own, and whatever is left over is gone, as any bend in a road is.
+ * A run that is a half turn and ends further than `UTURN_BACK_M` from where it starts is the curve itself, a little too wide to be a U-turn and just tight enough
+ * to be a corner, and it is gone too. One that comes back within that is a hairpin the curve runs into with no straight before it: that is a U-turn, as it would
+ * be with a straight there.
+ */
+function cornersOf(s: RawSwing, apart: Apart): RawSwing[] {
+  const sharp = new Set<number>()
+  s.bends.forEach((b, i) => {
+    let sum = 0
+    for (let k = i; k < s.bends.length && (s.bends[k].joint - b.joint) * STEP_M <= CORNER_M; k++) {
+      sum += s.bends[k].bend
+      if (Math.abs(sum) < MIN_TURN_DEG) continue
+      for (let n = i; n <= k; n++) sharp.add(n)
+      break
+    }
+  })
+  const corners: RawSwing[] = []
+  s.bends.forEach((b, i) => {
+    if (!sharp.has(i)) return
+    const corner = sharp.has(i - 1) ? corners[corners.length - 1] : undefined
+    if (!corner) corners.push({ first: b.joint, last: b.joint, sum: b.bend, bends: [b] })
+    else {
+      corner.last = b.joint
+      corner.sum += b.bend
+      corner.bends.push(b)
+    }
+  })
+  return corners.filter((c) => Math.abs(swingTurn(c)) < UTURN_DEG || apart((c.first + 1) * STEP_M, (c.last + 1) * STEP_M) <= UTURN_BACK_M)
+}
+
 /** A swing that turns the heading by less than `MIN_TURN_DEG` in all: a slight bend, such as the start of a slanted piece across. */
 const isSlight = (s: Swing): boolean => Math.abs(s.angle) < MIN_TURN_DEG
 /** A swing that turns the heading by `MIN_TURN_DEG` or more but never that much within `CORNER_M`: a stretch of road that curves round, drawn as a string of bends. It is no corner. */
@@ -317,10 +372,12 @@ const followsBend = (swings: Swing[], i: number): boolean =>
  *  - one of them is a sharp corner, of `UTURN_CORNER_DEG` within a short stretch of route;
  *  - none of them is a stretch of curve (see `isCurve`);
  *  - no more than one is a slight bend (see `isSlight`), as the start of a slanted piece across is, and a slight bend that comes in
- *    a run of bends (see `followsBend`) does not start a join.
+ *    a run of bends (see `followsBend`) does not start a join;
+ *  - the route comes back near where it went in (see `UTURN_BACK_M` and `UTURN_SQUARE_M`). Two corners with a long way between them, broken up by a slight
+ *    bend so that no one gap is too long, are two corners, and a slight bend a long way before a U-turn is no part of it.
  * A swing that is a half turn already stays as it is, and so does one that is followed by something that doesn't add up to a U.
  */
-function joinUturns(swings: Swing[]): Turn[] {
+function joinUturns(swings: Swing[], apart: Apart): Turn[] {
   const turns: Turn[] = swings.map(({ at, from, to, angle, heading }) => ({ at, from, to, angle, heading }))
   const out: Turn[] = []
   for (let i = 0; i < swings.length; ) {
@@ -342,7 +399,8 @@ function joinUturns(swings: Swing[]): Turn[] {
         if (isSlight(next)) slight++
         if (slight > 1 || Math.abs(total) > UTURN_MAX_DEG) break
         if (Math.abs(total) >= UTURN_MIN_DEG) {
-          if (sharpest >= UTURN_CORNER_DEG) last = k
+          const across = apart(first.from, next.to)
+          if (sharpest >= UTURN_CORNER_DEG && across <= UTURN_BACK_M && (across <= UTURN_SQUARE_M || Math.abs(total) >= UTURN_SQUARE_DEG)) last = k
           break
         }
       }
@@ -368,6 +426,15 @@ export interface UpcomingTurn<T extends Turn = Turn> {
 
 /** A turn only counts as coming up when the driver is heading roughly the way the route does as it reaches it, in degrees. */
 export const TURN_HEADING_TOLERANCE = 60
+/**
+ * How far, in degrees, the phone's heading may be from the way into a U-turn that is the next turn along the route, for it to count: anything nearer
+ * the way in than the way out. At a U-turn the heading is what tells a driver who has turned round from one who hasn't, and the way out is a half turn
+ * from the way in, so this still does. A bend on the way in that has no card of its own, such as a dog-leg near the end of a court, then doesn't take
+ * the U-turn off the card while the car drives it, which also drops its last word if that is waiting to be said. Only the next turn by place has this
+ * margin, so a U-turn is never shown ahead of a turn that comes before it. Once the driver is put past the U-turn, the heading has to agree with the
+ * way in by the usual margin for the U-turn to stay (see `upcomingTurn`).
+ */
+export const UTURN_HEADING_TOLERANCE = 90
 
 export interface UpcomingOptions {
   /** The way the phone is heading, in degrees clockwise from north, or null when it can't say. */
@@ -423,16 +490,87 @@ function isThrough(turn: Turn, next: Turn | undefined, at: number): boolean {
  * card on from it early counts for that heading too, so it is not passed over for a later one that happens to lie the way the
  * driver is still heading (the turn out of a court at 120 degrees to the road lies 60 degrees off the road). Not the turn after a
  * U-turn, though: a place just past a U-turn is the place just before it, so only the heading can say the driver has turned round.
+ * For the same reason a U-turn that is the next turn by place counts for any heading nearer the way into it than the way out (see
+ * `UTURN_HEADING_TOLERANCE`), so a bend on the way in with no card of its own doesn't blank the card. And a U-turn the next turn moves
+ * the card on from early is not passed for a phone still heading the way into it (see `notRound`), so the card does not skip it. The heading
+ * helps the other way too: the turn just before a close U-turn is passed for a phone that has come round it though the fix lags (see
+ * `cameRound`), and just past a U-turn a phone not yet round is shown no turn but the one after it (see `notYetRound`).
  */
 export function upcomingTurn<T extends Turn>(turns: readonly T[], along: number, options: UpcomingOptions = {}): UpcomingTurn<T> | null {
   const { heading = null, after = -Infinity, reached = -Infinity, range = TURN_SHOW_M, tolerance = TURN_HEADING_TOLERANCE } = options
-  const agrees = (t: Turn) => heading === null || angleBetween(t.heading, heading) <= tolerance
+  const agrees = (t: Turn, margin = tolerance) => heading === null || angleBetween(t.heading, heading) <= margin
   const passed = (i: number, at: number) => isThrough(turns[i], turns[i + 1], at)
   /** Whether the turn at `i` is behind the driver for good. */
   const gone = (i: number) => turns[i].at <= after || passed(i, reached)
+  /**
+   * Whether the driver is put past the U-turn at `i` with the phone still heading the way into it, short of the next turn and within what any U-turn is
+   * held for. In a short court a fix a little ahead of the car does that before the car has come to the end, and the card and the voice would go straight
+   * on to the turn out. Here the heading goes against the place, so it has to agree with the way in by the usual margin (`TURN_HEADING_TOLERANCE`), not the
+   * wider one a U-turn the place says is still ahead has (`UTURN_HEADING_TOLERANCE`), nor a wider one asked for: a phone part way round at the end of an
+   * 8 m court brought the U-turn back after the turn out more often with 90 degrees, and no more often said it in time. The way out is a half turn from the
+   * way in, so this holds the turn after it back only from a phone that is still nowhere near heading that way. The furthest reached still puts the U-turn
+   * behind the driver for good (see `gone`).
+   */
+  const notRound = (i: number) =>
+    turnKind(turns[i].angle) === 'uturn' &&
+    heading !== null &&
+    angleBetween(turns[i].heading, heading) <= TURN_HEADING_TOLERANCE &&
+    along <= turns[i].at + TURN_PASSED_M &&
+    along < (turns[i + 1]?.from ?? Infinity)
+  /**
+   * Whether the phone heads out of `t`, and so has come round it: the way out by the usual margin (`TURN_HEADING_TOLERANCE`), and nearer that than the
+   * way in. A heading far from both, as one still the way into a court is from a turn out of it, says nothing of the turn.
+   */
+  const headsOutOf = (t: Turn) => {
+    if (heading === null) return false
+    const out = angleBetween(t.heading + t.angle, heading)
+    return out <= TURN_HEADING_TOLERANCE && out < angleBetween(t.heading, heading)
+  }
+  /**
+   * Whether the phone says the driver has come round the turn at `i` while the place says they are still in its swing, when a U-turn is next and close
+   * enough for the card to move on early. The card holds a turn until its swing ends (see `movesOnAt`), and a fix that lags at the end of a court can sit
+   * just short of that until the car is at the end, and the next fix put it past the U-turn: the U-turn was never shown or said. A phone heading within
+   * 60 degrees of the way out of the turn (`TURN_HEADING_TOLERANCE`), and nearer that than the way into it, has come round it (see `headsOutOf`). Not
+   * before the driver is at the turn, nor more than `TURN_PASSED_M` short of where the U-turn starts (where the card would move on were it not held to
+   * the swing), nor with no heading to go by, so a corner rounded off ahead of a U-turn is held as before for a phone that can't say.
+   */
+  const cameRound = (i: number) => {
+    const t = turns[i]
+    const then = turns[i + 1]
+    return (
+      !!then &&
+      turnKind(t.angle) !== 'uturn' &&
+      turnKind(then.angle) === 'uturn' &&
+      movesOnAt(t, then) !== null &&
+      along >= Math.max(t.at, then.from - TURN_PASSED_M) &&
+      headsOutOf(t)
+    )
+  }
+  /** Whether the driver is through the turn at `i` where they are now: past it by place, or round it by the phone, and not a driver yet to turn round at a U-turn. */
+  const through = (i: number) => (passed(i, along) || cameRound(i)) && !notRound(i)
+  /** The first turn the driver is not through, by place along the route, and so the one a U-turn's wider margin is for. */
+  const next = turns.findIndex((_, i) => !through(i) && !gone(i))
+  /**
+   * Whether the driver is put just past a U-turn, within what any U-turn is held for, with the next turn the one after it, and the phone not yet round:
+   * still nearer the way into the U-turn than the way out (`UTURN_HEADING_TOLERANCE`). The furthest reached can put the U-turn behind the driver for good
+   * while the car is still at the end of the court, and a turn further on can lie the way into the court. Its first words then held up the last word for
+   * the turn out until the card had gone on, and that was dropped unsaid. Only the next turn by place is shown here, so the card is blank until the heading
+   * agrees with it. A phone that has come round chooses as anywhere else, and so does one put in the swing of the turn out and heading out of that: after
+   * a U-turn and a turn out of 90 degrees the heading is as near the way into the U-turn as its way out, and a U-turn just after the turn out was kept off
+   * the card a second while the fix lagged.
+   */
+  const notYetRound =
+    next > 0 &&
+    turnKind(turns[next - 1].angle) === 'uturn' &&
+    heading !== null &&
+    angleBetween(turns[next - 1].heading, heading) <= UTURN_HEADING_TOLERANCE &&
+    along >= turns[next - 1].from &&
+    along <= turns[next - 1].at + TURN_PASSED_M &&
+    !(along >= turns[next].from && headsOutOf(turns[next]))
   const turn = turns.find((t, i) => {
-    if (passed(i, along) || gone(i)) return false
+    if (through(i) || gone(i) || (notYetRound && i > next)) return false
     if (agrees(t)) return true
+    if (i === next && turnKind(t.angle) === 'uturn' && agrees(t, Math.max(tolerance, UTURN_HEADING_TOLERANCE))) return true
     const prev = i > 0 ? turns[i - 1] : null
     return !!prev && turnKind(prev.angle) !== 'uturn' && movesOnAt(prev, t) !== null && !gone(i - 1) && agrees(prev)
   })

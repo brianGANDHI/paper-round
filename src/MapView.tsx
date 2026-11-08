@@ -13,14 +13,15 @@ import {
 } from 'react-leaflet'
 import 'leaflet/dist/leaflet.css'
 import { alertable, quietHouseIds } from './alerts'
-import { BLOCK_MARK_HTML, BLOCK_MARK_PX, BLOCK_PANE, blockMarkClass, LINE_PANES, lineStyle, SIDE_COLOR, STOP_COLOR } from './colors'
+import { BLOCK_MARK_HTML, BLOCK_MARK_PX, BLOCK_PANE, blockMarkClass, LINE_PANES, SIDE_COLOR, STOP_COLOR, type LineStyle } from './colors'
 import { arrowsAlong, awayBearing, haversine, occurrences, pathLength, screenPlace, splitPathAt, type Place } from './geo'
 import { bottomCover, drivenCut, drivenShare, followZoom, headingUpFrac, headingUpLayout, isAhead, userInput, type UserInput } from './mapHeading'
+import { drawsArrows, fitPaddingFor, lineStyleFor, mapOptions } from './mapOverview'
 import { houseNumber } from './routeEdit'
 import { passViews } from './passes'
 import { AUSTRALIA } from './region'
-import { fitPadding, followAnimation, settleZoom, stepZoom } from './roundView'
-import type { Pt, Route } from './types'
+import { followAnimation, settleZoom, stepZoom } from './roundView'
+import type { Pt, Route, Side } from './types'
 import './block.css'
 
 /** Ask the map to move. A new `key` makes it move again, even to the same place. */
@@ -242,18 +243,21 @@ function HeadingUp({ on, heading, clip, cover }: { on: boolean; heading: number 
 /** How many pixels of a map of the height given are covered along the bottom. */
 type Cover = (height: number) => number
 
-/** `coverPx` keeps fitted points clear of a panel covering that many pixels of the bottom of the map (and the buttons down the right: see `fitPadding`). */
-function fitTo(map: ReturnType<typeof useMap>, points: Pt[], coverPx: number) {
-  const { topLeft, bottomRight } = fitPadding(coverPx)
+/**
+ * `coverPx` keeps fitted points clear of a panel covering that many pixels of the bottom of the map (and the buttons down the right: see `fitPadding`).
+ * An overview has none of those over it, so its points are fitted close to every edge instead (see `fitPaddingFor`).
+ */
+function fitTo(map: ReturnType<typeof useMap>, points: Pt[], coverPx: number, overview = false) {
+  const { topLeft, bottomRight } = fitPaddingFor(overview, coverPx)
   map.fitBounds(points.map(toLatLng), { paddingTopLeft: topLeft, paddingBottomRight: bottomRight, maxZoom: 18 })
 }
 
 /** Fits the whole route (and the driver) in the part of the map that is not covered. That zoom is ours, so the next time the driver is followed it goes back to street level. */
-function Fit({ points, cover, street }: { points: Pt[]; cover: Cover; street: StreetNext }) {
+function Fit({ points, cover, street, overview }: { points: Pt[]; cover: Cover; street: StreetNext; overview: boolean }) {
   const map = useMap()
   useEffect(() => {
     if (points.length > 1) {
-      fitTo(map, points, cover(map.getSize().y))
+      fitTo(map, points, cover(map.getSize().y), overview)
       setStreet(street, true)
     }
     // Fit once per route load, not on every point added.
@@ -478,6 +482,12 @@ interface Props {
   guide?: { from: Pt; to: Pt } | null
   /** The OpenStreetMap credit is shown by the screen itself (as `MapCredit`), not inside the map, where turning it would turn the credit too. */
   outsideCredit?: boolean
+  /**
+   * A map to look over in a list that scrolls, such as Optimise Route's results: one finger and the wheel scroll the list, not the map, so the list
+   * can't get stuck behind it, and two fingers still zoom and move it. The route is fitted close to the edges at any zoom, not only whole steps, so it
+   * fills the box, and drawn thin with no arrows, as at that size they only hide its colours.
+   */
+  overview?: boolean
   /** A stretch of the route to emphasise. */
   highlight?: Pt[]
   /** Show draggable handles on the route's points, for editing. Sections are drawn on their true lines. */
@@ -519,6 +529,7 @@ export function MapView({
   headingUp = false,
   heading = null,
   outsideCredit = false,
+  overview = false,
   guide = null,
   highlight,
   editable,
@@ -566,19 +577,20 @@ export function MapView({
     [views, cut],
   )
   // Each arrow knows how far along the route it is, so the ones already driven can be left off: a faded arrow among the bright ones is just a muddle.
-  const arrows = useMemo(
-    () =>
-      views.flatMap((v) => {
-        const length = pathLength(v.points)
-        return arrowsAlong(v.points, 150).map((a, k) => ({
-          ...a,
-          id: `${v.index}:${k}`,
-          transit: v.side === 'transit',
-          routeM: v.startM + (length ? (75 + 150 * k) / length : 0) * (v.endM - v.startM),
-        }))
-      }),
-    [views],
-  )
+  // An overview has none (see `drawsArrows`).
+  const arrows = useMemo(() => {
+    if (!drawsArrows(overview)) return []
+    return views.flatMap((v) => {
+      const length = pathLength(v.points)
+      return arrowsAlong(v.points, 150).map((a, k) => ({
+        ...a,
+        id: `${v.index}:${k}`,
+        transit: v.side === 'transit',
+        routeM: v.startM + (length ? (75 + 150 * k) / length : 0) * (v.endM - v.startM),
+      }))
+    })
+  }, [views, overview])
+  const styleOf = (side: Side): LineStyle => lineStyleFor(overview, side)
   const arrowsAhead = useMemo(() => arrows.filter((a) => isAhead(a.routeM, cut)), [arrows, cut])
   // What covers the bottom of the map, in pixels for a map of a given height. Null for the dot when nothing is said about it.
   const cover = useCallback((height: number) => bottomCover(height, bottomFrac, bottomPx), [bottomFrac, bottomPx])
@@ -603,6 +615,7 @@ export function MapView({
         zoomControl={false}
         attributionControl={false}
         doubleClickZoom={false}
+        {...mapOptions(overview)}
       >
         {/* Tiles are a bonus: offline they simply fail and the vector overlay still shows. */}
         <TileLayer
@@ -626,8 +639,8 @@ export function MapView({
           {drawn.map(({ view: v, before }) =>
             before.length > 1 ? (
               <Fragment key={v.index}>
-                <Polyline positions={before.map(toLatLng)} pathOptions={{ ...LINE, color: '#fff', ...faded(lineStyle(v.side).casing, DRIVEN_FADE), interactive: false }} />
-                <Polyline positions={before.map(toLatLng)} pathOptions={{ ...LINE, color: SIDE_COLOR[v.side], ...faded({ opacity: 1, ...lineStyle(v.side).line }, DRIVEN_FADE), interactive: false }} />
+                <Polyline positions={before.map(toLatLng)} pathOptions={{ ...LINE, color: '#fff', ...faded(styleOf(v.side).casing, DRIVEN_FADE), interactive: false }} />
+                <Polyline positions={before.map(toLatLng)} pathOptions={{ ...LINE, color: SIDE_COLOR[v.side], ...faded({ opacity: 1, ...styleOf(v.side).line }, DRIVEN_FADE), interactive: false }} />
               </Fragment>
             ) : null,
           )}
@@ -635,13 +648,13 @@ export function MapView({
         {/* White casings under every coloured line, so the line stays readable on any map background and one section's casing never cuts into another's line. */}
         <Pane name={LINE_PANES.aheadCasing.name} style={{ zIndex: LINE_PANES.aheadCasing.zIndex }}>
           {drawn.map(({ view: v, after }) =>
-            after.length > 1 ? <Polyline key={v.index} positions={after.map(toLatLng)} pathOptions={{ ...LINE, color: '#fff', ...lineStyle(v.side).casing, interactive: false }} /> : null,
+            after.length > 1 ? <Polyline key={v.index} positions={after.map(toLatLng)} pathOptions={{ ...LINE, color: '#fff', ...styleOf(v.side).casing, interactive: false }} /> : null,
           )}
         </Pane>
         <Pane name={LINE_PANES.ahead.name} style={{ zIndex: LINE_PANES.ahead.zIndex }}>
           {drawn.map(({ view: v, after }) =>
             after.length > 1 ? (
-              <Polyline key={v.index} positions={after.map(toLatLng)} pathOptions={{ ...LINE, color: SIDE_COLOR[v.side], opacity: 1, ...lineStyle(v.side).line, interactive: false }} />
+              <Polyline key={v.index} positions={after.map(toLatLng)} pathOptions={{ ...LINE, color: SIDE_COLOR[v.side], opacity: 1, ...styleOf(v.side).line, interactive: false }} />
             ) : null,
           )}
         </Pane>
@@ -747,7 +760,7 @@ export function MapView({
         {follow ? (
           <Follow pos={position} mode={headingUp ? 'heading' : 'north'} paused={paused} street={street} input={input} />
         ) : (
-          fit && <Fit points={fitPosition && position ? [...route.points, position] : route.points} cover={cover} street={street} />
+          fit && <Fit points={fitPosition && position ? [...route.points, position] : route.points} cover={cover} street={street} overview={overview} />
         )}
       </MapContainer>
     {headingUp && follow && heading !== null && <div className="heading-chevron" aria-hidden="true" />}

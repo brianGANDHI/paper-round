@@ -46,6 +46,7 @@ import { RoundBar, RoundButtons, type Notice } from './RoundBar'
 import { RoundMenu } from './RoundMenu'
 import { afterUserMove, barCover, FREE_LOOK_MS } from './roundView'
 import { formatDistance, paintMetres, routeLength } from './routeEdit'
+import { markTurnSaid } from './saidTurns'
 import { loadAlertDistance, loadHeadingUp, loadKeepAudioAwake, loadVoiceTurns, saveAlertDistance, saveHeadingUp, saveKeepAudioAwake, saveVoiceTurns } from './storage'
 import { RouteChip, Segmented } from './ui'
 import { sideChangeNote, sideExtents, type ExtentKey } from './driveEdit'
@@ -868,9 +869,9 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
     if (!voice || nextAt === null) return
     const spoken = cueToSay({ angle: nextAngle, street: nextStreet }, nextAhead, saidTurn.current.get(turnKey(nextAt)) ?? null, transit)
     if (!spoken) return
-    saidTurn.current.set(turnKey(nextAt), spoken.cue)
-    // Dropped if the turn has been made, or another has come up, by the time the words would start.
-    say(spoken.text, { stale: () => nextAtRef.current !== nextAt })
+    // Dropped if the turn has been made, or another has come up, by the time the words would start. Then they were not heard, so the
+    // cue is no longer kept as said, and the card coming back to the turn says the cue for where it is then (see `markTurnSaid`).
+    say(spoken.text, { stale: markTurnSaid(saidTurn.current, turnKey(nextAt), spoken.cue, () => nextAtRef.current !== nextAt) })
   }, [voice, nextAt, nextAngle, nextAhead, nextStreet, transit])
   // Leaving the round ends anything still being said, and the signal that keeps the audio link open.
   useEffect(

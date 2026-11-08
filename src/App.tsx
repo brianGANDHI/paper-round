@@ -4,7 +4,7 @@ import { activeRoute, adjustActiveRoute, editActiveRoute, setActiveRound, setAct
 import { Round } from './Round'
 import { Routes } from './Routes'
 import { Setup } from './Setup'
-import { canSave, loadLibrary, saveLibrary } from './storage'
+import { canSave, loadLibrary, saveLibrary, type SaveTrouble } from './storage'
 import type { Library, LoadList } from './types'
 
 type Tab = 'round' | 'routes' | 'setup'
@@ -21,8 +21,7 @@ const TABS: { id: Tab; label: string; icon: IconName }[] = [
 export default function App() {
   const [tab, setTab] = useState<Tab>('round')
   const [library, setLibrary] = useState<Library>(loadLibrary)
-  // False if the phone won't let the app keep anything, for example in a private tab.
-  const [saveFailed, setSaveFailed] = useState(() => !canSave())
+  const [saveTrouble, setSaveTrouble] = useState<SaveTrouble | null>(() => (canSave() ? null : 'blocked'))
   const latest = useRef(library)
 
   // Ask the browser not to clear our data when space runs short. Harmless if it declines.
@@ -34,12 +33,18 @@ export default function App() {
     }
   }, [])
 
-  /** Every change goes through here, so it is saved the moment it happens. */
-  const update = (change: (lib: Library) => Library) => {
+  /**
+   * Every change goes through here, so it is saved the moment it happens. It says what kept the phone from saving it, or null when it was saved: when
+   * it wasn't, the change is held only until the app closes, and a screen that can't let that stand (Accept) puts the routes back and says why.
+   */
+  const update = (change: (lib: Library) => Library): SaveTrouble | null => {
     const next = change(latest.current)
     latest.current = next
     setLibrary(next)
-    setSaveFailed(!saveLibrary(next))
+    // A phone that still takes a tiny note has room for something, just not for all the routes.
+    const trouble = saveLibrary(next) ? null : canSave() ? 'full' : 'blocked'
+    setSaveTrouble(trouble)
+    return trouble
   }
 
   const current = activeRoute(library)
@@ -53,10 +58,14 @@ export default function App() {
 
   return (
     <div className="app">
-      {saveFailed && (
+      {saveTrouble && (
         <div className="save-warning" role="alert">
           <Icon name="alert" size={18} />
-          <span>This phone isn't letting the app save. Your routes will be lost when you close it. Try a normal (not private) tab.</span>
+          <span>
+            {saveTrouble === 'full'
+              ? "This phone has no room left for your routes, so your latest changes aren't saved. Delete a route you no longer need."
+              : "This phone isn't letting the app save. Your routes will be lost when you close it. Try a normal (not private) tab."}
+          </span>
         </div>
       )}
       <main>

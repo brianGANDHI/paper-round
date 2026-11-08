@@ -186,26 +186,31 @@ export function sameWay(points: { lat: number; lng: number }[], i: number, j: nu
 
 export type RoadSide = 'left' | 'right'
 
-const opposite = (side: RoadSide): RoadSide => (side === 'left' ? 'right' : 'left')
+export const opposite = (side: RoadSide): RoadSide => (side === 'left' ? 'right' : 'left')
 
 /** One leg of a pass less than this much further along the route than the other, in metres, does not come first: at the very tip of a turn-round the two meet. */
 const EARLIER_M = 1
 
 /**
+ * The leg of a stop's first pass that the route reaches first: the one a side picked by hand is the side of. At the turn-round of a court that is
+ * the way in, though the way back can be the leg nearest the house (and so the one `occurrences` gives it as `idx`), as it is beside the U-turn
+ * the app draws. A leg less than `EARLIER_M` sooner does not count as first, so at the very tip of an exact reversal, where the legs meet, the
+ * pass's own leg is.
+ */
+export const firstLeg = (first: Pick<Occurrence, 'idx' | 'alt' | 'altAt' | 'at'>): number =>
+  first.alt !== undefined && (first.altAt ?? Infinity) < first.at - EARLIER_M ? first.alt : first.idx
+
+/**
  * The side of the road a stop is on as the route passes it along segment `idx`: see `alertSide`, which says which segment that is. A side
  * picked by hand is the side as you drive past the stop the first time, so it is told against the leg of the stop's first pass (in `occs`)
- * that the route reaches first, never against `o.idx`. At the turn-round of a court that is the way in, though the way back can be the leg
- * nearest the house (and so the one `occurrences` gives it as `idx`), as it is beside the U-turn the app draws; and `alertable` can put a
- * house there on the other leg of its pass. A leg less than `EARLIER_M` sooner does not count as first, so at the very tip of an exact
- * reversal, where the legs meet, the pass's own leg is.
+ * that the route reaches first (see `firstLeg`), never against `o.idx`, and `alertable` can put a house at a turn-round on the other leg of its pass.
  */
 function sideOnLeg(route: Pick<Route, 'points' | 'sideChanges'>, occs: Occurrence[], o: Occurrence, idx: number): RoadSide | null {
   const picked = o.stop.side
   if (picked) {
     const first = occs.find((x) => x.key === o.stop.id)
     if (!first) return picked
-    const firstLeg = first.alt !== undefined && (first.altAt ?? Infinity) < first.at - EARLIER_M ? first.alt : first.idx
-    return sameWay(route.points, firstLeg, idx) ? picked : opposite(picked)
+    return sameWay(route.points, firstLeg(first), idx) ? picked : opposite(picked)
   }
   const beside = stopSide(route.points, idx, o.stop)
   if (beside) return beside

@@ -151,16 +151,41 @@ export function renameRoute(lib: Library, id: string, name: string): Library {
   return mapRoute(lib, id, (r) => ({ ...r, name: uniqueName(lib, name, id) }))
 }
 
-/**
- * Copy a route, with its named sections, street names, bundle order (the stop ids are the same in the copy) and list of what to load,
- * under a new name and switch to the copy. Its round starts fresh.
- */
+/** A copy of a route under this name, with its named sections, street names, bundle order (the stop ids are the same in the copy) and list of what to load. Its round starts fresh. */
+function copyOf(source: SavedRoute, name: string, now: number): SavedRoute {
+  const made = makeRoute(name, structuredClone(source.route), now)
+  return withLoad(withOrder(withExtras(made, structuredClone(source.sections), structuredClone(source.streets)), source.bundleOrder), source.load)
+}
+
+/** Copy a route under a new name, and switch to the copy. */
 export function duplicateRoute(lib: Library, id: string, now = Date.now()): Library {
   const source = lib.routes.find((r) => r.id === id)
   if (!source) return lib
-  const made = makeRoute(uniqueName(lib, `${source.name} copy`), structuredClone(source.route), now)
-  const copy = withLoad(withOrder(withExtras(made, structuredClone(source.sections), structuredClone(source.streets)), source.bundleOrder), source.load)
+  const copy = copyOf(source, uniqueName(lib, `${source.name} copy`), now)
   return { routes: [...lib.routes, copy], activeId: copy.id }
+}
+
+/**
+ * A name no other route uses that is `name` and then `label` in brackets: "Monday (old)", then "Monday (old 2)". A name too long to take the
+ * label is cut short, never the label, which is what tells the two routes apart in the list.
+ */
+export function labelledName(lib: Pick<Library, 'routes'>, name: string, label: string): string {
+  const taken = new Set(lib.routes.map((r) => r.name.toLowerCase()))
+  for (let n = 1; ; n++) {
+    const suffix = n === 1 ? ` (${label})` : ` (${label} ${n})`
+    const candidate = `${tidyText(name, MAX_NAME - suffix.length) || DEFAULT_NAME}${suffix}`
+    if (!taken.has(candidate.toLowerCase())) return candidate
+  }
+}
+
+/**
+ * Keep a copy of a route beside it, as `duplicateRoute` makes one, without switching to it: the route in use stays in use. Unlike a duplicate, the
+ * copy keeps the round as it was, so going back to it carries on from where the round had got to. That holds because the copy has the same points
+ * and the same stops, so what was done still matches them.
+ */
+export function keepCopy(lib: Library, source: SavedRoute, name: string, now = Date.now()): { library: Library; copy: SavedRoute } {
+  const copy = { ...copyOf(source, name, now), round: structuredClone(source.round) }
+  return { library: { ...lib, routes: [...lib.routes, copy] }, copy }
 }
 
 /** Remove a route. The library never ends up empty: deleting the last one leaves a blank route. */

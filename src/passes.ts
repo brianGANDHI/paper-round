@@ -1,4 +1,4 @@
-import { haversine, offsetPath, pathDistancer } from './geo'
+import { haversine, offsetPath, pathDistancer, project } from './geo'
 import { sections } from './routeEdit'
 import type { Pt, Route, Side } from './types'
 
@@ -52,6 +52,37 @@ function shareOnGround(path: Pt[], distanceToOther: (p: Pt) => number): number {
   return samples.filter((p) => distanceToOther(p) <= SAME_GROUND_M).length / samples.length
 }
 
+interface Box {
+  s: number
+  n: number
+  w: number
+  e: number
+}
+
+function boxOf(path: Pt[]): Box {
+  const box = { s: Infinity, n: -Infinity, w: Infinity, e: -Infinity }
+  for (const p of path) {
+    box.s = Math.min(box.s, p.lat)
+    box.n = Math.max(box.n, p.lat)
+    box.w = Math.min(box.w, p.lng)
+    box.e = Math.max(box.e, p.lng)
+  }
+  return box
+}
+
+/**
+ * How far apart two boxes are, in metres, measured the way `pathDistancer` measures from a path starting at `refLat`. Every point a path's samples
+ * can be is inside its box, and every point of the other path is inside the other box, so none of them can be nearer each other than this.
+ */
+function boxGapM(a: Box, b: Box, refLat: number): number {
+  const [x] = project({ lat: 0, lng: Math.max(0, b.w - a.e, a.w - b.e) }, refLat)
+  const [, y] = project({ lat: Math.max(0, b.s - a.n, a.s - b.n), lng: 0 }, refLat)
+  return Math.hypot(x, y)
+}
+
+/** A metre more than the distance that counts as the same ground, so that rounding can never leave out a section that is only just on it. */
+const NOT_NEAR_M = SAME_GROUND_M + 1
+
 /**
  * The sections of a route as they should be drawn. A section that goes over ground an
  * earlier one already covers (the other half of an out-and-back, say) is shifted to the
@@ -63,9 +94,13 @@ export function passViews(route: Route, flat = false): PassView[] {
   const secs = sections(route)
   const paths = secs.map((s) => route.points.slice(s.idx, s.endIdx + 1))
   const distancers = paths.map((path) => pathDistancer(path))
+  const boxes = paths.map(boxOf)
   return secs.map((s, i) => {
     const covered: number[] = []
     for (let e = 0; e < i; e++) {
+      // Most sections are nowhere near each other, and measuring every sample of one against every stretch of the other took seconds on a long
+      // route. A section that can't come within reach shares no ground, so it is passed over, and what is drawn is just as it would be.
+      if (boxGapM(boxes[i], boxes[e], paths[e][0].lat) > NOT_NEAR_M) continue
       if (shareOnGround(paths[i], distancers[e]) >= SAME_GROUND_SHARE) covered.push(e)
     }
     const repeatOf = covered[0] ?? null

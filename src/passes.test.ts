@@ -1,8 +1,24 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { distanceToPath } from './geo'
 import { PASS_OFFSET_M, passNote, passViews } from './passes'
 import { repeatSection } from './routeEdit'
 import type { Pt, Route } from './types'
+
+/** Every time a section is measured against another: the path measured against, and the point measured. Watched, not changed. */
+const asked = vi.hoisted(() => [] as { path: readonly Pt[]; at: Pt }[])
+vi.mock('./geo', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./geo')>()
+  return {
+    ...actual,
+    pathDistancer: (path: Pt[]) => {
+      const measure = actual.pathDistancer(path)
+      return (at: Pt) => {
+        asked.push({ path, at })
+        return measure(at)
+      }
+    },
+  }
+})
 
 const pt = (i: number): Pt => ({ lat: 51 + i * 0.001, lng: 0 })
 const oneStreet = (): Route => ({
@@ -76,6 +92,30 @@ describe('drawing the sections of a route', () => {
     const third = passViews(route).filter((v) => v.repeatOf === 0).pop()!
     const first = passViews(route)[0]
     expect(distanceToPath(third.points[2], first.points)).toBeGreaterThan(PASS_OFFSET_M)
+  })
+
+  it('does not measure a section against one too far away to share its ground, and still finds the repeats', () => {
+    // A street, 2 km along another road, and a second street driven out and back.
+    const far = 0.03
+    const route: Route = {
+      points: [...Array.from({ length: 6 }, (_, i) => pt(i)), ...Array.from({ length: 6 }, (_, i) => ({ lat: 51.005 - i * 0.001, lng: far })), ...Array.from({ length: 5 }, (_, i) => ({ lat: 51.001 + i * 0.001, lng: far }))],
+      sideChanges: [
+        { idx: 0, side: 'left' },
+        { idx: 5, side: 'transit' },
+        { idx: 6, side: 'right' },
+        { idx: 11, side: 'both' },
+      ],
+      stops: [],
+    }
+    asked.length = 0
+    const views = passViews(route)
+    expect(views.map((v) => v.repeatOf)).toEqual([null, null, null, 2])
+    expect(views[3].reversed).toBe(true)
+    const firstStreet = (path: readonly Pt[]) => path.every((p) => p.lng === 0)
+    const secondStreet = (at: Pt) => at.lng === far && at.lat < 51.0049
+    expect(asked.some((a) => firstStreet(a.path) && secondStreet(a.at))).toBe(false)
+    // The road between them touches both, so it is still measured against the first.
+    expect(asked.some((a) => firstStreet(a.path))).toBe(true)
   })
 })
 

@@ -1,5 +1,9 @@
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { LEAD_ID, type ResolvedSection } from './namedSections'
+import { isStartSection } from './optimise/run'
+import { SectionBanner } from './SectionBanner'
 import { carriedOn, NOTHING_WATCHED, RESUMED_WATCH, SECTION_END_M, SECTION_FASTEST_M_S, SECTION_MOVE_SLACK_M, sectionSpeech, startedAt, watchSection, type SectionWatch } from './sectionWatch'
 
 const section = (id: string, startM: number, endM: number, lead = false): ResolvedSection => ({ id, name: `Section ${id}`, startM, endM, lead })
@@ -215,5 +219,40 @@ describe('telling where a named section starts and ends', () => {
     expect(sectionSpeech({ ended: 'Oak Estate', started: 'Beach Road' })).toBe('End of Oak Estate. Start of Beach Road.')
     expect(sectionSpeech({ ended: 'Oak Estate', started: null })).toBe('End of Oak Estate.')
     expect(sectionSpeech({ ended: null, started: 'Beach Road' })).toBe('Start of Beach Road.')
+  })
+})
+
+describe('saying a section named Start or End', () => {
+  it('says it as the section it is, not "Start of Start."', () => {
+    expect(sectionSpeech({ ended: null, started: 'Start' })).toBe('Start of the Start section.')
+    expect(sectionSpeech({ ended: 'Start', started: 'Area Two' })).toBe('End of the Start section. Start of Area Two.')
+    expect(sectionSpeech({ ended: 'End', started: null })).toBe('End of the End section.')
+    expect(sectionSpeech({ ended: 'Area Two', started: 'End' })).toBe('End of Area Two. Start of the End section.')
+  })
+
+  it('goes by the name trimmed, in any case, as Optimise Route does in finding where a round starts', () => {
+    for (const name of ['start', 'START', ' Start ', 'sTaRt']) {
+      expect(sectionSpeech({ ended: name, started: name })).toBe('End of the Start section. Start of the Start section.')
+      expect(isStartSection({ name })).toBe(true)
+    }
+    for (const name of ['end', 'END', ' End\t']) expect(sectionSpeech({ ended: name, started: null })).toBe('End of the End section.')
+  })
+
+  it('says every other name as it is, even one with Start or End in it', () => {
+    // The last two are words a plain object already has a value for.
+    for (const name of ['Area Two', 'Start Two', 'Restart', 'Back End', 'Ending', 'The End', 'Start and End', 'constructor', 'toString']) {
+      expect(sectionSpeech({ ended: name, started: name })).toBe(`End of ${name}. Start of ${name}.`)
+    }
+    // A name Optimise Route takes as its start is always one said as the Start section, and the others never are.
+    for (const name of ['Start', ' start', 'Start Two', 'Restart', 'Area Two']) {
+      expect(sectionSpeech({ ended: null, started: name }) === 'Start of the Start section.').toBe(isStartSection({ name }))
+    }
+  })
+
+  it('leaves the words on the banner as they are, and tells a screen reader what the voice says', () => {
+    const out = renderToStaticMarkup(createElement(SectionBanner, { ended: 'Start', started: 'Area Two' }))
+    expect(out).toMatch(/End<\/span><span class="section-name">Start<\/span>/)
+    expect(out).toMatch(/Start<\/span><span class="section-name">Area Two<\/span>/)
+    expect(out).toContain('aria-label="End of the Start section. Start of Area Two."')
   })
 })

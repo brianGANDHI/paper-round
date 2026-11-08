@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { createPortal } from 'react-dom'
 import { backupFileName, makeBackup, toBackupRoute, type BackupRoute } from './backup'
 import { BackupDialog, RestoreDialog } from './BackupDialogs'
 import { useDialogs } from './confirm'
@@ -17,19 +18,23 @@ import {
   uniqueName,
   type ImportMode,
 } from './library'
+import { acceptOptimised, NO_ROOM_REASON, NO_SAVE_REASON, STALE_REASON, type AcceptOutcome } from './optimise/accept'
+import type { OptimiseResult } from './optimise/types'
+import { OptimiseSheet } from './OptimiseSheet'
 import { formatDistance, routeLength } from './routeEdit'
+import type { SaveTrouble } from './storage'
 import { Banner } from './ui'
 import type { Library, SavedRoute } from './types'
 
 interface Props {
   library: Library
-  /** Change the saved routes. The result is saved straight away. */
-  update: (change: (lib: Library) => Library) => void
+  /** Change the saved routes. The result is saved straight away, and this says what kept the phone from saving it, or null when it was saved. */
+  update: (change: (lib: Library) => Library) => SaveTrouble | null
   onGoSetup: () => void
 }
 
 type Notice = { text: string; warn?: boolean }
-type Sheet = { kind: 'backup'; title: string; text: string; fileName: string } | { kind: 'restore' } | null
+type Sheet = { kind: 'backup'; title: string; text: string; fileName: string } | { kind: 'restore' } | { kind: 'optimise' } | null
 
 function describe(r: SavedRoute): string {
   const { points, stops } = r.route
@@ -103,6 +108,29 @@ export function Routes({ library, update, onGoSetup }: Props) {
     })
   }
 
+  /**
+   * Puts a finished run into the routes, from the latest of them, as `update` hands it over. Refused, the routes are left as they are. When the phone
+   * won't keep the new route beside the old, the routes are put back as they were and Accept is refused too. Held only until the app closes, the new
+   * route would be gone after a reload and the old one back in its place, perhaps part way through a round, when the driver had been told otherwise.
+   * Why it was refused goes by why the phone didn't save it, as the way out differs: deleting a route makes room, but helps nothing where nothing is kept.
+   */
+  const acceptRun = (result: OptimiseResult): AcceptOutcome => {
+    let outcome = { ok: false, reason: STALE_REASON } as AcceptOutcome
+    let before = null as Library | null
+    const trouble = update((lib) => {
+      before = lib
+      outcome = acceptOptimised(lib, result)
+      return outcome.ok ? outcome.library : lib
+    })
+    if (outcome.ok && trouble) {
+      const was = before
+      if (was) update(() => was)
+      return { ok: false, reason: trouble === 'blocked' ? NO_SAVE_REASON : NO_ROOM_REASON }
+    }
+    if (outcome.ok) setNotice({ text: `Route optimised. Your old route is kept as “${outcome.kept.name}”.` })
+    return outcome
+  }
+
   /** Add the routes from a backup. Asks first when one has the name of a route already here. */
   const restore = async (routes: BackupRoute[]) => {
     const clashes = importClashes(library, routes)
@@ -174,6 +202,14 @@ export function Routes({ library, update, onGoSetup }: Props) {
             </span>
             <span className="grow title">Duplicate</span>
           </button>
+          {active.route.points.length > 1 && (
+            <button className="row" onClick={() => setSheet({ kind: 'optimise' })}>
+              <span className="icon-tint">
+                <Icon name="route" size={22} />
+              </span>
+              <span className="grow title">Optimise Route</span>
+            </button>
+          )}
           <button className="row" onClick={remove}>
             <span className="icon-danger">
               <Icon name="trash" size={22} />
@@ -212,6 +248,8 @@ export function Routes({ library, update, onGoSetup }: Props) {
 
       {sheet?.kind === 'backup' && <BackupDialog title={sheet.title} text={sheet.text} fileName={sheet.fileName} onClose={() => setSheet(null)} />}
       {sheet?.kind === 'restore' && <RestoreDialog onClose={() => setSheet(null)} onRestore={restore} />}
+      {/* On the page itself, as the papers to load are, so that it is over the tab bar as well: a run can't be left to go and change the route. */}
+      {sheet?.kind === 'optimise' && createPortal(<OptimiseSheet saved={active} onAccept={acceptRun} onClose={() => setSheet(null)} />, document.body)}
       {dialog}
     </div>
   )

@@ -10,6 +10,9 @@ import {
   duplicateRoute,
   editActiveRoute,
   importClashes,
+  keepCopy,
+  labelledName,
+  MAX_NAME,
   MAX_STREET_NAME,
   MAX_STREETS,
   normalizeLibrary,
@@ -34,6 +37,58 @@ const drawn = (n = 3): Route => ({
 })
 
 const names = (lib: Library) => lib.routes.map((r) => r.name)
+
+describe('a copy kept beside a route', () => {
+  it('puts the label after the name', () => {
+    expect(labelledName(createLibrary(), 'Monday', 'old')).toBe('Monday (old)')
+  })
+
+  it('numbers the label, not the name, and ignores case', () => {
+    let lib = addRoute(createLibrary(), 'monday (OLD)')
+    expect(labelledName(lib, 'Monday', 'old')).toBe('Monday (old 2)')
+    lib = addRoute(lib, 'Monday (old 2)')
+    expect(labelledName(lib, 'Monday', 'old')).toBe('Monday (old 3)')
+  })
+
+  it('cuts a long name short, and never the label', () => {
+    const long = 'x'.repeat(MAX_NAME)
+    const name = labelledName(createLibrary(), long, 'old')
+    expect(name).toHaveLength(MAX_NAME)
+    expect(name.endsWith(' (old)')).toBe(true)
+    const lib = addRoute(createLibrary(), name)
+    const next = labelledName(lib, long, 'old')
+    expect(next).toHaveLength(MAX_NAME)
+    expect(next.endsWith(' (old 2)')).toBe(true)
+  })
+
+  it('never leaves half of an emoji where a long name was cut', () => {
+    const name = labelledName(createLibrary(), `${'x'.repeat(MAX_NAME - 7)}😀😀`, 'old')
+    expect(name).toBe(`${'x'.repeat(MAX_NAME - 7)} (old)`)
+  })
+
+  it('keeps a copy without switching to it', () => {
+    const lib = addRoute(createLibrary(), 'Monday', drawn())
+    const source = activeRoute(lib)
+    const { library, copy } = keepCopy(lib, source, 'Monday kept', 5)
+    expect(library.activeId).toBe(source.id)
+    expect(names(library)).toEqual(['My Round', 'Monday', 'Monday kept'])
+    expect(copy).toEqual({ id: copy.id, name: 'Monday kept', route: source.route, round: { handledStopIds: [] }, updatedAt: 5 })
+    expect(copy.id).not.toBe(source.id)
+    expect(copy.route).not.toBe(source.route)
+  })
+
+  it('keeps the round the route had, as its own, where a duplicate starts one afresh', () => {
+    const round: RoundState = { handledStopIds: ['a'], furthest: 300, startM: 20, dropped: ['a'], courtLegs: { a: 'out' } }
+    const lib = setActiveRound(addRoute(createLibrary(), 'Monday', drawn()), round)
+    const source = activeRoute(lib)
+    const { copy } = keepCopy(lib, source, 'Monday kept', 5)
+    expect(copy.round).toEqual(source.round)
+    expect(copy.round).toMatchObject({ handledStopIds: ['a'], furthest: 300, startM: 20, dropped: ['a'] })
+    expect(copy.round).not.toBe(source.round)
+    expect(copy.round.handledStopIds).not.toBe(source.round.handledStopIds)
+    expect(activeRoute(duplicateRoute(lib, source.id)).round).toEqual({ handledStopIds: [] })
+  })
+})
 
 describe('a fresh library', () => {
   it('starts with one blank route that is in use', () => {

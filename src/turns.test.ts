@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { cumulativeDistances, simplify } from './geo'
+import { bearing, cumulativeDistances, simplify } from './geo'
 import { DRIVES_ON_LEFT, UTURN_WAY } from './region'
 import { ROAD_SIMPLIFY_M } from './roads'
 import {
@@ -28,6 +28,7 @@ import {
   UTURN_MAX_DEG,
   UTURN_MIN_DEG,
   upcomingTurn,
+  UTURN_HEADING_TOLERANCE,
   uturnThere,
   type Turn,
   type TurnCue,
@@ -472,11 +473,29 @@ describe('the turn to show', () => {
       expect(upcomingTurn(angled, 101, { heading: 120 })?.turn).toBe(angled[1])
       // Once the corner is behind the driver for good, a phone heading up the road is one back out on it: the turn out is the next.
       expect(upcomingTurn(angled, 101, { heading: 0, reached: 101 })?.turn).toBe(angled[2])
-      // Not past a U-turn, though: just past one is the same place as just before it, and a phone still heading into the court has not turned round.
-      expect(upcomingTurn(angled, 111, { heading: 120 })).toBeNull()
+      // Not past a U-turn, though: just past one is the same place as just before it, and a phone still heading into the court has not turned round, so
+      // the U-turn stays up for it (see the next test).
+      expect(upcomingTurn(angled, 111, { heading: 120 })?.turn).toBe(angled[1])
       expect(upcomingTurn(angled, 111, { heading: 300 })?.turn).toBe(angled[2])
       // Nor past a turn whose hold the next did not cut short: that is no lag.
       expect(upcomingTurn([turnAt(100, 90, 0), turnAt(140, 90, 90)], 116, { heading: 0 })).toBeNull()
+    })
+
+    it('keeps a U-turn up for a phone still heading the way into it, when the next turn would have moved the card on', () => {
+      // A stub off a road heading north: a fix a little ahead of the car has it past the U-turn before it has got to the end.
+      const stub: Turn[] = [turnAt(100, 45, 0), turnAt(110, 180, 45), turnAt(120, -45, 225, 2.5)]
+      expect(upcomingTurn(stub, 111, { heading: 45 })?.turn).toBe(stub[1])
+      expect(upcomingTurn(stub, 111, { heading: 45 })?.ahead).toBe(-1)
+      // Heading out, or with no heading to go by, the card moves on as it did.
+      expect(upcomingTurn(stub, 111, { heading: 225 })?.turn).toBe(stub[2])
+      expect(upcomingTurn(stub, 111)?.turn).toBe(stub[2])
+      // Once the furthest reached is through it, it is behind the driver for good, whatever the heading.
+      expect(upcomingTurn(stub, 111, { heading: 45, reached: 110 })).toBeNull()
+      // And never at the next turn, or for longer than a U-turn with nothing close after it is held.
+      expect(upcomingTurn(stub, 117.5, { heading: 45 })).toBeNull()
+      const later: Turn[] = [turnAt(110, 180, 45), turnAt(135, -45, 225, 5)]
+      expect(upcomingTurn(later, 125, { heading: 45 })?.turn).toBe(later[0])
+      expect(upcomingTurn(later, 125.5, { heading: 45 })).toBeNull()
     })
 
     it('still sets aside a turn that comes up the other way to the way the phone is heading, before the one before it is passed', () => {
@@ -505,6 +524,206 @@ describe('the turn to show', () => {
     expect(upcomingTurn(turn, 50, { heading: 121, tolerance: 120 })).toBeNull()
     expect(upcomingTurn(turn, 50, { heading: 100, tolerance: 30 })).toBeNull()
     expect(upcomingTurn(turn, 50, { heading: 30, tolerance: 30 })).not.toBeNull()
+  })
+
+  describe('a U-turn that is the next turn', () => {
+    // Into a court heading east, and the U-turn at its end.
+    const court: Turn[] = [turnAt(100, 90, 0), turnAt(200, 180, 90)]
+
+    it('counts for a heading nearer the way into it than the way out, so a bend on the way in does not take it off the card', () => {
+      expect(UTURN_HEADING_TOLERANCE).toBe(90)
+      expect(upcomingTurn(court, 160, { heading: 28 })?.turn).toBe(court[1])
+      expect(upcomingTurn(court, 160, { heading: 90 + UTURN_HEADING_TOLERANCE })?.turn).toBe(court[1])
+      // Heading the way out, the driver has turned round.
+      expect(upcomingTurn(court, 160, { heading: 90 + UTURN_HEADING_TOLERANCE + 1 })).toBeNull()
+      expect(upcomingTurn(court, 160, { heading: 270 })).toBeNull()
+      // A wider margin asked for is still the margin.
+      expect(upcomingTurn(court, 160, { heading: 200, tolerance: 120 })?.turn).toBe(court[1])
+    })
+
+    it('holds it just past by place, when the next turn moves the card on early, only to the usual margin, and to no wider one asked for', () => {
+      // A stub heading north from a road heading west, the U-turn at its end, and the turn out 7.5 m on: by place the card moves on at the end, 110 m.
+      const stub: Turn[] = [turnAt(100, 90, 270), turnAt(110, 180, 0), turnAt(117.5, 90, 180, 2.5)]
+      // Short of the end, a phone 80 degrees off the way in, as on a bend near the end, has not turned round, as the place says.
+      expect(upcomingTurn(stub, 109, { heading: 80 })?.turn).toBe(stub[1])
+      // Just past it, the heading goes against the place, so it keeps the U-turn only as near the way in as any turn is held to.
+      expect(upcomingTurn(stub, 111, { heading: TURN_HEADING_TOLERANCE })?.turn).toBe(stub[1])
+      expect(upcomingTurn(stub, 111, { heading: TURN_HEADING_TOLERANCE + 1 })).toBeNull()
+      expect(upcomingTurn(stub, 111, { heading: 80 })).toBeNull()
+      // Heading the way out, the driver has turned round, either side.
+      for (const at of [109, 111]) expect(upcomingTurn(stub, at, { heading: 180 })?.turn, `${at}`).toBe(stub[2])
+      // A wider margin asked for, as on a stretch of transit, keeps it short of the end, but not past it: a phone 100 degrees round there is nearer the way out.
+      expect(upcomingTurn(stub, 109, { heading: 100, tolerance: 120 })?.turn).toBe(stub[1])
+      expect(upcomingTurn(stub, 111, { heading: 100, tolerance: 120 })?.turn).toBe(stub[2])
+      // Kept just past it, it is still the next turn, so a narrower margin asked for doesn't take it off there either.
+      for (const at of [109, 111]) expect(upcomingTurn(stub, at, { heading: 50, tolerance: 30 })?.turn, `${at}`).toBe(stub[1])
+      // The furthest reached through it puts it behind the driver for good, whatever the heading.
+      expect(upcomingTurn(stub, 111, { heading: 0, reached: 110 })).toBeNull()
+    })
+
+    it('has that margin only once every turn before it is passed, so it is never shown ahead of one', () => {
+      const ways: Turn[] = [turnAt(100, 90, 0), turnAt(150, 140, 90), turnAt(200, 180, 230)]
+      expect(upcomingTurn(ways, 120, { heading: 160 })).toBeNull()
+      expect(upcomingTurn(ways, 170, { heading: 160 })?.turn).toBe(ways[2])
+    })
+
+    it('stays on the card all the way along a court whose way in bends off and back with no card of its own', () => {
+      // Turn in, then a dog-leg 62 degrees off on a radius too wide to be a corner, and a point reversal 30 m after it.
+      const road = drive([{ straight: 200 }, { turn: 90, radius: 0.001 }, { straight: 60 }, { turn: -62, radius: 35 }, { straight: 5 }, { turn: 62, radius: 35 }, { straight: 30 }, { turn: 180, radius: 0.001 }, { straight: 200 }], 5)
+      const turns = routeTurns(road)
+      expect(turns.map((t) => turnKind(t.angle))).toEqual(['turn', 'uturn'])
+      const cum = cumulativeDistances(road)
+      const way = (at: number) => bearing(pointAt(road, cum, at), pointAt(road, cum, at + 1))
+      for (let at = turns[0].at + TURN_PASSED_M + 1; at < turns[1].at; at += 1) {
+        expect(upcomingTurn(turns, at, { heading: way(at) })?.turn, `${at}`).toBe(turns[1])
+      }
+    })
+  })
+
+  describe('a short court with a bear in, a U-turn 15 m on and a bear out 18 m after it, driven slowly through its end', () => {
+    type Named = Turn & { street?: string }
+    /**
+     * The card and the voice, a fix a second, as the round has them: the card is `upcomingTurn`, the cue due for its turn is asked for (`turnCue`),
+     * and the words are said one after another, each taking a second for every two words in it, and dropped unsaid if the card is on another turn,
+     * or none, by the time their turn comes. Each fix is how far along the route the driver is put, the way the phone heads, and, when it is given,
+     * the furthest reached. Gives back the turn on the card at each fix, and each of the words heard, with the turn it is for and where the driver was
+     * put when it started.
+     */
+    function drivenThrough(turns: Named[], fixes: [number, number, number?][]) {
+      const said = new Map<Turn, TurnCue>()
+      const waiting: { turn: Named; text: string; before: TurnCue | undefined }[] = []
+      const heard: { turn: Named; text: string; along: number }[] = []
+      const cards: (Named | null)[] = []
+      let busyUntil = 0
+      fixes.forEach(([along, heading, reached], second) => {
+        const card = upcomingTurn(turns, along, { heading, reached })
+        cards.push(card?.turn ?? null)
+        if (card) {
+          const before = said.get(card.turn)
+          const cue = turnCue(card.ahead, before ?? null)
+          if (cue) {
+            said.set(card.turn, cue)
+            waiting.push({ turn: card.turn, text: turnSpeech(card.turn, card.ahead, cue), before })
+          }
+        }
+        while (busyUntil <= second && waiting.length) {
+          const words = waiting.shift()!
+          if (words.turn !== card?.turn) {
+            // Dropped as out of date, and so not said: the round takes the mark back (see saidTurns.ts).
+            if (words.before === undefined) said.delete(words.turn)
+            else said.set(words.turn, words.before)
+            continue
+          }
+          heard.push({ turn: words.turn, text: words.text, along })
+          busyUntil = second + Math.ceil(words.text.split(' ').length / 2)
+        }
+      })
+      return { cards, heard }
+    }
+
+    // A road heading north, a bear right into the court, the U-turn at its end, and a bear left out onto a road heading 171 degrees. A turn left 80 m on
+    // takes the route back the way the court went in, and a bear on that, 156 m from the end of the court, lies near enough the way into the court.
+    const bearIn = turnAt(100, 45, 0, 5)
+    const uturn = turnAt(115, 180, 45)
+    const bearOut = turnAt(133, -54, 225, 5)
+    const onward = turnAt(213, -100, 171)
+    const further: Named = { ...turnAt(273, 30, 71), street: 'Long Valley Road' }
+    const court: Named[] = [bearIn, uturn, bearOut, onward, further]
+
+    it('does not show a turn further on to a phone not yet round, so the last word for the bear out is not held up and lost', () => {
+      // Up the road and into the court, crawling to its end. The fix sits 2 m past the end, and the furthest reached comes to 3 m past it while the phone
+      // still heads in; the next second the phone is round. On the way out the phone heads a little past the bear out's way out before the fix gets to it.
+      const fixes: [number, number, number?][] = [
+        ...[20, 30, 40, 50, 60, 70, 80, 90].map((along): [number, number] => [along, 0]),
+        [96, 10],
+        [101, 30],
+        [105, 45],
+        [110, 45],
+        [113, 45],
+        [116, 50],
+        [117, 48, 118],
+        [118, 200, 118],
+        [122, 225],
+        [127, 210],
+        [136, 160],
+        [145, 171],
+        ...[160, 175, 190, 205].map((along): [number, number] => [along, 171]),
+        [215, 90],
+        ...[225, 235, 245, 255, 265].map((along): [number, number] => [along, 71]),
+      ]
+      const { cards, heard } = drivenThrough(court, fixes)
+      // Until the driver is a U-turn's hold past its end, nothing after the bear out is shown.
+      fixes.forEach(([along], i) => {
+        if (along >= uturn.at && along <= uturn.at + TURN_PASSED_M) expect([onward, further], `${along}`).not.toContain(cards[i])
+      })
+      const out = heard.filter((w) => w.turn === bearOut)
+      expect(out.map((w) => w.text)).toEqual(['Bear left.'])
+      expect(out[0].along).toBeLessThan(bearOut.at)
+      // The U-turn's own last word is said before the end, and the turns further on are told of once the driver is out.
+      expect(heard.find((w) => w.turn === uturn)?.along).toBeLessThan(uturn.at)
+      for (const t of [onward, further]) expect(heard.filter((w) => w.turn === t).at(-1)?.along).toBeLessThan(t.at)
+    })
+
+    it('still shows the turn out just past the U-turn to a phone that agrees with it or with no heading, and lets a phone that is round choose', () => {
+      const gone = { reached: 118 }
+      expect(upcomingTurn(court, 117, { heading: 48, ...gone })).toBeNull()
+      expect(upcomingTurn(court, 117, { heading: 200, ...gone })?.turn).toBe(bearOut)
+      expect(upcomingTurn(court, 117, gone)?.turn).toBe(bearOut)
+      // Half way round is not round yet; any nearer the way out is, and the heading chooses as anywhere else.
+      expect(upcomingTurn(court, 117, { heading: 45 + UTURN_HEADING_TOLERANCE, ...gone })).toBeNull()
+      expect(upcomingTurn(court, 117, { heading: 45 + UTURN_HEADING_TOLERANCE + 15, ...gone })?.turn).toBe(onward)
+      // Once the driver is more than a U-turn's hold past it, the heading chooses again.
+      expect(upcomingTurn(court, 115 + TURN_PASSED_M, { heading: 48, ...gone })).toBeNull()
+      expect(upcomingTurn(court, 115 + TURN_PASSED_M + 1, { heading: 48, ...gone })?.turn).toBe(further)
+      // After a turn that is not a U-turn, the heading still chooses as before: there a place just past it is not the place just before it.
+      const bends: Turn[] = [turnAt(100, 45, 0, 5), turnAt(115, 90, 45), turnAt(133, -54, 135, 5), turnAt(273, 30, 50)]
+      expect(upcomingTurn(bends, 117, { heading: 48, reached: 118 })?.turn).toBe(bends[3])
+    })
+
+    it('shows a second U-turn just after the turn out to a phone round both, before the fix is through the turn out', () => {
+      // Into a stub and round, out by a turn left, and round again 17 m on: the phone heads the way out of the turn out while the fix lags at it.
+      const twice: Turn[] = [turnAt(100, -90, 278, 2.5), turnAt(112, 180, 188), turnAt(120, -89, 8, 2.5), turnAt(137, 180, 279)]
+      expect(upcomingTurn(twice, 120, { heading: 283, reached: 120 })?.turn).toBe(twice[3])
+      // 84 degrees off the way into the first U-turn is nearer it than its way out, but the phone heads out of the turn out, and the fix is in its swing.
+      expect(upcomingTurn(twice, 120, { heading: 272, reached: 120 })?.turn).toBe(twice[3])
+      // Short of the turn out's swing, though, it is not yet round, and the card waits for the heading to agree with the turn out.
+      expect(upcomingTurn(twice, 116, { heading: 272, reached: 116 })).toBeNull()
+    })
+
+    it('shows the U-turn to a phone that has come round the bear in, when the fix lags short of the end of its swing, and says it before the end', () => {
+      // A road heading 190 degrees, a bear of 41 degrees into the court spread over 10 m, the U-turn at the end 15 m on and a bear of 51 degrees out.
+      const bearIn = turnAt(100, 41, 190, 5)
+      const uturn = turnAt(115, 180, 231)
+      const bearOut = turnAt(133, 51, 51, 7.5)
+      const turns = [bearIn, uturn, bearOut]
+      // The fix sits just short of where the bear in's swing ends (105 m) for three seconds while the car crawls to the end, then lands 11 m past it with
+      // the phone already heading out.
+      const fixes: [number, number][] = [
+        ...[40, 50, 60, 70, 80, 90].map((along): [number, number] => [along, 190]),
+        [97, 200],
+        [104.6, 231],
+        [104.6, 231],
+        [104.6, 232],
+        [125.6, 52],
+        [130, 52],
+      ]
+      const { cards, heard } = drivenThrough(turns, fixes)
+      expect(cards).toContain(uturn)
+      expect(heard.find((w) => w.turn === uturn)).toMatchObject({ text: 'Make a U-turn.' })
+      expect(heard.find((w) => w.turn === uturn)!.along).toBeLessThan(uturn.at)
+      expect(heard.find((w) => w.turn === bearOut)).toMatchObject({ text: 'Bear right.' })
+    })
+
+    it('holds the bear in to the end of its swing for a phone still heading into it or with no heading, and before a turn that is not a U-turn', () => {
+      const turns = [turnAt(100, 41, 190, 5), turnAt(115, 180, 231), turnAt(133, 51, 51, 7.5)]
+      expect(upcomingTurn(turns, 104.6, { heading: 231 })?.turn).toBe(turns[1])
+      expect(upcomingTurn(turns, 104.6, { heading: 195 })?.turn).toBe(turns[0])
+      expect(upcomingTurn(turns, 104.6)?.turn).toBe(turns[0])
+      // Not before the driver is at the bear in, whatever the heading.
+      expect(upcomingTurn(turns, 99.5, { heading: 231 })?.turn).toBe(turns[0])
+      const corner = [turnAt(100, 41, 190, 5), turnAt(115, 90, 231), turnAt(133, 51, 321, 7.5)]
+      expect(upcomingTurn(corner, 104.6, { heading: 231 })?.turn).toBe(corner[0])
+    })
   })
 
   it('holds a turn to the margin at any distance, so one a long way off can be held to a wide one', () => {
@@ -1642,6 +1861,115 @@ describe('U-turns, however they are drawn', () => {
       const two = routeTurns(legs([0, 200], [125, 20], [140, 20], [155, 200]))
       expect(two.map((t) => Math.round(t.angle))).toEqual([125])
       expect(two.map((t) => turnKind(t.angle))).toEqual(['turn'])
+    })
+  })
+
+  describe('a swing that does not come back near where it went in', () => {
+    const THINNINGS = [ROAD_SIMPLIFY_M, 3]
+    const LEADS = [200, 203, 207]
+    const kinds = (route: Pt[]) => routeTurns(route).map((t) => turnKind(t.angle))
+
+    it('is no U-turn for a half circle too wide to steer round in one go, 30 to 70 m in radius, however the route is thinned', () => {
+      for (const way of [1, -1]) {
+        for (const radius of [28, 30, 35, 40, 50, 60, 70]) {
+          for (const lead of LEADS) {
+            const road = drive([{ straight: lead }, { turn: way * 180, radius }, { straight: 200 }], 5)
+            for (const route of [road, ...THINNINGS.map((m) => simplify(road, m))]) {
+              expect(kinds(route), `${way} ${radius} ${lead}`).not.toContain('uturn')
+            }
+          }
+        }
+      }
+    })
+
+    it('keeps the half circle on a radius of 25 m and less a U-turn, the way it goes round', () => {
+      for (const way of [1, -1]) {
+        for (const radius of [10, 15, 20, 25, 26]) {
+          for (const lead of LEADS) {
+            const road = drive([{ straight: lead }, { turn: way * 180, radius }, { straight: 200 }], 5)
+            for (const route of [road, ...THINNINGS.map((m) => simplify(road, m))]) {
+              const turns = routeTurns(route)
+              expect(turns.map((t) => turnKind(t.angle)), `${way} ${radius} ${lead}`).toEqual(['uturn'])
+              expect(Math.sign(turns[0].angle)).toBe(way)
+            }
+          }
+        }
+      }
+    })
+
+    it('keeps the corner at the start of a long curve, and the curve is no turn', () => {
+      for (const way of [1, -1]) {
+        for (const lead of LEADS) {
+          // A corner of 70 degrees and then 130 more round a curve of 60 m: 200 in all, 110 m from where it started.
+          const road = drive([{ straight: lead }, { turn: way * 70, radius: 0.001 }, { turn: way * 130, radius: 60 }, { straight: 200 }], 5)
+          const turns = routeTurns(road)
+          expect(turns.map((t) => turnKind(t.angle)), `${way} ${lead}`).toEqual(['turn'])
+          expect(Math.sign(turns[0].angle)).toBe(way)
+          expect(near(turns[0].at, lead, 15)).toBe(true)
+          expect(near(Math.abs(turns[0].angle), 70, 15)).toBe(true)
+        }
+      }
+    })
+
+    it('keeps a hairpin that a long curve runs into a U-turn, the way it goes round, and the curve is no turn', () => {
+      for (const way of [1, -1]) {
+        for (const lead of LEADS) {
+          // 49 degrees round a curve of 70 m and then a hairpin on 20 m, with no straight between them: one swing, 229 degrees in all and more than 55 m from end to end.
+          const road = drive([{ straight: lead }, { turn: way * 49, radius: 70 }, { turn: way * 180, radius: 20 }, { straight: 200 }], 5)
+          const turns = routeTurns(road)
+          expect(turns.map((t) => turnKind(t.angle)), `${way} ${lead}`).toEqual(['uturn'])
+          expect(Math.sign(turns[0].angle)).toBe(way)
+        }
+      }
+    })
+
+    it('keeps a corner at each end of a long curve, as two turns the way the road goes', () => {
+      for (const way of [1, -1]) {
+        for (const lead of LEADS) {
+          const road = drive([{ straight: lead }, { turn: way * 80, radius: 0.001 }, { turn: way * 40, radius: 90 }, { turn: way * 80, radius: 0.001 }, { straight: 200 }], 5)
+          const turns = routeTurns(road)
+          expect(turns.map((t) => turnKind(t.angle)), `${way} ${lead}`).toEqual(['turn', 'turn'])
+          expect(turns.every((t) => Math.sign(t.angle) === way)).toBe(true)
+        }
+      }
+    })
+
+    it('keeps two corners apart when a slight bend breaks up the long way between them', () => {
+      // Each gap is 30 m or less, so the corners and the bend used to add up to a half turn, though the corners are 60 m and more apart.
+      for (const way of [1, -1]) {
+        const road = legs([0, 200], [way * 90, 30], [way * 105, 30], [way * 195, 200])
+        const turns = routeTurns(road)
+        expect(turns.map((t) => turnKind(t.angle)), `${way}`).toEqual(['turn', 'turn'])
+        expect(turns.every((t) => Math.sign(t.angle) === way)).toBe(true)
+      }
+    })
+
+    it('keeps two corners apart when the way between them is too long for a way across, though they end within reach of where they started', () => {
+      // 25 m and 25 m with a bend of 12 degrees between them, and then 30 m and bends that run on into the second corner: each gap is short, the ends are 50 m apart and the road goes on 170 degrees round.
+      for (const way of [1, -1]) {
+        for (const road of [legs([0, 200], [way * 84, 25], [way * 96, 25], [way * 170, 200]), legs([0, 200], [way * 88, 30], [way * 96, 10], [way * 104, 10], [way * 168, 200])]) {
+          expect(routeTurns(road).map((t) => turnKind(t.angle)), `${way}`).toEqual(['turn', 'turn'])
+        }
+      }
+    })
+
+    it('still joins two corners when the way across is as long as a U-turn has, and they come back within reach', () => {
+      for (const way of [1, -1]) {
+        const road = legs([0, 200], [way * 90, UTURN_GAP_M], [way * 180, 200])
+        expect(kinds(road), `${way}`).toEqual(['uturn'])
+      }
+    })
+
+    it('puts a U-turn where the route turns back, not at a slight bend a long way before it', () => {
+      // A bend of 30 degrees 60 m before the road ends: joined, the middle of the U-turn was 30 m short of where the route turns round.
+      const turns = routeTurns(legs([0, 200], [30, 62], [210, 62], [180, 200]))
+      expect(turns.map((t) => turnKind(t.angle))).toEqual(['uturn'])
+      expect(near(turns[0].at, 262, 6)).toBe(true)
+    })
+
+    it('leaves alone a loop round the head of a court, which comes back to where it went in however long it is', () => {
+      const road = drive([{ straight: 200 }, { turn: -60, radius: 0.001 }, { turn: 300, radius: 14 }, { turn: -60, radius: 0.001 }, { straight: 200 }], 3)
+      expect(kinds(road)).toContain('uturn')
     })
   })
 

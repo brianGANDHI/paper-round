@@ -46,6 +46,12 @@ export function saveLibrary(library: Library): boolean {
   }
 }
 
+/**
+ * Why the routes aren't being saved: the phone won't let the app keep anything at all (a private tab, say), or it keeps a little but has no room
+ * left for the routes. The two are told apart because the way out differs: another tab for the one, deleting a route for the other.
+ */
+export type SaveTrouble = 'blocked' | 'full'
+
 /** Does this phone let the app store anything at all? */
 export function canSave(): boolean {
   try {
