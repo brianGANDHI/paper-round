@@ -2100,6 +2100,84 @@ describe('a car that turns round where the route itself turns round close by', (
   })
 })
 
+describe('a court just after the route turns round', () => {
+  // Down a street to its end and back up it, then a few dozen metres on a court 42 m deep, and on up the street: as routes with many courts drive
+  // them. The turn round at the end of the street started a count of fixes heading out along a way back (see `Progress.folding`), and the count
+  // went on while any way back was in reach. At the court's junction it was still going, so a fix a few metres past the junction was put on the
+  // street after the court, 90 m on, as if the car had turned round short in it: the U-turn card went, and the turn after the court was told instead.
+  // 30 m on, the street's own turn round was enough by itself: the road after the court was within the 90 m of route a skip round it can reach, and
+  // a driver already past a turn round was skipped round it again from where they were. A count is now of one turn round, and skips only a driver
+  // short of it.
+  for (const gap of [46, 30]) {
+    describe(`${gap} m on`, () => {
+      const track = makeTrack(through([0, 200], [0, 0], [0, gap], [42, gap], [0, gap], [0, 200]))
+      /** Where the route is at the court's junction on the way in, its tip, and the junction on the way out. */
+      const junction = 200 + gap
+      const tip = junction + 42
+      const out = tip + 42
+      type Leg = { at: [number, number]; speed: number; heading: number }
+      const play = (legs: Leg[]): Progress[] => {
+        let p: Progress | null = null
+        return legs.map(({ at, speed, heading }, k) => (p = advance(track, p, { ...spot(at), accuracy: 5, time: k * 1000, speed }, heading)!))
+      }
+      /** Down the street, round at its end with the route, and back up to 3 m short of the court's junction. */
+      const toTheCourt: Leg[] = [
+        ...Array.from({ length: 24 }, (_, k): Leg => ({ at: [0, 196 - 8 * k], speed: 8, heading: 180 })),
+        { at: [0, 5], speed: 3, heading: 180 },
+        { at: [0, 1], speed: 2.5, heading: 0 },
+        { at: [0, 4], speed: 2.5, heading: 0 },
+        ...Array.from({ length: Math.floor((gap - 13) / 7) + 1 }, (_, k): Leg => ({ at: [0, 10 + 7 * k], speed: 7, heading: 0 })),
+        { at: [0, gap - 3], speed: 4.5, heading: 2 },
+      ]
+      /** A fix 5.6 m past the junction, the car 3 m short of it. */
+      const past: Leg = { at: [0.3, gap + 5.6], speed: 4.5, heading: 7 }
+
+      it('is not put past the court by a fix a few metres past its junction', () => {
+        const steps = play([...toTheCourt, past])
+        const [atJunction, beyond] = steps.slice(-2)
+        // The street's count began as the car turned round with the route at its end, and was over once the car was past it.
+        expect(steps.some((p) => p.folding === 1 && Math.abs(p.foldAt! - 200) < 5)).toBe(true)
+        expect(atJunction.along).toBeCloseTo(junction - 3, 0)
+        expect(atJunction.folding ?? 0).toBe(0)
+        expect(beyond.along).toBeLessThan(junction + 10)
+        expect(beyond.turned ?? null).toBeNull()
+        expect(beyond.folding ?? 0).toBe(0)
+        // And into the court, along its way in.
+        const into = play([...toTheCourt, past, ...[6, 13, 20].map((x): Leg => ({ at: [x, gap + 0.5], speed: 4.5, heading: 90 }))])
+        for (const [k, x] of [6, 13, 20].entries()) expect(Math.abs(into[into.length - 3 + k].along - (junction + x)), `${x} m in`).toBeLessThan(5)
+      })
+
+      it('counts the court as a turn round of its own, and puts a car that turns round 4 or 12 m into it on the way back', () => {
+        for (const depth of [4, 12]) {
+          const ins = depth === 4 ? [2, 4] : [2, 7, 12]
+          const outs = depth === 4 ? [3, 1] : [11, 8, 3]
+          const steps = play([
+            ...toTheCourt,
+            ...ins.map((x): Leg => ({ at: [x, gap], speed: 4, heading: 90 })),
+            ...outs.map((x, k): Leg => ({ at: [x, gap], speed: 2 + k, heading: 270 })),
+          ])
+          const back = steps.slice(-outs.length)
+          // Not the street's count going on: the court begins one of its own, and the fold rule works there as anywhere.
+          expect(back[0].folding, `${depth} m in`).toBe(1)
+          expect(Math.abs(back[0].foldAt! - tip), `${depth} m in`).toBeLessThan(5)
+          const last = back.at(-1)!
+          expect(Math.abs(last.along - (out - outs.at(-1)!)), `${depth} m in`).toBeLessThan(5)
+          expect(last.turned, `${depth} m in`).not.toBeNull()
+        }
+      })
+
+      it('stays within 25 m of the car driving the route through the court, with GPS noise', { timeout: 30_000 }, () => {
+        for (let seed = 1; seed <= 40; seed++) {
+          for (const noise of [3, 4]) {
+            const steps = drive(track, { speed: 5, noise, carry: 0.8, seed })
+            for (const x of steps.filter((y) => y.s > 150 && y.s < out + 40)) expect(Math.abs(x.progress.along - x.s), `seed ${seed}, noise ${noise}, at ${x.s} m`).toBeLessThan(25)
+          }
+        }
+      })
+    })
+  }
+})
+
 describe('a car that leaves the route and comes back: being near a place is not being on it', () => {
   interface Fix {
     x: number

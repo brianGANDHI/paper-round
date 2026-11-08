@@ -727,9 +727,12 @@ describe('a car that backs up near where the route turns round, with alerts up, 
     const court: XY[] = [[0, 0], [0, 300], [200, 300], [0, 300], [0, 600]]
     const wrong = backUps([court, dense(10, ...court)], stops, fixes, from, (b) => b.i >= forward && b.heading === 90, (b) => b.x >= 165 && b.x <= 181, (b) => b.x > 165)
     // (In one drive the fix the car starts backing up at is put 43 m on, on the way back, which is no further than the phone can have moved by
-    // the slack for a fix claiming 8 m: as before, nothing doubts that, so the house just ahead is gone by and the bundle just behind is missed.)
+    // the slack for a fix claiming 8 m: as before, nothing doubts that, so the house just ahead is gone by and the bundle just behind is missed.
+    // There is no turn round in that drive either: the one there was came from a skip round the court's tip for a driver already past it, on the
+    // next fix, which is no longer made (see 'a court just after the route turns round' in progress.test.ts). It held the furthest reached for
+    // five fixes, but what the driver is shown and told is the same with or without it.)
     const once = '101 points, noise 5, seed 5'
-    expect(wrong).toEqual({ unturned: [], silent: [once], early: [once], off: [] })
+    expect(wrong).toEqual({ unturned: [once], silent: [once], early: [once], off: [] })
   })
 
   it('in a court drawn with points along it, backed up 80 m: the way back passes that came up meanwhile alert when the car really drives them', { timeout: 60_000 }, () => {

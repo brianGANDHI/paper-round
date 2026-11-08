@@ -97,6 +97,8 @@ export interface Progress {
    * from the second the driver is put there, if they are not already. Left out, none.
    */
   folding?: number
+  /** Where along the route the turn round that `folding` counts for is, in metres: a count goes on only along its own way back. */
+  foldAt?: number
 }
 
 /**
@@ -230,6 +232,8 @@ const FOLD_ROUTE_M = 90
 const FOLD_HEADING_DEG = 60
 /** Fixes in a row the phone has to be heading that way, before the driver is put on the way back (see `Progress.folding`). */
 const FOLD_FIXES = 2
+/** How far apart along the route two places that turn round can be and be the same turn round, in metres (see `Progress.foldAt`). */
+const FOLD_TIP_M = 10
 
 interface Candidate {
   idx: number
@@ -370,12 +374,28 @@ export function advance(track: Track, prev: Progress | null, fix: GpsFix, headin
   // a phone at the junction of a short court going on along the road: it is as level with the road after the court, and may be heading near
   // enough the way back of a court at 120 degrees or more to the road, but it fits the road better, or is going on the way it was, and is as
   // likely to turn in as to go by, so it is held at the junction as ever. (Not on a fresh start, which has no place to move from.)
-  /** For each place the phone is heading along, on the way back of a turn round close by or a little after it, the least it costs with the route skipped. */
-  const skipped = new Map<Candidate, number>()
-  let onWayBack = false
+  // The count is of one turn round: the one it began at. Another close by begins a count of its own, and has to pass the same test to: a count
+  // begun as the car turned round with the route at the end of a street went on up the way back, and at a court 46 m on, which came into reach
+  // while the street's way back still was, a fix a few metres past the junction was put on the road after the court, 90 m on, at once.
+  /** Each place on a later pass, a place level with it on an earlier one that runs the other way, and where the turn round between them is. */
+  const levels: { c: Candidate; e: Candidate; tip: number }[] = []
+  /** For each place the phone is heading along, on the way back of a turn round `near` picks or a little after it, the least it costs with the route skipped, and that turn round. */
+  const skipping = (near: (tip: number) => boolean): Map<Candidate, { cost: number; tip: number }> => {
+    const out = new Map<Candidate, { cost: number; tip: number }>()
+    for (const d of heading !== null && levels.length ? cands : []) {
+      if (angleBetween(bearings[d.idx], heading!) > FOLD_HEADING_DEG) continue
+      for (const { c, e, tip } of levels) {
+        if (!near(tip) || prior >= tip || d.along < c.along || d.along - c.along > FOLD_ROUTE_M) continue
+        const cost = d.geo + moveCost(e.along - prior + d.along - c.along)
+        if (cost < (out.get(d)?.cost ?? Infinity)) out.set(d, { cost, tip })
+      }
+    }
+    return out
+  }
+  /** The turn round the phone is first found heading out along the way back of, if it is. */
+  let foundAt: number | null = null
   if (prev && !fresh && heading !== null && (fix.speed === null || fix.speed === undefined || fix.speed >= STILL_SPEED)) {
-    // Each place on a later pass, and a place level with it on an earlier one that runs the other way. (The places are in order along the route.)
-    const levels: [Candidate, Candidate][] = []
+    // (The places are in order along the route. The turn round is halfway between the two along it, the same all down a way back.)
     for (let k = 0; k < cands.length; k++) {
       const c = cands[k]
       const [cx, cy] = pointOn(xy, c)
@@ -383,24 +403,21 @@ export function advance(track: Track, prev: Progress | null, fix: GpsFix, headin
         const e = cands[j]
         if (e.along >= c.along || angleBetween(bearings[e.idx], bearings[c.idx]) < 180 - FOLD_DEG) continue
         const [ex, ey] = pointOn(xy, e)
-        if (Math.hypot(ex - cx, ey - cy) <= FOLD_M) levels.push([c, e])
+        if (Math.hypot(ex - cx, ey - cy) <= FOLD_M) levels.push({ c, e, tip: (c.along + e.along) / 2 })
       }
     }
-    for (const d of levels.length ? cands : []) {
-      if (angleBetween(bearings[d.idx], heading) > FOLD_HEADING_DEG) continue
-      for (const [c, e] of levels) {
-        if (d.along < c.along || d.along - c.along > FOLD_ROUTE_M) continue
-        const cost = d.geo + moveCost(e.along - prior + d.along - c.along)
-        if (cost < (skipped.get(d) ?? Infinity)) skipped.set(d, cost)
-      }
-    }
-    onWayBack = skipped.has(byFit) && (levels.some(([c]) => c === byFit) || angleBetween(bearings[prev.idx], heading) > FOLD_HEADING_DEG)
+    const fitSkipped = skipping(() => true).get(byFit)
+    if (fitSkipped && (levels.some(({ c }) => c === byFit) || angleBetween(bearings[prev.idx], heading) > FOLD_HEADING_DEG)) foundAt = fitSkipped.tip
   }
-  const folding = onWayBack || (skipped.size > 0 && (prev?.folding ?? 0) > 0) ? (prev?.folding ?? 0) + 1 : 0
+  const sameTurn = (at: number | undefined) => (tip: number) => at !== undefined && Math.abs(tip - at) <= FOLD_TIP_M
+  const counting = (prev?.folding ?? 0) > 0 ? prev?.foldAt : undefined
+  const goesOn = counting !== undefined && (foundAt !== null ? sameTurn(counting)(foundAt) : skipping(sameTurn(counting)).size > 0)
+  const folding = goesOn ? (prev?.folding ?? 0) + 1 : foundAt !== null ? 1 : 0
+  const foldAt = goesOn ? counting : foundAt !== null ? foundAt : undefined
   /** The places that cost less for the route skipped. */
   const folded = new Set<Candidate>()
   if (folding >= FOLD_FIXES) {
-    for (const [d, cost] of skipped) {
+    for (const [d, { cost }] of skipping(sameTurn(foldAt))) {
       if (cost < d.cost) {
         d.cost = cost
         folded.add(d)
@@ -579,5 +596,5 @@ export function advance(track: Track, prev: Progress | null, fix: GpsFix, headin
   // round that is not sure yet, which may be undone.
   const recent = [...(prev?.recent ?? []), pick.along].slice(-RECENT)
   const furthest = !turned && pick.dist <= FURTHEST_GAP_M ? Math.max(prev?.furthest ?? 0, Math.min(...recent)) : (prev?.furthest ?? 0)
-  return { idx: pick.idx, t: pick.t, along: pick.along, furthest, gap: pick.dist, offBy: nearest.dist, at: fix, accuracy: fix.accuracy, time, seen: time, lost: false, doubt, backward, outliers: 0, recent, turned, folding }
+  return { idx: pick.idx, t: pick.t, along: pick.along, furthest, gap: pick.dist, offBy: nearest.dist, at: fix, accuracy: fix.accuracy, time, seen: time, lost: false, doubt, backward, outliers: 0, recent, turned, folding, foldAt }
 }
