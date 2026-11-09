@@ -127,15 +127,15 @@ describe('describing a pass', () => {
 
   it('says which section a pass drives again, and which way', () => {
     const back = passViews(repeatSection(oneStreet(), 0, 'back')!)[1]
-    expect(passNote(back)).toBe('back along section 1')
+    expect(passNote(back)).toBe('back along stretch 1')
     // Driving it again the same way adds a link back to the start first, then the pass itself.
     const [, link, again] = passViews(repeatSection(oneStreet(), 0, 'again')!)
-    expect(passNote(link)).toBe('back along section 1')
-    expect(passNote(again)).toBe('again along section 1')
+    expect(passNote(link)).toBe('back along stretch 1')
+    expect(passNote(again)).toBe('again along stretch 1')
   })
 
   it('counts sections from one', () => {
-    expect(passNote({ repeatOf: 4, reversed: false })).toBe('again along section 5')
-    expect(passNote({ repeatOf: 0, reversed: true })).toBe('back along section 1')
+    expect(passNote({ repeatOf: 4, reversed: false })).toBe('again along stretch 5')
+    expect(passNote({ repeatOf: 0, reversed: true })).toBe('back along stretch 1')
   })
 })

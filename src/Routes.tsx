@@ -89,7 +89,7 @@ export function Routes({ library, update, onGoSetup }: Props) {
   const remove = async () => {
     const ok = await confirm({
       title: `Delete “${active.name}”?`,
-      message: 'This removes the route, its sections, its named sections, its street names, its stops and its progress from this phone. Back it up first if you might want it again.',
+      message: 'This removes the route, its throw sides, its named sections, its street names, its stops and its progress from this phone. Back it up first if you might want it again.',
       confirmLabel: 'Delete',
       destructive: true,
     })

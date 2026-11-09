@@ -25,9 +25,9 @@ export interface PassView {
   reversed: boolean
 }
 
-/** "again along section 2" or "back along section 2" for a section that drives ground an earlier one covers, or "" for any other. */
+/** "again along stretch 2" or "back along stretch 2" for a stretch that drives ground an earlier one covers, or "" for any other. */
 export const passNote = (view: Pick<PassView, 'repeatOf' | 'reversed'> | undefined): string =>
-  view?.repeatOf != null ? `${view.reversed ? 'back along' : 'again along'} section ${view.repeatOf + 1}` : ''
+  view?.repeatOf != null ? `${view.reversed ? 'back along' : 'again along'} stretch ${view.repeatOf + 1}` : ''
 
 /** Points along a path every `stepM` metres, plus its corners. */
 function samplePath(points: Pt[], stepM: number): Pt[] {

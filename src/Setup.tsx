@@ -273,7 +273,7 @@ export function Setup({ route, routeName, onChange, sections: named, onSections,
     if (hasRoute) {
       const ok = await confirm({
         title: 'Replace Your Route?',
-        message: 'Recording a new route replaces the current route, its sections, its named sections, its street names and its stops.',
+        message: 'Recording a new route replaces the current route, its throw sides, its named sections, its street names and its stops.',
         confirmLabel: 'Replace',
         destructive: true,
       })
@@ -346,26 +346,26 @@ export function Setup({ route, routeName, onChange, sections: named, onSections,
 
   const closePick = useCallback(() => setPick(null), [])
 
-  /** A side chosen in the box on the map: the whole section takes it. */
+  /** A side chosen in the box on the map: the whole stretch takes it. */
   const chooseSide = (side: Side) => {
     if (!picking || !pickedSection) return
     closePick()
     if (pickedSection.side !== side && changeSide(picking.index, side)) showNoteAtTop()
   }
 
-  /** Delete a section once the person has seen what it takes with it: the stretch of route, and the stops along it. */
+  /** Delete a stretch once the person has seen what it takes with it: the stretch of route, and the stops along it. */
   const deleteSectionAt = async (index: number) => {
     const deletion = deleteSection(route, index)
     if (!deletion) return
     const ok = await confirm({
-      title: `Delete Section ${index + 1}?`,
+      title: `Delete Stretch ${index + 1}?`,
       message: deleteWarning(deletion),
-      confirmLabel: 'Delete Section',
+      confirmLabel: 'Delete Stretch',
       destructive: true,
     })
     if (!ok) return
     closePick()
-    // Sections are renumbered, so none stays picked, and a stretch half painted no longer fits the route.
+    // Stretches are renumbered, so none stays picked, and a stretch half painted no longer fits the route.
     setFocus(null)
     setPaintStart(null)
     onChange(deletion.route)
@@ -373,7 +373,7 @@ export function Setup({ route, routeName, onChange, sections: named, onSections,
     showNoteAtTop()
   }
 
-  /** From the box on the map: paint just part of the section, starting from a side it doesn't have already. */
+  /** From the box on the map: paint just part of the stretch, starting from a side it doesn't have already. */
   const paintPart = () => {
     if (!picking || !pickedSection) return
     if (brush === pickedSection.side) setBrush(otherSide(pickedSection.side))
@@ -393,10 +393,10 @@ export function Setup({ route, routeName, onChange, sections: named, onSections,
     if (view) goTo({ bounds: view.points })
   }
 
-  /** Add another pass over a section: back along it, or along it again the same way. */
+  /** Add another pass over a stretch: back along it, or along it again the same way. */
   const repeat = async (index: number) => {
     const mode = await choose<RepeatMode>({
-      title: `Repeat Section ${index + 1}`,
+      title: `Repeat Stretch ${index + 1}`,
       message: 'Adds this stretch to the end of your route as another pass, with a side of its own.',
       choices: [
         { value: 'back', label: 'Drive it back', detail: 'The same road, the other way' },
@@ -405,31 +405,31 @@ export function Setup({ route, routeName, onChange, sections: named, onSections,
     })
     if (!mode) return
     const next = repeatSection(route, index, mode)
-    if (!next) return setNotice("That section can't be repeated.")
+    if (!next) return setNotice("That stretch can't be repeated.")
     onChange(next)
     const added = sections(next)
     const last = added.length - 1
     setFocus(last)
     const pass = added[last]
     goTo({ bounds: next.points.slice(pass.idx, pass.endIdx + 1) })
-    setNotice(`Added section ${last + 1}, ${mode === 'back' ? 'back along' : 'again along'} section ${index + 1}. Choose which side to throw on for this pass.`)
+    setNotice(`Added stretch ${last + 1}, ${mode === 'back' ? 'back along' : 'again along'} stretch ${index + 1}. Choose which side to throw on for this pass.`)
   }
 
-  /** Paint with a side: tap where the stretch starts, then where it ends. */
+  /** Paint with a side: tap where the part to paint starts, then where it ends. */
   const paintTap = (p: Pt) => {
     const picked = focus !== null ? secs[focus] : undefined
     const range = overlapping && picked ? { from: picked.idx, to: picked.endIdx } : undefined
     if (!paintStart) {
       const snap = nearestOnRoute(route, p, range)
-      if (!snap || snap.dist > ON_ROUTE_M) return setNotice('Tap on the route to mark where the stretch starts.')
+      if (!snap || snap.dist > ON_ROUTE_M) return setNotice('Tap on the route to mark where the part to paint starts.')
       setNotice(null)
       return setPaintStart(snap.point)
     }
     const result = paintStretch(route, paintStart, p, brush, range)
     setPaintStart(null)
-    if (!result) return setNotice('Tap on the route, away from where the stretch started, to mark where it ends.')
+    if (!result) return setNotice('Tap on the route, away from where you started painting, to mark where it ends.')
     onChange(result.route)
-    // Sections have been renumbered, so no section stays picked.
+    // Stretches have been renumbered, so no stretch stays picked.
     setFocus(null)
     const length = routeLength(result.route.points.slice(result.from, result.to + 1))
     const quiet = sideChangeSentence(route, result.route, reachM)
@@ -747,7 +747,7 @@ export function Setup({ route, routeName, onChange, sections: named, onSections,
       {picking && pickedSection && (
         <SidePopover
           at={picking.at}
-          title={`Section ${picking.index + 1} · ${formatDistance(pickedSection.endM - pickedSection.startM)}`}
+          title={`Stretch ${picking.index + 1} · ${formatDistance(pickedSection.endM - pickedSection.startM)}`}
           note={passNote(views[picking.index])}
           side={pickedSection.side}
           onSide={chooseSide}

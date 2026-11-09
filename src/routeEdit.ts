@@ -366,7 +366,7 @@ export function deleteSection(route: Route, index: number): SectionDeletion | nu
   return { route: result, where, meters: gone.endM - gone.startM, line, removed }
 }
 
-/** What to tell someone before a section is deleted. */
+/** What to tell someone before a stretch is deleted. */
 export function deleteWarning(d: SectionDeletion): string {
   const length = formatDistance(d.meters)
   const stops = d.removed.length ? ` and the ${plural(d.removed.length, 'stop', 'stops')} along it` : ''
@@ -378,7 +378,7 @@ export function deleteWarning(d: SectionDeletion): string {
 /** What to tell them once it is done. */
 export function deletedNote(d: SectionDeletion, index: number): string {
   const stops = d.removed.length ? ` and ${plural(d.removed.length, 'stop', 'stops')}` : ''
-  return `Deleted section ${index + 1}: ${formatDistance(d.meters)}${stops}.${d.line ? ' Its ends are joined by a straight transit line.' : ''}`
+  return `Deleted stretch ${index + 1}: ${formatDistance(d.meters)}${stops}.${d.line ? ' Its ends are joined by a straight transit line.' : ''}`
 }
 
 /**

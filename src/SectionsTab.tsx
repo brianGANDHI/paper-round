@@ -28,7 +28,7 @@ const stops = (n: number) => `${n} ${n === 1 ? 'stop' : 'stops'}`
 
 /**
  * Names for parts of the route, such as a street or an estate, so that a round can be started from any of them. They are
- * separate from the throw-side sections: they can start and end anywhere, and say nothing about which side is thrown.
+ * separate from the stretches on the Throw Side tab: they can start and end anywhere, and say nothing about which side is thrown.
  */
 export function SectionsTab({ route, resolved, stopCounts, focus, adding, onAdding, onFocus, onNameStart, onRename, onDelete, onBack }: Props) {
   // A section picked on the map comes into view in the list.
@@ -62,7 +62,7 @@ export function SectionsTab({ route, resolved, stopCounts, focus, adding, onAddi
       {!adding && (
         <p className="footnote">
           Name parts of your route, such as a street or an estate. Then when you start a round you can pick one of them and begin there instead
-          of at the start. These are separate from the throw-side sections: they only give a place a name.
+          of at the start. These are separate from the stretches on the Throw Side tab: they only give a place a name.
         </p>
       )}
 

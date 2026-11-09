@@ -209,8 +209,8 @@ export function RouteTab(p: Props) {
             {p.follow
               ? 'Tap the map and the route follows the streets there (routing by OSRM, run by FOSSGIS).'
               : 'Tap the map to add points in the order you drive, or turn on Follow roads (needs internet) to have each tap follow the streets.'}{' '}
-            Change the side above to start a new section. Drag a point to move it, tap it to delete it, or tap a + to add a point there. To
-            change the side of a section you have already drawn, tap Done, then tap its line.
+            Change the side above to start a new stretch. Drag a point to move it, tap it to delete it, or tap a + to add a point there. To
+            change the side of a stretch you have already drawn, tap Done, then tap its line.
           </p>
         )}
         {searchBox}

@@ -16,7 +16,7 @@ const SIDE_OPTIONS: { value: Side; label: string; ariaLabel: string }[] = [
 
 interface Props {
   route: Route
-  /** How each section is drawn, which says which ones repeat an earlier one. */
+  /** How each stretch is drawn, which says which ones repeat an earlier one. */
   views: PassView[]
   focus: number | null
   /** Whether the paint tool is on, which side it paints with, and whether a stretch has been started. */
@@ -51,7 +51,7 @@ export function SidesTab({
   onBack,
   onNext,
 }: Props) {
-  // A section picked on the map comes into view in the list.
+  // A stretch picked on the map comes into view in the list.
   useEffect(() => {
     if (focus !== null) document.getElementById(`section-${focus}`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
   }, [focus])
@@ -95,8 +95,8 @@ export function SidesTab({
           </div>
           <Banner>
             {paintStarted
-              ? 'Now tap the route where the stretch ends.'
-              : 'Tap the route where the stretch starts, then where it ends. Pick a section first if the road is driven twice.'}
+              ? 'Now tap the route where the part to paint ends.'
+              : 'Tap the route where the part to paint starts, then where it ends. If the road is driven twice, pick the stretch for that pass in the list first.'}
           </Banner>
         </>
       )}
@@ -109,7 +109,7 @@ export function SidesTab({
             <div className="card-head">
               <span className="dot" style={{ background: SIDE_COLOR[s.side] }} />
               <div className="grow">
-                <div className="title">Section {s.index + 1}</div>
+                <div className="title">Stretch {s.index + 1}</div>
                 <div className="sub">
                   {formatDistance(s.startM)} to {formatDistance(s.endM)}
                   {note && ` · ${note}`}
@@ -117,7 +117,7 @@ export function SidesTab({
               </div>
               <button
                 className="btn plain small"
-                aria-label={`Repeat section ${s.index + 1}`}
+                aria-label={`Repeat stretch ${s.index + 1}`}
                 onClick={(e) => {
                   e.stopPropagation()
                   onRepeat(s.index)
@@ -128,7 +128,7 @@ export function SidesTab({
               {s.index > 0 && (
                 <button
                   className="btn plain small"
-                  aria-label={`Merge section ${s.index + 1} into section ${s.index}`}
+                  aria-label={`Merge stretch ${s.index + 1} into stretch ${s.index}`}
                   onClick={(e) => {
                     e.stopPropagation()
                     onMerge(s.index)
@@ -138,19 +138,19 @@ export function SidesTab({
                 </button>
               )}
             </div>
-            <Segmented label={`Throw side for section ${s.index + 1}`} value={s.side} options={SIDE_OPTIONS} onChange={(side) => onSide(s.index, side)} />
-            {/* Only on the section that is picked, so the list isn't a row of delete buttons. */}
+            <Segmented label={`Throw side for stretch ${s.index + 1}`} value={s.side} options={SIDE_OPTIONS} onChange={(side) => onSide(s.index, side)} />
+            {/* Only on the stretch that is picked, so the list isn't a row of delete buttons. */}
             {focus === s.index && secs.length > 1 && !painting && (
               <button
                 className="btn plain danger small card-delete"
-                aria-label={`Delete section ${s.index + 1}`}
+                aria-label={`Delete stretch ${s.index + 1}`}
                 onClick={(e) => {
                   e.stopPropagation()
                   onDelete(s.index)
                 }}
               >
                 <Icon name="trash" size={16} />
-                Delete Section
+                Delete Stretch
               </button>
             )}
           </div>
@@ -159,7 +159,7 @@ export function SidesTab({
 
       {!painting && (
         <p className="footnote">
-          To change just part of a road, use Paint a Stretch. A section that is picked can be deleted. A no-throw house only alerts on a side
+          To change just part of a road, use Paint a Stretch. A stretch that is picked can be deleted. A no-throw house only alerts on a side
           you throw, so a Port or Starboard stretch keeps quiet the no-throw houses on the other side of the road. Transit, the pink line, is for a
           stretch where you only drive, between places you deliver: nothing is thrown there, and no-throw houses on it stay quiet.
         </p>

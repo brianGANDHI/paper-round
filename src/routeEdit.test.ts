@@ -1208,9 +1208,9 @@ describe('deleting a section', () => {
     })
 
     it('says afterwards which section went, how much, and what came with it', () => {
-      expect(deletedNote(deleteSection(base(), 0)!, 0)).toBe('Deleted section 1: 334 m.')
+      expect(deletedNote(deleteSection(base(), 0)!, 0)).toBe('Deleted stretch 1: 334 m.')
       expect(deletedNote(deleteSection({ ...base(), stops: stops(3) }, 1)!, 1)).toBe(
-        'Deleted section 2: 222 m and 3 stops. Its ends are joined by a straight transit line.',
+        'Deleted stretch 2: 222 m and 3 stops. Its ends are joined by a straight transit line.',
       )
     })
   })

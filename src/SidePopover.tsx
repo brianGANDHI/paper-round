@@ -6,22 +6,22 @@ import type { Side } from './types'
 import { Segmented } from './ui'
 
 interface Props {
-  /** Where on the map the section was tapped, in pixels from the map's top left corner. */
+  /** Where on the map the stretch was tapped, in pixels from the map's top left corner. */
   at: Spot
   title: string
-  /** A second line, such as which section this one drives again. */
+  /** A second line, such as which stretch this one drives again. */
   note?: string
   side: Side
   onSide: (side: Side) => void
-  /** Change just part of the section, not all of it. */
+  /** Change just part of the stretch, not all of it. */
   onPart: () => void
-  /** Delete the section. Missing when it is the only one, which is clearing the route. */
+  /** Delete the stretch. Missing when it is the only one, which is clearing the route. */
   onDelete?: () => void
   onClose: () => void
 }
 
 /**
- * A small box over the map, where a section of the route was tapped, for choosing its side right there.
+ * A small box over the map, where a stretch of the route was tapped, for choosing its side right there.
  * It sits clear of the sheet over the map, and closes when the map moves or is tapped.
  */
 export function SidePopover({ at, title, note, side, onSide, onPart, onDelete, onClose }: Props) {
@@ -69,7 +69,7 @@ export function SidePopover({ at, title, note, side, onSide, onPart, onDelete, o
           Change just part of it
         </button>
         {onDelete && (
-          <button className="btn plain danger small" aria-label="Delete this section" onClick={onDelete}>
+          <button className="btn plain danger small" aria-label="Delete this stretch" onClick={onDelete}>
             <Icon name="trash" size={15} />
             Delete
           </button>
