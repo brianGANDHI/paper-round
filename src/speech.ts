@@ -11,7 +11,8 @@ import { sound } from './sound'
  * words that warn of a wrong throw (a no-throw house) and a queued cue first, and the same, then other alerts' words. One asked while
  * one of a lower rank is being said breaks in on it, and the words cut off are said again in full right after it; one asked while one
  * of the same or a higher rank is being said waits, ahead of those waiting of a lower rank and behind those of its own rank asked before
- * it. So a warning and a side word never cut each other off, and are said in the order asked. Words that are out of date by the time
+ * it. So a warning and a side word never cut each other off, and are said in the order asked. Words of less account, such as a section
+ * beginning, wait behind all the rest and are said again in full after anything that cuts them off. Words that are out of date by the time
  * their turn comes are left out, but those a queued cue cut off part way only a moment ago are said again all the same, as they waited
  * out no more than a word, the first time only (see `CUT_GRACE_MS`). Before the words, a tick opens the audio link to a car or speaker (or
  * the keep-alive signal already has), because the first part of a sound sent down a link that has gone idle is lost, which is the start
@@ -41,6 +42,25 @@ export const END_ALLOW_MS = 3000
 export const END_WORD_MS = 1200
 /** The most cues said whole kept waiting: past this the one that matters least is let go (see `trim` in `createSpeaker`). */
 export const QUEUE_MAX = 4
+
+/**
+ * About how long a word takes to say, in milliseconds, for words of less account (see `SayOptions.minor`) that something cuts off: words that have
+ * been going this long for each of them have been heard, though the phone has not said they are over, as it sometimes doesn't. A little over what a
+ * phone's voice takes, as words cut off that were not over yet would be lost, while words that were over are only said again. Words are counted as
+ * they are said (see `spokenWords`).
+ */
+export const MINOR_WORD_MS = 550
+
+/**
+ * How many words some text takes to say: parts joined by a hyphen or a dash count apart, and a number counts a word for every two of its digits, as
+ * "1450" is said "fourteen fifty" or "one thousand four hundred and fifty".
+ */
+export function spokenWords(text: string): number {
+  return text
+    .split(/[\s\-–—/]+/u)
+    .filter(Boolean)
+    .reduce((n, part) => n + Math.max(1, ...(part.match(/\d+/gu) ?? []).map((digits) => Math.ceil(digits.length / 2))), 0)
+}
 
 /**
  * How long after a queued cue cuts off the words being said they are said again even if out of date by their turn, in milliseconds. They
@@ -136,10 +156,19 @@ export interface SayOptions {
    */
   warning?: boolean
   /**
-   * Of less account than any other words: it is said only if nothing else is. It is left out if another cue is waiting, unless that is one of these, which it replaces. Any other cue
-   * takes its place while it waits, and any other cue breaks in on it as it is said, and it is not said again. For what the screen shows anyway, which must not hold up a warning or a turn.
+   * Of less account than any other words, so said after them all: it waits behind every other cue, those asked after it as well, and any other cue
+   * breaks in on it. Cut off before it has started, it is said later as if nothing had happened. Cut off once started, it is said again once (as
+   * `again` if given, else in full), and not after a second cut, so a busy stretch does not hear it begun over and over; nor when it has been going
+   * long enough to have been heard (see `MINOR_WORD_MS`). A newer one of these replaces one that waits, but no other cue does. Give it `stale`, so that words held up too long by
+   * others are left out. For words that must be heard but must not hold up a warning, a turn or the side, such as a named section finishing or
+   * beginning, which the screen shows as well.
    */
   minor?: boolean
+  /**
+   * With minor: shorter words to say instead when they are said again after a cut, the part that matters most, so they fit between the cues that cut
+   * them off. "Section 2 beginning, Beach Road." for "Section 1 finished. Moving on to Section 2, Beach Road."
+   */
+  again?: string
   /** Asked just before the words start: true when they are out of date by then, such as a turn already made. */
   stale?: () => boolean
   /**
@@ -159,6 +188,12 @@ interface Cue {
   kind: Kind | null
   /** See `SayOptions.minor`. */
   minor: boolean
+  /** When its words started, this time through: left out until they have. Only words of less account are asked about it. */
+  startedAt?: number
+  /** Words of less account that have been said again once already after a cut (see `SayOptions.minor`). */
+  again?: boolean
+  /** See `SayOptions.again`. */
+  againText?: string
   stale?: () => boolean
   /** See `SayOptions.retryStale`. It stays with words a queued cue cut off (see `again`), and no grace is given from it. */
   retryStale?: () => boolean
@@ -220,6 +255,8 @@ export function createSpeaker<U extends Utterance>(deps: SpeakerDeps<U>) {
   let waiting: Cue | null = null
   /** An ordinary urgent cue that could not break in, as a cue said whole was being said: it is next after the cues said whole that wait. */
   let waitingUrgent: Cue | null = null
+  /** The newest cue of less account that waits (see `SayOptions.minor`): it is said when nothing else is waiting. */
+  let waitingMinor: Cue | null = null
   /** The cues said whole that wait: the highest rank first, and in a rank the oldest first. */
   let queued: Cue[] = []
   /** The timer on the words in `held`: until they start, for how long they may take to, and then for how long they may take to end. */
@@ -281,7 +318,7 @@ export function createSpeaker<U extends Utterance>(deps: SpeakerDeps<U>) {
   }
 
   /**
-   * The cue to say next: those said whole that wait, by rank and in order, then an urgent one, then the newest ordinary one. Any out of
+   * The cue to say next: those said whole that wait, by rank and in order, then an urgent one, then the newest ordinary one, then one of less account. Any out of
    * date already are passed over here, so that no gap is left for them: where alerts have come up faster than they can be said, the
    * words for the stop still ahead are not held up by those for the stops gone by.
    */
@@ -295,6 +332,10 @@ export function createSpeaker<U extends Utterance>(deps: SpeakerDeps<U>) {
       if (!next) {
         next = waiting
         waiting = null
+      }
+      if (!next) {
+        next = waitingMinor
+        waitingMinor = null
       }
       if (!next || !outOfDate(next)) return next
     }
@@ -390,6 +431,7 @@ export function createSpeaker<U extends Utterance>(deps: SpeakerDeps<U>) {
     u.onstart = () => {
       if (held.current !== u) return
       started = true
+      cue.startedAt ??= now()
       saying = true
       spokeAt = now()
       heldLead.current = null
@@ -483,8 +525,22 @@ export function createSpeaker<U extends Utterance>(deps: SpeakerDeps<U>) {
     }
   }
 
-  /** Stops what is being said, or got ready, and says `first` instead, a moment later. */
+  /**
+   * Words of less account cut off, as they are to be said after the others, or null when they are not to be (see `SayOptions.minor`): not started,
+   * they are as they were; started, they are said again once, in their shorter form if they have one, unless they have gone on long enough to have been heard.
+   */
+  const afterCut = (cut: Cue): Cue | null => {
+    if (cut.startedAt === undefined) return cut
+    if (cut.again || now() - cut.startedAt >= MINOR_WORD_MS * spokenWords(cut.text)) return null
+    return { ...cut, text: cut.againText ?? cut.text, startedAt: undefined, again: true }
+  }
+
+  /**
+   * Stops what is being said, or got ready, and says `first` instead, a moment later. Words of less account cut off are said after the others, unless
+   * newer words of their kind are waiting by then (see `afterCut`).
+   */
   const breakIn = (first: Cue) => {
+    if (current?.minor && current !== first) waitingMinor ??= afterCut(current)
     const mine = ++epoch
     hush()
     current = first
@@ -507,6 +563,7 @@ export function createSpeaker<U extends Utterance>(deps: SpeakerDeps<U>) {
         urgent,
         kind: options.queue ? 'queue' : whole ? (options.warning ? 'warning' : 'whole') : null,
         minor: options.minor ?? false,
+        againText: options.again,
         stale: options.stale,
         retryStale: options.retryStale,
         afterMs: options.afterMs ?? 0,
@@ -514,7 +571,7 @@ export function createSpeaker<U extends Utterance>(deps: SpeakerDeps<U>) {
       }
       if (!busy) return void run(cue, epoch)
       if (cue.minor) {
-        if (!waiting || waiting.minor) waiting = cue
+        waitingMinor = cue
         return
       }
       if (cue.kind && current?.kind) {
@@ -564,6 +621,7 @@ export function createSpeaker<U extends Utterance>(deps: SpeakerDeps<U>) {
       current = null
       waiting = null
       waitingUrgent = null
+      waitingMinor = null
       queued = []
       hush()
     },

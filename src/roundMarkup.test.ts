@@ -4,7 +4,9 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { AlertBanner } from './AlertBanner'
+import { LEAD_ID, LEAD_NAME, type ResolvedSection, type SectionCall } from './namedSections'
 import { SectionBanner } from './SectionBanner'
+import { SectionsTab } from './SectionsTab'
 import { BundleOrderEditor, BundleOrderList } from './BundleOrderEditor'
 import { nextRoundRows } from './bundleFlow'
 import { BundlesSheet } from './BundlesSheet'
@@ -595,21 +597,49 @@ describe("the Bundles list in the driver's order", () => {
   })
 })
 
-describe('the banner where a named section starts and ends', () => {
-  const html = (ended: string | null, started: string | null) => renderToStaticMarkup(createElement(SectionBanner, { ended, started }))
+describe('the banner where a named section finishes and begins', () => {
+  const call = (id: string, n: number, name: string): SectionCall => ({ id, label: `Section ${n}`, name, the: false })
+  const OAK = call('a', 1, 'Oak Estate')
+  const BEACH = call('b', 2, 'Beach Road')
+  const html = (ended: SectionCall | null, started: SectionCall | null, last = false) => renderToStaticMarkup(createElement(SectionBanner, { ended, started, last }))
 
-  it('has the end over the start, each with its word and name, and the words of the voice for a screen reader', () => {
-    const out = html('Oak Estate', 'Beach Road')
-    expect(out.indexOf('Oak Estate')).toBeLessThan(out.indexOf('Beach Road'))
+  it('has the end over the beginning, each in words big enough to read on the move, with the name under them, and the words of the voice for a screen reader', () => {
+    const out = html(OAK, BEACH)
     expect(out.match(/section-row (\w+)/g)).toEqual(['section-row ended', 'section-row started'])
-    expect(out).toMatch(/End<\/span><span class="section-name">Oak Estate/)
-    expect(out).toMatch(/Start<\/span><span class="section-name">Beach Road/)
-    expect(out).toContain('aria-label="End of Oak Estate. Start of Beach Road."')
+    expect(out).toContain('<span class="section-title">Section 1 finished</span><span class="section-name">Oak Estate</span>')
+    expect(out).toContain('<span class="section-title">Moving on to Section 2</span><span class="section-name">Beach Road</span>')
+    expect(out).toContain('aria-label="Section 1 finished. Moving on to Section 2, Beach Road."')
+    const css = readFileSync(new URL('./sectionBanner.css', import.meta.url), 'utf8')
+    expect(Number.parseInt(declared(css, '.section-title', 'font-size') ?? '0', 10)).toBeGreaterThanOrEqual(20)
   })
 
   it('has only the row there is something for', () => {
-    expect(html(null, 'Beach Road')).not.toContain('section-row ended')
-    expect(html('Oak Estate', null)).not.toContain('section-row started')
+    expect(html(null, BEACH)).not.toContain('section-row ended')
+    expect(html(null, BEACH)).toContain('<span class="section-title">Section 2 beginning</span>')
+    expect(html(OAK, null)).not.toContain('section-row started')
+  })
+
+  it('has Setup list each section by the number the banner and the voice call it by, before where it runs', () => {
+    const list: ResolvedSection[] = [
+      { id: LEAD_ID, name: LEAD_NAME, startM: 0, endM: 100, lead: true },
+      { id: 'st', name: 'Start', startM: 100, endM: 500, lead: false },
+      { id: 'a', name: 'Oak Estate', startM: 500, endM: 1500, lead: false },
+      { id: 'b', name: 'Section 2', startM: 1500, endM: 3000, lead: false },
+    ]
+    const route = { points: [{ lat: 0, lng: 0 }, { lat: 0, lng: 0.03 }], sideChanges: [], stops: [] }
+    const nothing = () => undefined
+    const out = renderToStaticMarkup(
+      createElement(SectionsTab, { route, resolved: { list, detached: [] }, stopCounts: new Map(), focus: null, adding: false, onAdding: nothing, onFocus: nothing, onNameStart: nothing, onRename: nothing, onDelete: nothing, onBack: nothing }),
+    )
+    expect(out).toContain('<div class="title">Oak Estate</div><div class="sub">Section 1 · 500 m to 1.5 km')
+    // Named as the section it is, or by its number already, it has nothing to add.
+    expect(out).toContain('<div class="title">Start</div><div class="sub">100 m to 500 m')
+    expect(out).toContain('<div class="title">Section 2</div><div class="sub">1.5 km to 3.0 km')
+  })
+
+  it('says when the section finished was the last', () => {
+    expect(html(BEACH, null, true)).toContain('<span class="section-name">Beach Road</span><span class="section-name">That was the last section</span>')
+    expect(html(BEACH, null, false)).not.toContain('last section')
   })
 
   it('takes no touch, as it sits over the map', () => {

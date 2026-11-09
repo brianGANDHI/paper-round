@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import { Icon } from './Icon'
-import type { DetachedSection, ResolvedSection } from './namedSections'
+import { sectionCalls, sectionNumberPrefix, type DetachedSection, type ResolvedSection } from './namedSections'
 import { formatDistance } from './routeEdit'
 import { Banner, Empty } from './ui'
 import type { Route } from './types'
@@ -55,6 +55,8 @@ export function SectionsTab({ route, resolved, stopCounts, focus, adding, onAddi
   const { list, detached } = resolved
   const named = list.filter((s) => !s.lead)
   const lead = list.find((s) => s.lead)
+  // The number each is called by on the round, before the rest of what is said of it: "Section 2 · 1.2 km to 2.4 km".
+  const calls = sectionCalls(list)
   return (
     <>
       {!adding && (
@@ -105,6 +107,7 @@ export function SectionsTab({ route, resolved, stopCounts, focus, adding, onAddi
             <div className="grow">
               <div className="title">{s.name}</div>
               <div className="sub">
+                {sectionNumberPrefix(calls.get(s.id))}
                 {formatDistance(s.startM)} to {formatDistance(s.endM)} · {stops(stopCounts.get(s.id) ?? 0)}
               </div>
             </div>

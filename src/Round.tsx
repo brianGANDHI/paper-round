@@ -38,7 +38,7 @@ import { holdHeading } from './mapHeading'
 import { MapView, type ViewCmd } from './MapView'
 import { resolveSections } from './namedSections'
 import { SectionBanner } from './SectionBanner'
-import { carriedOn, NOTHING_WATCHED, RESUMED_WATCH, SECTION_ROAD_M, sectionSpeech, startedAt, watchSection, type SectionNote, type SectionWatch } from './sectionWatch'
+import { carriedOn, NOTHING_WATCHED, RESUMED_WATCH, SECTION_ROAD_M, sectionAgain, sectionSpeech, startedAt, watchSection, type SectionNote, type SectionWatch } from './sectionWatch'
 import { advance, makeTrack, offRouteGap, OUTLIER_ACCURACY_M, rebaseProgress, startProgress, type Progress } from './progress'
 import { keptBeforeDrop } from './dropMemory'
 import { continueFrom, sameCourtLegs, slackFor, withCourtLegs } from './resume'
@@ -71,6 +71,8 @@ const NOTE_MS = 6000
 const SECTION_NOTE_MS = 8000
 /** How long it waits for the list or the menu to close, after which it is old news. */
 const SECTION_HOLD_MS = 30000
+/** How long the words for a named section finishing or beginning may wait behind other words before they are too late to be worth saying. */
+const SECTION_SAY_MS = 15000
 /** What the bar along the bottom covers of the map, in pixels (its height and the gap under it), until it has been measured. */
 const BAR_COVER_PX = 64
 /** What the small amber button in the bar says when the screen is not being kept awake, which stops the GPS. */
@@ -298,6 +300,8 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
   const toldBehind = useRef(new Set<string>())
   /** What has been told of the named sections, and the section the car was in at the last look (see `watchSection`). */
   const sectionWatch = useRef<SectionWatch>(NOTHING_WATCHED)
+  /** Counts what has been told of the named sections, and the starts and skips, so words still waiting to be said know when they have been overtaken. */
+  const sectionTold = useRef(0)
   /** Whether the car was going the way the route runs at the last fix, or can't say. */
   const forwardRef = useRef(true)
   /** Set by *Continue Round* until the first fix on the route after it, where a house at the head of a court the driver is between the two legs of is put on the leg ahead (see `legsOnResume`). */
@@ -762,12 +766,15 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
     // The car into another named section, or out of the last. Only a fix that can say where the car is, as a thrown one would tell of a section it is nowhere near. A round over
     // needs none: the section ends where the last stop is done, wherever the car then goes.
     let sectionWords = ''
+    let sectionShort: string | undefined
     if ((judged && goodFix && progress.gap <= SECTION_ROAD_M) || finishedRef.current) {
       const step = watchSection(sectionWatch.current, resolved.list, { along: driverAt, time: progress.time ?? 0, forward: forwardRef.current, routeEnd: track.cum[track.cum.length - 1] ?? 0, over: finishedRef.current })
       sectionWatch.current = step.watch
       if (step.note) {
         setSectionNote(step.note)
         sectionWords = sectionSpeech(step.note)
+        sectionShort = sectionAgain(step.note)
+        sectionTold.current++
       }
     }
     if (!voiceRef.current) return
@@ -779,8 +786,13 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
     const word = progress.lost ? null : sideCueRef.current.update(sideAt(route, progress.idx), sideAtAlong(route, track.cum, progress.along + sideLookAheadM(speedRef.current)), progress.along)
     const saySide = () => {
       if (word) say(sideWords(word), { queue: true, afterMs: beepSeconds * 1000, stale: () => sideCueRef.current.last() !== word })
-      // Last of all: a section is not worth holding up a warning or a turn for, and the banner shows it either way.
-      if (sectionWords) say(sectionWords, { minor: true, afterMs: beepSeconds * 1000 })
+      // Last of all: a section is not worth holding up a warning, a turn or the side for, so it waits for them, and is said again if they cut it off,
+      // for a while. Newer words for a section, or a start or a skip, overtake it.
+      if (sectionWords) {
+        const told = sectionTold.current
+        const askedAt = Date.now()
+        say(sectionWords, { minor: true, again: sectionShort, afterMs: beepSeconds * 1000, stale: () => sectionTold.current !== told || Date.now() - askedAt > SECTION_SAY_MS })
+      }
     }
     if (!fresh.length && heldRef.current.size === 0) {
       saySide()
@@ -998,6 +1010,7 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
     toldBehind.current.clear()
     // A carry-on is the same drive going on, so what has been told stands; a skip goes somewhere to drive it, and a section is told as it is come to.
     sectionWatch.current = keepBundles ? carriedOn(sectionWatch.current) : startedAt(metres)
+    sectionTold.current++
     setSectionNote(null)
     if (!skip) {
       mayTellBehind.current.clear()
@@ -1082,6 +1095,7 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
       const carryOn = continueFrom(round, allOccs, handled)
       reachAlong.current = carryOn
       sectionWatch.current = RESUMED_WATCH
+      sectionTold.current++
       watchRef.current = restartWatch(watchRef.current)
       const start = startProgress(track, carryOn)
       progressRef.current = start

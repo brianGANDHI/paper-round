@@ -3251,9 +3251,10 @@ describe('the banner where a named section starts and ends, on the real screen',
     s.press('Start Round')
     return s
   }
+  /** The sections on the banner, by the names they were given. */
   const shown = (s: ReturnType<typeof roundScreen>) => {
     const banner = s.find<Parameters<typeof SectionBanner>[0]>(SectionBanner)
-    return banner ? [banner.ended, banner.started] : null
+    return banner ? [banner.ended?.name ?? null, banner.started?.name ?? null] : null
   }
   const saidOf = (word: string) => vi.mocked(say).mock.calls.map(([text]) => text).filter((text) => text.includes(word))
 
@@ -3263,7 +3264,7 @@ describe('the banner where a named section starts and ends, on the real screen',
     expect(shown(s)).toBeNull()
     s.drive(up(520, 480))
     expect(shown(s)).toEqual([null, 'Oak Estate'])
-    expect(saidOf('Oak Estate')).toEqual(['Start of Oak Estate.'])
+    expect(saidOf('Oak Estate')).toEqual(['Section 1 beginning, Oak Estate.'])
   })
 
   it('ends one and starts the next on one banner, and the voice says them in that order', () => {
@@ -3271,14 +3272,14 @@ describe('the banner where a named section starts and ends, on the real screen',
     s.drive(up(1480))
     s.drive(up(1520, 1480))
     expect(shown(s)).toEqual(['Oak Estate', 'Beach Road'])
-    expect(saidOf('Beach Road')).toEqual(['End of Oak Estate. Start of Beach Road.'])
+    expect(saidOf('Beach Road')).toEqual(['Section 1 finished. Moving on to Section 2, Beach Road.'])
   })
 
   it('ends the last at the end of the route', () => {
     const s = drivingFrom()
     s.drive(up(2960))
     expect(shown(s)).toEqual(['Beach Road', null])
-    expect(saidOf('Beach Road').at(-1)).toBe('End of Beach Road.')
+    expect(saidOf('Section 2 finished.').at(-1)).toBe('Section 2 finished. That was the last section.')
   })
 
   it('goes by itself after a few seconds, and does not come back', () => {
@@ -3310,10 +3311,10 @@ describe('the banner where a named section starts and ends, on the real screen',
     s.drive(up(500))
     const calls = vi.mocked(say).mock.calls
     const alert = calls.findIndex(([text]) => text.startsWith('No throw'))
-    const section = calls.findIndex(([text]) => text === 'Start of Oak Estate.')
+    const section = calls.findIndex(([text]) => text === 'Section 1 beginning, Oak Estate.')
     expect(alert).toBeGreaterThanOrEqual(0)
     expect(section).toBe(alert + 1)
-    expect(calls[section][1]).toEqual({ minor: true, afterMs: 300 })
+    expect(calls[section][1]).toEqual({ minor: true, afterMs: 300, stale: expect.any(Function) })
   })
 
   it('asks for its words after the side word on the same fix', () => {
@@ -3324,14 +3325,14 @@ describe('the banner where a named section starts and ends, on the real screen',
     s.drive(up(480))
     const said = vi.mocked(say).mock.calls.map(([text]) => text)
     expect(said.indexOf('Starboard')).toBeGreaterThanOrEqual(0)
-    expect(said.indexOf('End of Oak Estate. Start of Beach Road.')).toBe(said.indexOf('Starboard') + 1)
+    expect(said.indexOf('Section 1 finished. Moving on to Section 2, Beach Road.')).toBe(said.indexOf('Starboard') + 1)
   })
 
   it('says nothing at all on a route with no sections', () => {
     const s = drivingFrom(onStreet(), [])
     s.drive(up(2960))
     expect(shown(s)).toBeNull()
-    expect(saidOf('Start of')).toEqual([])
+    expect(saidOf('beginning')).toEqual([])
   })
 
   it('comes under the alert of a stop, which it leaves up, and asks for its words after those of the alert', () => {
@@ -3341,7 +3342,7 @@ describe('the banner where a named section starts and ends, on the real screen',
     const order = s.all().filter((e) => e.type === AlertBanner || e.type === SectionBanner).map((e) => e.type)
     expect(order).toEqual([AlertBanner, SectionBanner])
     const said = vi.mocked(say).mock.calls.map(([text]) => text)
-    expect(said.findIndex((t) => t.startsWith('No throw'))).toBeLessThan(said.indexOf('Start of Oak Estate.'))
+    expect(said.findIndex((t) => t.startsWith('No throw'))).toBeLessThan(said.indexOf('Section 1 beginning, Oak Estate.'))
   })
 
   it('takes no notice of a poor fix thrown over the line, and tells when the car gets there', () => {
@@ -3351,7 +3352,7 @@ describe('the banner where a named section starts and ends, on the real screen',
     s.drive([{ x: 0, y: 1560, speed: 10, heading: 0, accuracy: 50 }])
     expect(saidOf('Beach Road')).toEqual([])
     s.drive(up(1520, 1500))
-    expect(saidOf('Beach Road')).toEqual(['End of Oak Estate. Start of Beach Road.'])
+    expect(saidOf('Beach Road')).toEqual(['Section 1 finished. Moving on to Section 2, Beach Road.'])
   })
 
   it('waits for the list to close, for its time on the screen', () => {
@@ -3447,7 +3448,7 @@ describe('the banner where a named section starts and ends, on the real screen',
     s.offRoute()?.onCarryOn()
     s.update()
     s.drive(up(1720, 1690))
-    expect(saidOf('Beach Road')).toEqual(['End of Oak Estate. Start of Beach Road.'])
+    expect(saidOf('Beach Road')).toEqual(['Section 1 finished. Moving on to Section 2, Beach Road.'])
   })
 
   it('tells of a line gone over on the way back from a stop off the road, once the round carries on', () => {
@@ -3458,7 +3459,7 @@ describe('the banner where a named section starts and ends, on the real screen',
     s.offRoute()?.onCarryOn()
     s.update()
     s.drive(up(1900, 1810))
-    expect(saidOf('Beach Road')).toEqual(['End of Oak Estate. Start of Beach Road.'])
+    expect(saidOf('Beach Road')).toEqual(['Section 1 finished. Moving on to Section 2, Beach Road.'])
   })
 
   it('tells of a line gone over in poor GPS round the head of a street, a little late', () => {
@@ -3468,7 +3469,7 @@ describe('the banner where a named section starts and ends, on the real screen',
     s.drive(drive.slice(0, 64))
     s.drive(drive.slice(64, 96).map((f) => ({ ...f, accuracy: 60 })))
     s.drive(drive.slice(96, 120))
-    expect(saidOf('Beach Road')).toEqual(['End of Oak Estate. Start of Beach Road.'])
+    expect(saidOf('Beach Road')).toEqual(['Section 1 finished. Moving on to Section 2, Beach Road.'])
   })
 
   it('tells nothing going the wrong way over a line on being taken back, and tells when the car comes over it going forward', () => {
@@ -3481,7 +3482,7 @@ describe('the banner where a named section starts and ends, on the real screen',
     s.drive(legs(10, [0, 1850], [0, 1395]).map((f) => ({ ...f, heading: 180 })))
     expect(saidOf('Beach Road')).toEqual([])
     s.drive(up(1560, 1400))
-    expect(saidOf('Beach Road')).toEqual(['End of Oak Estate. Start of Beach Road.'])
+    expect(saidOf('Beach Road')).toEqual(['Section 1 finished. Moving on to Section 2, Beach Road.'])
   })
 
   it('tells of no section on a diagonal to a stop off the road, level with a line the car has not come to', () => {
@@ -3496,7 +3497,7 @@ describe('the banner where a named section starts and ends, on the real screen',
     s.drive(up(690))
     s.tapDropped()
     s.drive(up(1000, 700))
-    expect(saidOf('End of')).toEqual(['End of Oak Estate.'])
+    expect(saidOf('finished')).toEqual(['Section 1 finished.'])
     s.drive(up(1600, 1010))
     expect(saidOf('Beach Road')).toEqual([])
   })
@@ -3506,7 +3507,7 @@ describe('the banner where a named section starts and ends, on the real screen',
     s.drive(up(100))
     await skipTo(s, 1500)
     s.drive(up(1540, 1420))
-    expect(vi.mocked(say).mock.calls.map(([text]) => text).filter((text) => /^(Start|End) of/.test(text))).toEqual(['Start of Beach Road.'])
+    expect(vi.mocked(say).mock.calls.map(([text]) => text).filter((text) => /beginning|finished/.test(text))).toEqual(['Section 2 beginning, Beach Road.'])
     expect(shown(s)).toEqual([null, 'Beach Road'])
   })
 
@@ -3515,7 +3516,7 @@ describe('the banner where a named section starts and ends, on the real screen',
     const s = roundScreen(route, { sections: SECTIONS, round: { handledStopIds: ['Z'], furthest: 2900 } })
     s.press('Choose Where to Start')
     s.drive(up(720, 600))
-    expect(saidOf('End of')).toEqual([])
+    expect(saidOf('finished')).toEqual([])
   })
 
   it('does not tell again of the end told at the last stop when an earlier drop is taken back and the round goes on', () => {
@@ -3525,13 +3526,13 @@ describe('the banner where a named section starts and ends, on the real screen',
     s.drive(up(690, 600))
     s.tapDropped()
     s.drive(up(720, 700))
-    expect(saidOf('End of')).toEqual(['End of Oak Estate.'])
+    expect(saidOf('finished')).toEqual(['Section 1 finished.'])
     s.openList()?.onUndo('A')
     s.list()?.onClose()
     s.update()
     s.drive(up(1520, 730))
-    expect(saidOf('Beach Road')).toEqual(['Start of Beach Road.'])
-    expect(saidOf('End of')).toEqual(['End of Oak Estate.'])
+    expect(saidOf('Beach Road')).toEqual(['Section 2 beginning, Beach Road.'])
+    expect(saidOf('finished')).toEqual(['Section 1 finished.'])
   })
 
   it('ends the section where the last stop is done off the road, with the car still there', () => {
@@ -3540,7 +3541,7 @@ describe('the banner where a named section starts and ends, on the real screen',
     s.drive(legs(2, [0, 700], [85, 700]))
     s.tapDropped()
     s.drive(legs(2, [85, 700], [80, 700]))
-    expect(saidOf('End of')).toEqual(['End of Oak Estate.'])
+    expect(saidOf('finished')).toEqual(['Section 1 finished.'])
   })
 
   it('believes the driver at a carry-on however far along the route the car came back onto it, and tells at once', () => {
@@ -3553,7 +3554,7 @@ describe('the banner where a named section starts and ends, on the real screen',
     s.offRoute()?.onCarryOn()
     s.update()
     s.drive(legs(10, [400, 440], [400, 400]))
-    expect(saidOf('Beach Road')).toEqual(['End of Oak Estate. Start of Beach Road.'])
+    expect(saidOf('Beach Road')).toEqual(['Section 1 finished. Moving on to Section 2, Beach Road.'])
   })
 
   it('tells nothing at the first look of Continue Round: the driver is carrying on in the section', () => {
@@ -3562,7 +3563,7 @@ describe('the banner where a named section starts and ends, on the real screen',
     s.drive(up(640, 550))
     expect(saidOf('Oak Estate')).toEqual([])
     s.drive(up(1520, 650))
-    expect(saidOf('Beach Road')).toEqual(['End of Oak Estate. Start of Beach Road.'])
+    expect(saidOf('Beach Road')).toEqual(['Section 1 finished. Moving on to Section 2, Beach Road.'])
   })
 
   it('tells of the section skipped to, and again of one driven over again after a skip back', async () => {
@@ -3578,13 +3579,13 @@ describe('the banner where a named section starts and ends, on the real screen',
   it('does not tell the driver again of a section they carried on in', () => {
     const s = drivingFrom()
     s.drive(up(560))
-    expect(saidOf('Oak Estate')).toEqual(['Start of Oak Estate.'])
+    expect(saidOf('Oak Estate')).toEqual(['Section 1 beginning, Oak Estate.'])
     // Off the road and back onto it a little further on, in the same section.
     s.drive(legs(10, [0, 560], [300, 560], [300, 760], [0, 760]))
     s.offRoute()?.onCarryOn()
     s.update()
     s.drive(up(900, 770))
-    expect(saidOf('Oak Estate')).toEqual(['Start of Oak Estate.'])
+    expect(saidOf('Oak Estate')).toEqual(['Section 1 beginning, Oak Estate.'])
   })
 
   it('tells again after a reset, as the round starts over', async () => {
@@ -3597,6 +3598,58 @@ describe('the banner where a named section starts and ends, on the real screen',
     expect(shown(s)).toBeNull()
     s.drive(up(400, 0))
     s.drive(up(520, 410))
-    expect(saidOf('Oak Estate')).toEqual(['Start of Oak Estate.', 'Start of Oak Estate.'])
+    expect(saidOf('Oak Estate')).toEqual(['Section 1 beginning, Oak Estate.', 'Section 1 beginning, Oak Estate.'])
+  })
+
+  /** The words asked for a section, and the check that says when they are too late to be worth saying. */
+  const sectionCall = (words: string) => {
+    const found = vi.mocked(say).mock.calls.find(([text]) => text === words)
+    if (!found) throw new Error(`not said: ${words}`)
+    return found[1]?.stale ?? (() => true)
+  }
+
+  it('keeps its words waiting behind others for up to 15 seconds, and no longer', () => {
+    const s = drivingFrom()
+    // The line is at 500 m, a fix every 10 m and every second, so the words were asked for 2 seconds ago.
+    s.drive(up(520))
+    const late = sectionCall('Section 1 beginning, Oak Estate.')
+    expect(late()).toBe(false)
+    vi.advanceTimersByTime(12_500)
+    expect(late()).toBe(false)
+    vi.advanceTimersByTime(1_000)
+    expect(late()).toBe(true)
+  })
+
+  it('has its words overtaken by the next section told, which the screen shows instead', () => {
+    // A short first section, so the next is told well inside the 15 seconds: only the newer words can make the first out of date.
+    const s = drivingFrom(onStreet(), [place('a', 'Oak Estate', 500), place('b', 'Beach Road', 600)])
+    s.drive(up(520))
+    const first = sectionCall('Section 1 beginning, Oak Estate.')
+    s.drive(up(620, 530))
+    expect(first()).toBe(true)
+    expect(sectionCall('Section 1 finished. Moving on to Section 2, Beach Road.')()).toBe(false)
+  })
+
+  it('has its words overtaken by a skip, which starts the telling over', async () => {
+    const s = drivingFrom()
+    s.drive(up(520))
+    const first = sectionCall('Section 1 beginning, Oak Estate.')
+    await skipTo(s, 1500)
+    expect(first()).toBe(true)
+  })
+
+  it('calls a section named Start the Start section, and numbers the others from 1 after it', () => {
+    const s = drivingFrom(onStreet(), [place('st', 'Start', 0), place('a', 'Oak Estate', 500), place('b', 'Beach Road', 1500)])
+    s.drive(up(520))
+    const moving = vi.mocked(say).mock.calls.find(([text]) => text.startsWith('Start section finished'))
+    // Cut off part way, only the section begun is said again, short enough to fit between what cut it off.
+    expect(moving?.[1]?.again).toBe('Section 1 beginning, Oak Estate.')
+    s.drive(up(1520, 530))
+    const said = vi.mocked(say).mock.calls.map(([text]) => text).filter((text) => /beginning|finished/.test(text))
+    expect(said).toEqual([
+      'Start section beginning.',
+      'Start section finished. Moving on to Section 1, Oak Estate.',
+      'Section 1 finished. Moving on to Section 2, Beach Road.',
+    ])
   })
 })

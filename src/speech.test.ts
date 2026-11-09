@@ -1,21 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import {
-  COLD_MS,
-  createSpeaker,
-  CUT_GRACE_MS,
-  END_ALLOW_MS,
-  END_WORD_MS,
-  LEAD_IN,
-  LEAD_IN_ALLOW_MS,
-  pickVoice,
-  QUEUE_MAX,
-  say,
-  speechAvailable,
-  stopSpeaking,
-  unlockSpeech,
-  voiceLanguage,
-  WATCHDOG_MS,
-} from './speech'
+import { COLD_MS, createSpeaker, CUT_GRACE_MS, END_ALLOW_MS, END_WORD_MS, LEAD_IN, LEAD_IN_ALLOW_MS, MINOR_WORD_MS, pickVoice, QUEUE_MAX, say, speechAvailable, spokenWords, stopSpeaking, unlockSpeech, voiceLanguage, WATCHDOG_MS } from './speech'
 
 interface FakeUtterance {
   text: string
@@ -1066,8 +1050,14 @@ describe('the cues said whole, by what matters on the road', () => {
   })
 })
 
-describe('words of less account, said only if nothing else is', () => {
+describe('words of less account, said after everything else, and again if cut off', () => {
   const spoken = (log: string[]) => log.filter((line) => line.startsWith('speak ')).map((line) => line.slice(6))
+  /** Says what is being said through to its end, and waits out the gap before the next. */
+  const finish = async (f: ReturnType<typeof fake>) => {
+    f.start()
+    f.end()
+    await advance(400)
+  }
 
   it('are said with nothing else to say', async () => {
     const { speaker, log } = fake({ keepAlive: true })
@@ -1087,88 +1077,269 @@ describe('words of less account, said only if nothing else is', () => {
     expect(spoken(log)).toEqual(['First.', 'Section.'])
   })
 
-  it('are left out with another cue waiting, which they do not replace', async () => {
-    const { speaker, log, start, end } = fake({ keepAlive: true })
-    speaker.say('First.')
+  it('wait behind another cue waiting, and are said after it', async () => {
+    const f = fake({ keepAlive: true })
+    f.speaker.say('First.')
     await advance(300)
-    start()
-    speaker.say('Turn right.')
-    speaker.say('Section.', { minor: true })
-    end()
+    f.start()
+    f.speaker.say('Turn right.')
+    f.speaker.say('Section.', { minor: true })
+    f.end()
     await advance(400)
-    start()
-    end()
+    await finish(f)
+    expect(spoken(f.log)).toEqual(['First.', 'Turn right.', 'Section.'])
+  })
+
+  it('are not put aside by an ordinary cue asked after them while they wait, which goes first', async () => {
+    const f = fake({ keepAlive: true })
+    f.speaker.say('First.')
+    await advance(300)
+    f.start()
+    f.speaker.say('Section.', { minor: true })
+    f.speaker.say('Turn right.')
+    f.end()
     await advance(400)
-    expect(spoken(log)).toEqual(['First.', 'Turn right.'])
+    await finish(f)
+    expect(spoken(f.log)).toEqual(['First.', 'Turn right.', 'Section.'])
   })
 
   it('replace others of their kind that wait: the newest is what the screen shows', async () => {
-    const { speaker, log, start, end } = fake({ keepAlive: true })
-    speaker.say('First.')
+    const f = fake({ keepAlive: true })
+    f.speaker.say('First.')
     await advance(300)
-    start()
-    speaker.say('Older section.', { minor: true })
-    speaker.say('Newer section.', { minor: true })
-    end()
+    f.start()
+    f.speaker.say('Older section.', { minor: true })
+    f.speaker.say('Newer section.', { minor: true })
+    f.end()
     await advance(400)
-    expect(spoken(log)).toEqual(['First.', 'Newer section.'])
+    await finish(f)
+    expect(spoken(f.log)).toEqual(['First.', 'Newer section.'])
   })
 
-  it('give way to an ordinary cue while they wait', async () => {
-    const { speaker, log, start, end } = fake({ keepAlive: true })
-    speaker.say('First.')
-    await advance(300)
-    start()
-    speaker.say('Section.', { minor: true })
-    speaker.say('Turn right.')
-    end()
+  it('let a turn asked just after them go first, and are said after it', async () => {
+    const f = fake({ keepAlive: true })
+    f.speaker.say('Section.', { minor: true })
+    f.speaker.say('Turn right.')
     await advance(400)
-    start()
-    end()
-    await advance(400)
-    expect(spoken(log)).toEqual(['First.', 'Turn right.'])
+    expect(spoken(f.log)).toEqual(['Turn right.'])
+    await finish(f)
+    expect(spoken(f.log)).toEqual(['Turn right.', 'Section.'])
   })
 
-  it('go before a turn asked just after them only if they have nothing to hold up', async () => {
-    const { speaker, log } = fake({ keepAlive: true })
-    speaker.say('Section.', { minor: true })
-    speaker.say('Turn right.')
+  it('are broken in on by an ordinary cue, and are then said again in full', async () => {
+    const f = fake({ keepAlive: true })
+    f.speaker.say('Section.', { minor: true })
+    await advance(300)
+    f.start()
+    f.speaker.say('Turn right.')
     await advance(400)
-    expect(spoken(log)).toEqual(['Turn right.'])
+    expect(f.log.slice(-3)).toEqual(['cancel', 'ready', 'speak Turn right.'])
+    await finish(f)
+    expect(spoken(f.log)).toEqual(['Section.', 'Turn right.', 'Section.'])
   })
 
-  it('are broken in on by an ordinary cue, and are not said again', async () => {
-    const { speaker, log, start, end } = fake({ keepAlive: true })
-    speaker.say('Section.', { minor: true })
+  it('are broken in on by a queued word, and said again after it', async () => {
+    const f = fake({ keepAlive: true })
+    f.speaker.say('Section.', { minor: true })
     await advance(300)
-    start()
-    speaker.say('Turn right.')
+    f.start()
+    f.speaker.say('Port', { queue: true })
     await advance(400)
-    expect(log.slice(-3)).toEqual(['cancel', 'ready', 'speak Turn right.'])
-    start()
-    end()
-    await advance(400)
-    expect(spoken(log)).toEqual(['Section.', 'Turn right.'])
+    expect(f.log.slice(-3)).toEqual(['cancel', 'ready', 'speak Port'])
+    await finish(f)
+    expect(spoken(f.log)).toEqual(['Section.', 'Port', 'Section.'])
   })
 
-  it('are broken in on by a queued word', async () => {
-    const { speaker, log, start } = fake({ keepAlive: true })
-    speaker.say('Section.', { minor: true })
+  it('are broken in on by a warning of a wrong throw, and said again after it', async () => {
+    const f = fake({ keepAlive: true })
+    f.speaker.say('Section.', { minor: true })
     await advance(300)
-    start()
-    speaker.say('Port', { queue: true })
+    f.start()
+    f.speaker.say('No throw, 14.', { urgent: true, whole: true, warning: true })
     await advance(400)
-    expect(log.slice(-3)).toEqual(['cancel', 'ready', 'speak Port'])
+    expect(f.log.slice(-3)).toEqual(['cancel', 'ready', 'speak No throw, 14.'])
+    await finish(f)
+    expect(spoken(f.log)).toEqual(['Section.', 'No throw, 14.', 'Section.'])
   })
 
-  it('are broken in on by a warning of a wrong throw', async () => {
-    const { speaker, log, start } = fake({ keepAlive: true })
-    speaker.say('Section.', { minor: true })
+  it('are broken in on by an urgent cue, and said again after it', async () => {
+    const f = fake({ keepAlive: true })
+    f.speaker.say('Section.', { minor: true })
     await advance(300)
-    start()
-    speaker.say('No throw, 14.', { urgent: true, whole: true, warning: true })
+    f.start()
+    f.speaker.say('Turn left now.', { urgent: true })
     await advance(400)
-    expect(log.slice(-3)).toEqual(['cancel', 'ready', 'speak No throw, 14.'])
+    expect(f.log.slice(-3)).toEqual(['cancel', 'ready', 'speak Turn left now.'])
+    await finish(f)
+    expect(spoken(f.log)).toEqual(['Section.', 'Turn left now.', 'Section.'])
+  })
+
+  it('wait behind all the cues said whole that a cut brings, and the ordinary one after them', async () => {
+    const f = fake({ keepAlive: true })
+    f.speaker.say('Section.', { minor: true })
+    await advance(300)
+    f.start()
+    f.speaker.say('Bundle drop, 5.', { urgent: true, whole: true })
+    f.speaker.say('Starboard', { queue: true })
+    f.speaker.say('Turn right.')
+    await advance(400)
+    for (let i = 0; i < 3; i++) await finish(f)
+    // The side word goes before the bundle's words, as it always does, and the turn after both.
+    expect(spoken(f.log)).toEqual(['Section.', 'Starboard', 'Bundle drop, 5.', 'Turn right.', 'Section.'])
+  })
+
+  it('are said again only if newer ones of their kind are not waiting by then', async () => {
+    const f = fake({ keepAlive: true })
+    f.speaker.say('Older section.', { minor: true })
+    await advance(300)
+    f.start()
+    f.speaker.say('Port', { queue: true })
+    f.speaker.say('Newer section.', { minor: true })
+    await advance(400)
+    await finish(f)
+    await finish(f)
+    expect(spoken(f.log)).toEqual(['Older section.', 'Port', 'Newer section.'])
+  })
+
+  it('are left out when out of date by their turn, cut off or not', async () => {
+    const f = fake({ keepAlive: true })
+    let late = false
+    f.speaker.say('Section.', { minor: true, stale: () => late })
+    await advance(300)
+    f.start()
+    f.speaker.say('Port', { queue: true })
+    await advance(400)
+    late = true
+    await finish(f)
+    await finish(f)
+    expect(spoken(f.log)).toEqual(['Section.', 'Port'])
+    expect(f.speaker.busy()).toBe(false)
+
+    const g = fake({ keepAlive: true })
+    g.speaker.say('First.')
+    await advance(300)
+    g.start()
+    let gone = false
+    g.speaker.say('Section.', { minor: true, stale: () => gone })
+    gone = true
+    g.end()
+    await advance(400)
+    expect(spoken(g.log)).toEqual(['First.'])
+    expect(g.speaker.busy()).toBe(false)
+  })
+
+  it('keep newer words of their kind waiting when older ones being said are cut off, and leave the older ones out', async () => {
+    for (const cut of [{ text: 'Turn right.', options: {} }, { text: 'Port', options: { queue: true } }]) {
+      const f = fake({ keepAlive: true })
+      f.speaker.say('Older section.', { minor: true })
+      await advance(300)
+      f.start()
+      f.speaker.say('Newer section.', { minor: true })
+      f.speaker.say(cut.text, cut.options)
+      await advance(400)
+      await finish(f)
+      await finish(f)
+      expect(spoken(f.log)).toEqual(['Older section.', cut.text, 'Newer section.'])
+    }
+  })
+
+  it('are said again only once after a cut once started, so a busy stretch does not hear them begun over and over', async () => {
+    const f = fake({ keepAlive: true })
+    f.speaker.say('Section one finished.', { minor: true })
+    await advance(300)
+    f.start()
+    f.speaker.say('Port', { queue: true })
+    await advance(400)
+    await finish(f)
+    // Said again, and cut off again.
+    expect(spoken(f.log)).toEqual(['Section one finished.', 'Port', 'Section one finished.'])
+    f.start()
+    f.speaker.say('Starboard', { queue: true })
+    await advance(400)
+    await finish(f)
+    await finish(f)
+    expect(spoken(f.log)).toEqual(['Section one finished.', 'Port', 'Section one finished.', 'Starboard'])
+    expect(f.speaker.busy()).toBe(false)
+  })
+
+  it('do not use up their one more time when cut off before they started', async () => {
+    const f = fake({ keepAlive: true })
+    // Waiting out a beep when the side word comes: none of it has been said.
+    f.speaker.say('Section.', { minor: true, afterMs: 600 })
+    await advance(200)
+    f.speaker.say('Port', { queue: true })
+    await advance(400)
+    await finish(f)
+    expect(spoken(f.log)).toEqual(['Port', 'Section.'])
+    f.start()
+    f.speaker.say('Starboard', { queue: true })
+    await advance(400)
+    await finish(f)
+    expect(spoken(f.log)).toEqual(['Port', 'Section.', 'Starboard', 'Section.'])
+  })
+
+  it('are taken as heard when they have gone on long enough, though the phone has not said they are over', async () => {
+    const f = fake({ keepAlive: true })
+    const words = 'Section one finished. Moving on to section two.'
+    f.speaker.say(words, { minor: true })
+    await advance(300)
+    f.start()
+    // Eight words: long enough to have been said, but the phone sends no end.
+    await advance(8 * MINOR_WORD_MS)
+    f.speaker.say('Turn right.')
+    await advance(400)
+    await finish(f)
+    await finish(f)
+    expect(spoken(f.log)).toEqual([words, 'Turn right.'])
+  })
+
+  it('are said again when cut off part way through, short of the time they take', async () => {
+    const f = fake({ keepAlive: true })
+    const words = 'Section one finished. Moving on to section two.'
+    f.speaker.say(words, { minor: true })
+    await advance(300)
+    f.start()
+    await advance(8 * MINOR_WORD_MS - 600)
+    f.speaker.say('Turn right.')
+    await advance(400)
+    await finish(f)
+    await finish(f)
+    expect(spoken(f.log)).toEqual([words, 'Turn right.', words])
+  })
+
+  it('say their shorter words, when they have them, the one time they are said again after a cut', async () => {
+    const f = fake({ keepAlive: true })
+    f.speaker.say('Section one finished. Moving on to section two, Beach Road.', { minor: true, again: 'Section two beginning, Beach Road.' })
+    await advance(300)
+    f.start()
+    f.speaker.say('Port', { queue: true })
+    await advance(400)
+    await finish(f)
+    expect(spoken(f.log)).toEqual(['Section one finished. Moving on to section two, Beach Road.', 'Port', 'Section two beginning, Beach Road.'])
+  })
+
+  it('keep their whole words when cut off before they started, and the shorter ones for later', async () => {
+    const f = fake({ keepAlive: true })
+    f.speaker.say('Section one finished. Moving on to section two.', { minor: true, again: 'Section two beginning.', afterMs: 600 })
+    await advance(200)
+    f.speaker.say('Port', { queue: true })
+    await advance(400)
+    await finish(f)
+    expect(spoken(f.log)).toEqual(['Port', 'Section one finished. Moving on to section two.'])
+  })
+
+  it('are dropped with everything else when the speaker is stopped', async () => {
+    const f = fake({ keepAlive: true })
+    f.speaker.say('First.')
+    await advance(300)
+    f.start()
+    f.speaker.say('Section.', { minor: true })
+    f.speaker.stop()
+    await advance(400)
+    f.speaker.say('After.')
+    await advance(300)
+    await finish(f)
+    expect(spoken(f.log)).toEqual(['First.', 'After.'])
   })
 
   it('still let an ordinary cue wait for one that is not of less account', async () => {
@@ -3149,5 +3320,14 @@ describe('the phone’s speech with the phone’s own sound', () => {
     expect(spoken).toEqual([LEAD_IN.text, 'Turn left.', LEAD_IN.text, 'Turn left.'])
     speech.stopSpeaking()
     sound.stopKeepAlive()
+  })
+})
+
+describe('counting words as they are said, to know when words of less account have been heard', () => {
+  it('counts parts joined by a hyphen or a dash apart, and a word for every two digits of a number', () => {
+    expect(spokenWords('Section 1 finished. Moving on to Section 2, Beach Road.')).toBe(10)
+    expect(spokenWords('Moving on to Section 12, 1200-1450 Pacific Hwy.')).toBe(11)
+    expect(spokenWords('Bellbird Park—Industrial Estate')).toBe(4)
+    expect(spokenWords('  ')).toBe(0)
   })
 })

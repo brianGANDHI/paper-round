@@ -247,6 +247,82 @@ export function normalizeSections(raw: unknown): NamedSection[] {
   return clean
 }
 
+/** How a named section is called on the road and in the lists: by its number, and the name it was given when that says more. */
+export interface SectionCall {
+  /** The section's id. */
+  id: string
+  /** "Section 2", or "Start section" and "End section". */
+  label: string
+  /** The name it was given, unless it is no more than the label says, as "Section 2" or "2" is for the second. */
+  name: string | null
+  /** The label takes "the" after a word such as "to": "Moving on to the End section". */
+  the: boolean
+}
+
+/**
+ * The names that are the start and the end of the round, and not a part to be counted: Optimise Route starts and ends a round at the section named
+ * Start, by the same rule as `isStartSection` in optimise/run.ts, the name trimmed, in any case. The rule is written out here rather than taken from
+ * there, as End needs it too, and the round's voice is kept from hanging on the optimiser's code. A Map, so that a name such as "constructor" finds
+ * nothing, as it would on a plain object.
+ */
+const BOOKENDS: ReadonlyMap<string, string> = new Map([
+  ['start', 'Start section'],
+  ['end', 'End section'],
+])
+
+/**
+ * A name that is a section's number, with or without more after it: "Section 2", "section 2 - Oak Estate", "Section 2: Beach Road", "Section 2. Beach
+ * Road", "Section 2 (Beach Road)", "Section 2—Beach Road". The number has to stand alone, so "Section 1.5", "Section 1-2", "Section 2/3", "Section 2B"
+ * and "Section 2nd Street" are names like any other.
+ */
+const NUMBERED = /^section(?!\p{L})\s*#?\s*(\d{1,4})(?:\s*[-–—:,.]?\s*$|\s+[-–—:,./|]?\s*(?=[\p{L}(])|[-–—:,./|]\s+|[—:]\s*(?=\p{L})|(?=\())(.*)$/iu
+/** A name that is a number and nothing more: "2", "#2", "2.". An address such as "2 Oak St" is a name. */
+const BARE_NUMBER = /^#?\s*(\d{1,4})\s*\.?$/
+
+/** What a section's name adds to its number: none when it is that number and no more, the rest when it starts with that number, else all of it. */
+function nameBeside(name: string, number: number): string | null {
+  const numbered = NUMBERED.exec(name)
+  if (numbered && Number(numbered[1]) === number) {
+    const rest = numbered[2].trim()
+    // "Section 2 (Beach Road)" is Beach Road.
+    return (/^\((.*)\)$/u.exec(rest)?.[1].trim() ?? rest) || null
+  }
+  const bare = BARE_NUMBER.exec(name)
+  if (bare && Number(bare[1]) === number) return null
+  return name
+}
+
+/**
+ * How each named section on the route is called, by its id: numbered from 1 in route order, as they lie along it now, and so numbered again when one
+ * is added or taken away. No two are called the same, whatever their names. The part before the first named section has no name and no number. The
+ * first section named Start and the last named End are not counted, and are called the Start section and the End section; any other of those names
+ * is a section like the rest, numbered, with its name. A name that is the section's own number, such as "Section 2" or "2" for the second, is not said
+ * again after the number, and nor is that number at the start of a longer name.
+ */
+export function sectionCalls(list: readonly ResolvedSection[]): Map<string, SectionCall> {
+  const calls = new Map<string, SectionCall>()
+  const kindOf = (s: ResolvedSection) => (s.lead ? undefined : s.name.trim().toLowerCase())
+  const start = list.find((s) => kindOf(s) === 'start')
+  const end = list.findLast((s) => kindOf(s) === 'end')
+  let number = 0
+  for (const s of list) {
+    if (s.lead) continue
+    const bookend = s === start || s === end ? BOOKENDS.get(kindOf(s) ?? '') : undefined
+    if (bookend) {
+      calls.set(s.id, { id: s.id, label: bookend, name: null, the: true })
+      continue
+    }
+    number++
+    calls.set(s.id, { id: s.id, label: `Section ${number}`, name: nameBeside(s.name, number), the: false })
+  }
+  return calls
+}
+
+/** What a list row says before where a section runs: its number, "Section 2 · ", when its name doesn't say it already. */
+export function sectionNumberPrefix(call: SectionCall | undefined): string {
+  return call?.name ? `${call.label} · ` : ''
+}
+
 /** Where on the map a section starts, for a marker. The first point of the route when it has no length. */
 export function sectionPoint(points: Pt[], section: Pick<ResolvedSection, 'startM'>): Pt {
   return snapAtDistance(points, section.startM)?.point ?? points[0] ?? { lat: 0, lng: 0 }

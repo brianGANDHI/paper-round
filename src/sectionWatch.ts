@@ -1,4 +1,4 @@
-import { sectionAt, type ResolvedSection } from './namedSections'
+import { sectionAt, sectionCalls, type ResolvedSection, type SectionCall } from './namedSections'
 
 /*
  * Telling the driver where a named section starts and ends. A section runs from its start to where the next one starts (see `ResolvedSection`), so most of the time the end of one
@@ -14,10 +14,12 @@ export const SECTION_END_M = 50
 /** How far from the route a fix can be and say where the car is along it for this: on the way to a stop off the road the car can be level with a line it has not come to. */
 export const SECTION_ROAD_M = 30
 
-/** What there is to tell: the name of a section ended, the name of one started, or both. */
+/** What there is to tell: a section ended, one started, or both, each as it is called (see `sectionCalls`). */
 export interface SectionNote {
-  ended: string | null
-  started: string | null
+  ended: SectionCall | null
+  started: SectionCall | null
+  /** The section ended is the last on the route, and none starts after it. */
+  last: boolean
 }
 
 /** What is kept from one fix to the next. */
@@ -70,13 +72,18 @@ export function watchSection(watch: SectionWatch, list: readonly ResolvedSection
   const here = sectionAt(list, along)
   if (!here) return { watch, note: null }
   const told = new Set(watch.told)
-  const once = (word: string, section: ResolvedSection): string | null => {
+  const once = (word: string, section: ResolvedSection): ResolvedSection | null => {
     const key = `${word} ${section.id}`
     if (section.lead || told.has(key)) return null
     told.add(key)
-    return section.name
+    return section
   }
-  const noted = (ended: string | null, started: string | null) => (ended !== null || started !== null ? { ended, started } : null)
+  const noted = (ended: ResolvedSection | null, started: ResolvedSection | null): SectionNote | null => {
+    if (ended === null && started === null) return null
+    const calls = sectionCalls(list)
+    const call = (s: ResolvedSection | null) => (s && calls.get(s.id)) ?? null
+    return { ended: call(ended), started: call(started), last: ended !== null && started === null && ended.id === list[list.length - 1].id }
+  }
   const last = watch.last
   if (over) {
     if (watch.closed) return { watch, note: null }
@@ -84,8 +91,8 @@ export function watchSection(watch: SectionWatch, list: readonly ResolvedSection
     return { watch: { ...watch, told, closed: true }, note: noted(was ? once('end', was) : null, null) }
   }
   if (!last && along < watch.from) return { watch, note: null }
-  let ended: string | null = null
-  let started: string | null = null
+  let ended: ResolvedSection | null = null
+  let started: ResolvedSection | null = null
   if (!last) {
     if (!watch.quiet) started = once('start', here)
   } else {
@@ -104,22 +111,48 @@ export function watchSection(watch: SectionWatch, list: readonly ResolvedSection
   return { watch: { ...watch, last: { id: here.id, along, time }, told, quiet: false, trusted: false, closed: false }, note: noted(ended, started) }
 }
 
-/**
- * The names said as the section they are, not as themselves: Optimise Route starts and ends a round at the section named Start, which would be told as
- * "Start of Start." A Map, so that a name such as "constructor" finds nothing, as it would on a plain object.
- */
-const SAID_AS: ReadonlyMap<string, string> = new Map([
-  ['start', 'the Start section'],
-  ['end', 'the End section'],
-])
+/** A section's name with any stop at its end left off, as a full stop of its own would run into the one after it. Null when it has none. */
+const nameOf = (call: SectionCall): string | null => call.name?.replace(/[\s.!?,;:]+$/u, '') || null
+
+/** How a section is called after "Moving on to": "the End section", "Section 2". */
+const toward = (call: SectionCall): string => (call.the ? `the ${call.label}` : call.label)
+
+/** Words with the section's name after them, when it has one: "Section 2 beginning, Beach Road". */
+const withName = (call: SectionCall, label: string): string => {
+  const name = nameOf(call)
+  return name ? `${label}, ${name}` : label
+}
 
 /**
- * How a section's name is said. It is the one Optimise Route takes as its start by the same rule as `isStartSection` in optimise/run.ts: the name
- * trimmed, in any case. The rule is written out here rather than taken from there, as End needs it too, and the round's voice is kept from hanging on
- * the optimiser's code. Every other name is said as it is.
+ * What the voice says: the end first, as that is how it comes. "Section 1 finished. Moving on to Section 2, Beach Road." The section ended is called by
+ * its number alone, as the driver knows where they have been; the one started has its name as well. A screen reader is told the same, from the banner.
  */
-const spokenName = (name: string): string => SAID_AS.get(name.trim().toLowerCase()) ?? name
+export function sectionSpeech({ ended, started, last }: SectionNote): string {
+  if (ended && started) return `${ended.label} finished. Moving on to ${withName(started, toward(started))}.`
+  if (ended) return `${ended.label} finished.${last ? ' That was the last section.' : ''}`
+  return started ? `${withName(started, `${started.label} beginning`)}.` : ''
+}
 
-/** What the voice says: the end first, as that is how it comes. A screen reader is told the same, from the banner. */
-export const sectionSpeech = ({ ended, started }: SectionNote): string =>
-  [ended !== null && `End of ${spokenName(ended)}.`, started !== null && `Start of ${spokenName(started)}.`].filter(Boolean).join(' ')
+/**
+ * The words said again when the voice is cut off part way through those of `sectionSpeech`: what matters most, the section begun, short enough to fit
+ * between the warnings and side words of a busy stretch. "Section 2 beginning, Beach Road." Undefined when there is nothing shorter to say.
+ */
+export function sectionAgain({ ended, started }: SectionNote): string | undefined {
+  return ended && started ? `${withName(started, `${started.label} beginning`)}.` : undefined
+}
+
+/** One row of the banner: what has happened, in big type, and under it the section's name, and that it was the last. */
+export interface SectionRow {
+  kind: 'ended' | 'started'
+  title: string
+  lines: string[]
+}
+
+/** The rows of the banner, the end over the start, in the words the voice says. */
+export function sectionRows({ ended, started, last }: SectionNote): SectionRow[] {
+  const rows: SectionRow[] = []
+  const lines = (call: SectionCall, ...more: (string | false)[]) => [nameOf(call), ...more].filter((line): line is string => typeof line === 'string' && line !== '')
+  if (ended) rows.push({ kind: 'ended', title: `${ended.label} finished`, lines: lines(ended, last && 'That was the last section') })
+  if (started) rows.push({ kind: 'started', title: ended ? `Moving on to ${toward(started)}` : `${started.label} beginning`, lines: lines(started) })
+  return rows
+}

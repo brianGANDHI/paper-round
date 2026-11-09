@@ -6,7 +6,7 @@ import { Icon } from './Icon'
 import { alongPath, cumulativeDistances, snapAtDistance, type Occurrence } from './geo'
 import { MapCredit } from './MapCredit'
 import { MapView, type ViewCmd } from './MapView'
-import { resolveSections, sectionAt, sectionPoint, sectionStatus } from './namedSections'
+import { resolveSections, sectionAt, sectionCalls, sectionNumberPrefix, sectionPoint, sectionStatus } from './namedSections'
 import { passesAt, passLabel } from './passChoice'
 import { formatDistance, nearestOnRoute, ON_ROUTE_M, sections as throwSections } from './routeEdit'
 import { Sheet } from './ui'
@@ -45,6 +45,8 @@ export function StartPicker({ route, sections, occs, handled, round, slack, posi
   const resolved = useMemo(() => resolveSections(route.points, sections), [route.points, sections])
   const throws = useMemo(() => throwSections(route), [route])
   const status = useMemo(() => new Map(sectionStatus(resolved.list, occs, handled).map((s) => [s.id, s])), [resolved, occs, handled])
+  // The number each is called by on the round, as the banner and the voice call it.
+  const calls = useMemo(() => sectionCalls(resolved.list), [resolved])
   const marks = useMemo(() => resolved.list.filter((s) => !s.lead).map((s) => ({ pos: sectionPoint(route.points, s), label: s.name })), [resolved, route.points])
   const length = cum[cum.length - 1] ?? 0
 
@@ -153,6 +155,7 @@ export function StartPicker({ route, sections, occs, handled, round, slack, posi
                   <div className="grow">
                     <div className="title">{s.name}</div>
                     <div className="sub">
+                      {sectionNumberPrefix(calls.get(s.id))}
                       {formatDistance(s.startM)} to {formatDistance(s.endM)}
                       {st && (mode === 'jump' ? ` · ${st.left} of ${st.total} ${st.total === 1 ? 'stop' : 'stops'} not done yet` : ` · ${st.total} ${st.total === 1 ? 'stop' : 'stops'}`)}
                     </div>

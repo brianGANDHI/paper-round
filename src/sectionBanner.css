@@ -1,4 +1,4 @@
-/* A named section ending or starting: a row for each, under the side, the turn and any alert. */
+/* A named section finishing or beginning: a row for each, under the side, the turn and any alert. */
 .section-banner {
   display: flex;
   flex-direction: column;
@@ -13,11 +13,15 @@
 
 .section-row {
   display: flex;
-  gap: 10px;
+  gap: 12px;
   align-items: center;
-  min-height: 48px;
-  padding: 6px 12px;
+  min-height: 56px;
+  padding: 8px 14px;
   color: #fff;
+}
+
+.section-row > svg {
+  flex: none;
 }
 
 .section-row.ended {
@@ -28,47 +32,60 @@
   background: #137a3e;
 }
 
-.section-word {
-  display: inline-flex;
-  flex: none;
-  gap: 5px;
-  align-items: center;
-  font-size: 17px;
-  font-weight: 800;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+.section-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
 }
 
-.section-name {
-  min-width: 0;
+/* What has happened, as the voice says it: "Section 1 finished", "Moving on to Section 2". */
+.section-title {
   overflow-wrap: anywhere;
-  font-size: 20px;
-  font-weight: 700;
+  font-size: 22px;
+  font-weight: 800;
   line-height: 1.15;
 }
 
-/* On the narrowest phones the name is a size down. A long one takes as many lines as it needs. */
+/* The section's name under it, and that it was the last. */
+.section-name {
+  overflow-wrap: anywhere;
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 1.2;
+  opacity: 0.92;
+}
+
+/* On the narrowest phones the words are a size down. A long name takes as many lines as it needs. */
 @media (max-width: 350px) {
+  .section-title {
+    font-size: 19px;
+  }
+
   .section-name {
-    font-size: 17px;
+    font-size: 16px;
   }
 }
 
 /* A phone on its side has little height, and an alert fills the column: the banner goes beside it, over the map, where it can be seen. */
 @media (orientation: landscape) and (max-height: 600px) {
   .section-row {
-    min-height: 40px;
-    padding: 4px 10px;
+    gap: 10px;
+    min-height: 44px;
+    padding: 5px 10px;
+  }
+
+  .section-title {
+    font-size: 18px;
   }
 
   .section-name {
-    font-size: 17px;
+    font-size: 15px;
   }
 
   .map-top:has(.stop-alert) .section-banner {
     position: absolute;
     top: 0;
     left: calc(100% + 4px);
-    width: 220px;
+    width: 240px;
   }
 }

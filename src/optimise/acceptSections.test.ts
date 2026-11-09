@@ -87,10 +87,12 @@ function bannersOn(points: Pt[], list: readonly ResolvedSection[], watch: Sectio
       look(along, true)
     }
   }
+  // By the names they were given, which the banner and the voice call by their numbers.
+  const nameOf = (call: SectionNote['started']): string[] => (call ? [list.find((s) => s.id === call.id)?.name ?? `unknown ${call.id}`] : [])
   return {
-    started: notes.flatMap((n) => (n.started === null ? [] : [n.started])),
-    ended: notes.flatMap((n) => (n.ended === null ? [] : [n.ended])),
-    told: notes.flatMap((n) => [n.started, n.ended]).filter((name): name is string => name !== null),
+    started: notes.flatMap((n) => nameOf(n.started)),
+    ended: notes.flatMap((n) => nameOf(n.ended)),
+    told: notes.flatMap((n) => [...nameOf(n.started), ...nameOf(n.ended)]),
   }
 }
 
