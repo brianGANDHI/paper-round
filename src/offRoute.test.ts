@@ -1922,7 +1922,9 @@ describe('a street driven twice', () => {
     // all along would take the jump back of 950 m, which the phone was on the route for, for a wrong turn onto a street already driven.)
     const d = drive(street, street, { startAt: 700 })
     expect(d.beats.slice(0, 3).every((b) => b.progress!.along > 600), 'it starts on the wrong pass').toBe(true)
-    expect(d.beats.slice(8, 40).every((b) => b.progress!.along < 500), 'and has the way out well before the top of the street').toBe(true)
+    // (From the tenth fix, 100 m up: a move back along the route that far is believed only once the place held is 35 m or more from the phone, and the
+    // way out has been seen for 5 s. It was the eighth, at 30 m and three fixes. See TRACK_SPEED in progress.ts.)
+    expect(d.beats.slice(10, 40).every((b) => b.progress!.along < 500), 'and has the way out well before the top of the street').toBe(true)
     expect(events(d)).toEqual([])
     expect(events(drive(street, street, { progress: startProgress(makeTrack(street.map(spot)), 700) }))).toContain('rejoined-elsewhere')
   })
@@ -2256,7 +2258,9 @@ describe('driving across the route and along it', () => {
         for (const seed of [1, 2, 3, 4]) {
           const route = serpentine(8, 800, gap)
           const across = 200 + 100 * ((seed + gap) % 4)
-          const d = drive(route, [[0, 0], [across, 0], [across, gap], [0, gap]], { speed, seed, noise: 5 + (seed % 3) * 3 })
+          // (On up the next street of the route at the end, as the route goes: the move is believed only once it has been seen for 5 s, and with the
+          // street 200 m long at 14 m/s the drive ended before it was sure, the street running back the way the car came. See TRACK_SPEED in progress.ts.)
+          const d = drive(route, [[0, 0], [across, 0], [across, gap], [0, gap], [0, 2 * gap]], { speed, seed, noise: 5 + (seed % 3) * 3 })
           expect(events(d), `gap ${gap} speed ${speed} seed ${seed}`).toContain('rejoined-elsewhere')
           expect(events(d), `gap ${gap} speed ${speed} seed ${seed}`).not.toContain('back')
           const asked = first(d, 'rejoined-elsewhere')

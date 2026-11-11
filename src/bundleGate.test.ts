@@ -58,6 +58,8 @@ interface Fix {
   y: number
   speed: number
   heading: number | null
+  /** Seconds with no fix at all before this one, as under poor sky (the clock goes on). */
+  wait?: number
 }
 
 /** The car's fixes, one a second, along a straight line from one spot to another at about `speed`, landing on `to`: not the one at `from`, which is the last of the leg before. */
@@ -272,7 +274,7 @@ function car(route: Route, startOrder?: string[], gps: { noise?: number; seed?: 
 
   const fix = (f: Fix) => {
     y = f.y
-    time += 1000
+    time += 1000 + (f.wait ?? 0) * 1000
     err = err.map((e) => 0.5 * e + Math.sqrt(0.75) * gaussian(rand) * (gps.noise ?? 0))
     phone = spot([f.x + err[0], f.y + err[1]])
     const course = f.speed >= 1.5 && f.heading !== null ? (f.heading + (gps.noise ? gaussian(rand) * 10 : 0) + 360) % 360 : null
@@ -579,8 +581,10 @@ describe('with no order set the list is route order, so the same rule applies', 
 
   it('misses the first still to do when it went by unseen, tells the driver, and moves on down the list', () => {
     const c = car(routeOf(LOOP, [A, B]))
-    // The phone has no fix from 150 m to 300 m, so A never alerted.
-    c.drive([...up(150), ...up(420, 300)])
+    // The phone has no fix from 150 m to 300 m, so A never alerted. (The 15 s of that go by: with the clock left at a second a fix, the car went 180 m in
+    // 3 s, further than any car can, and the tracker now holds the driver back for 5 s before it believes a move like that. See TRACK_SPEED.)
+    const after = up(420, 300)
+    c.drive([...up(150), { ...after[0], wait: 15 }, ...after.slice(1)])
     expect(c.beeps.map((b) => b.key)).toEqual(['B'])
     expect(c.missed()).toEqual(['A'])
     expect(c.toasts).toEqual(['Missed bundle: A'])

@@ -69,9 +69,10 @@ export interface Progress {
   left?: boolean
   /**
    * A jump to somewhere else along the route that has been seen but is not yet believed: where, how many fixes in a row, and where along the route
-   * and where on the ground the run of them began, to tell a phone driving along that place from one only going by it (see DOUBT_RUN_M).
+   * and where on the ground the run of them began, to tell a phone driving along that place from one only going by it (see DOUBT_RUN_M), and
+   * when (in milliseconds), for how long it has gone on (see CONFIRM_MS).
    */
-  doubt: { along: number; fixes: number; from?: number; start?: Pt } | null
+  doubt: { along: number; fixes: number; from?: number; start?: Pt; since?: number | null } | null
   /** How many fixes in a row have had the phone moving but the driver going backwards along the route (or against its heading), which they can't be. */
   backward: number
   /** How many fixes in a row have been set aside as further from the last than a car can have gone. */
@@ -99,6 +100,8 @@ export interface Progress {
   folding?: number
   /** Where along the route the turn round that `folding` counts for is, in metres: a count goes on only along its own way back. */
   foldAt?: number
+  /** Where along the route the driver was put by the last few fixes taken in (LATELY), oldest first: the window reaches back to them (see TRACK_SPEED). Left out, none. */
+  lately?: number[]
 }
 
 /**
@@ -234,6 +237,43 @@ const FOLD_HEADING_DEG = 60
 const FOLD_FIXES = 2
 /** How far apart along the route two places that turn round can be and be the same turn round, in metres (see `Progress.foldAt`). */
 const FOLD_TIP_M = 10
+/**
+ * Progress along the route is continuous. From one fix to the next the driver can only have got so far on along the route: this many metres a
+ * second for the time between them (no car on a round goes faster), plus twice the accuracy and WINDOW_SLACK_M; and back no more than the slack
+ * of jitter (BACK_SLACK_M plus the accuracy). Only places within that window are where the driver is, while there is one on the route there:
+ * where the route folds back on itself or drives a street twice, another pass is as near the phone as the one the driver is on, and with GPS
+ * error of 10 to 15 m, crawling with no course from the phone, it was taken now and then, the driver shown 150 m to kilometres away for up to a
+ * minute. (A turn round, where the way back passes level with the driver, and the move past the junction of a court, are the driver's own doing,
+ * and are taken through it: see `advance`.)
+ */
+const TRACK_SPEED = 25
+const WINDOW_SLACK_M = 40
+/**
+ * A place outside that window can be where the driver is only once the best place within it is off the route: further than this from the phone,
+ * in metres, or twice its accuracy if more. And then it is believed only once it has been the place for CONFIRM_FIXES fixes in a row, over
+ * CONFIRM_MS milliseconds at least (as well as the phone being seen driving along it: see DOUBT_RUN_M).
+ */
+const OFF_ROUTE_M = 35
+const CONFIRM_FIXES = 4
+const CONFIRM_MS = 5000
+/** How many of the places the driver was put at lately the window reaches back to: about CONFIRM_MS of fixes, a second apart. */
+const LATELY = 6
+/** A fix less accurate than this, in metres, can move the driver within the window, but never out of it, and never moves the furthest reached on. */
+const POOR_ACCURACY_M = 25
+/**
+ * A place outside the window that the driver can have got to without driving the route in between: on a way back that passes within this many
+ * metres of where they were (they turned round), or just past where the route comes back to them (they drove by a court, or a loop, that the route
+ * goes round and comes back from), no more than EXCURSION_MAX_M of route on. Parallel streets 30 m or more apart are not the one street.
+ */
+const LEVEL_M = 25
+const EXCURSION_MAX_M = 1000
+/**
+ * Only a fix this accurate or better, in metres, takes the driver past where the route comes back to them (a court, a loop) as it ever did, and
+ * moves them on at once from a place that has lost touch with the phone (see `advance`): with
+ * GPS error of 10 to 15 m, a car crawling round a corner had fixes 30 m off it for a few seconds, which looked like a car gone on by the loop the
+ * route drives from there, and was put 270 m on, on the loop's way back to the corner, for half a minute. Poorer, it is gated as any other move is.
+ */
+const EXCURSION_ACCURACY_M = 10
 
 interface Candidate {
   idx: number
@@ -288,11 +328,15 @@ export function rebaseProgress(track: Track, prev: Progress): Progress {
 
 /**
  * The driver's progress after a fix. `prev` is the progress before it (from `startProgress` for a round started
- * part way, or null for one with nothing to go by), `heading` the way the phone is going, in degrees clockwise
+ * part way, or null for one with nothing to go by), `given` the way the phone is going, in degrees clockwise
  * from north, or null when it can't say.
  */
-export function advance(track: Track, prev: Progress | null, fix: GpsFix, heading: number | null): Progress | null {
+export function advance(track: Track, prev: Progress | null, fix: GpsFix, given: number | null): Progress | null {
   const { points, cum, bearings, xy, refLat } = track
+  // A heading for a phone that says it is going slower than STILL_SPEED is not its own (it gives none that slow): it is the way it has been going, worked
+  // out from its fixes, and the jitter of a stop can make one up. It picks no place: with GPS error of 15 m, a car stopped facing east had one of 297
+  // degrees, and was put on the street round the corner ahead, 66 m on, for the 2 s before it pulled away.
+  const heading = typeof fix.speed === 'number' && fix.speed < STILL_SPEED ? null : given
   const segs = points.length - 1
   if (segs < 1) return null
   const time = fix.time ?? null
@@ -364,7 +408,8 @@ export function advance(track: Track, prev: Progress | null, fix: GpsFix, headin
     (fresh ? AHEAD_COST * Math.max(0, delta) : PACE_COST * Math.abs(delta - moved) + (delta > forwardSlack ? STRAY_COST * (delta - forwardSlack) : 0)) +
     (prev && delta < -backSlack ? STRAY_COST * (-delta - backSlack) : 0)
   for (const c of cands) c.cost += moveCost(c.along - prior)
-  const byFit = cands.reduce((a, b) => (b.geo < a.geo ? b : a))
+  /** The place that fits the phone best, anywhere in reach. */
+  const fitAll = cands.reduce((a, b) => (b.geo < a.geo ? b : a))
   // Where the route turns round close by (see FOLD_M), a car that turned round short of where the route does has not driven the route from the
   // place level with it on the way in, round to the way back: a place on the way back, or on the route a little after it (the road out, round a
   // corner just behind a U-turn), costs what it would with that much less route to it, for a phone heading the way it runs. Only from the second
@@ -406,8 +451,8 @@ export function advance(track: Track, prev: Progress | null, fix: GpsFix, headin
         if (Math.hypot(ex - cx, ey - cy) <= FOLD_M) levels.push({ c, e, tip: (c.along + e.along) / 2 })
       }
     }
-    const fitSkipped = skipping(() => true).get(byFit)
-    if (fitSkipped && (levels.some(({ c }) => c === byFit) || angleBetween(bearings[prev.idx], heading) > FOLD_HEADING_DEG)) foundAt = fitSkipped.tip
+    const fitSkipped = skipping(() => true).get(fitAll)
+    if (fitSkipped && (levels.some(({ c }) => c === fitAll) || angleBetween(bearings[prev.idx], heading) > FOLD_HEADING_DEG)) foundAt = fitSkipped.tip
   }
   const sameTurn = (at: number | undefined) => (tip: number) => at !== undefined && Math.abs(tip - at) <= FOLD_TIP_M
   const counting = (prev?.folding ?? 0) > 0 ? prev?.foldAt : undefined
@@ -424,7 +469,64 @@ export function advance(track: Track, prev: Progress | null, fix: GpsFix, headin
       }
     }
   }
-  const byCost = cands.reduce((a, b) => (b.cost < a.cost ? b : a))
+
+  // Progress is continuous (see TRACK_SPEED): only places within the window of where the driver can have got to since the last fix are where they
+  // are, while one of those is on the route. Others are left out, but for a turn round onto a way back that passes level with the driver (below),
+  // the way back where the route turns round close by (just above), and the street just past where the route comes back from a court or a loop
+  // to the place the driver was held at, once that place has lost touch with the phone (they drove on by it). A fix that is poor never takes the
+  // driver out of the window. (Not for a fresh start, or coming back from being lost: there is no window then.)
+  const tracked = !!prev && !fresh
+  const poor = fix.accuracy > POOR_ACCURACY_M
+  const seconds = prev && time !== null && prev.time !== null ? Math.max(0, (time - prev.time) / 1000) : 1
+  // (Back to wherever the driver was put by the last few fixes, too, and to the furthest reached if they have been put on from it since: a step on that
+  // was wrong, onto the way back of a court level with its way in, say, is undone there in the next few seconds, not held to.)
+  const winLo = Math.min(prior, prev?.furthest ?? prior, ...(tracked ? (prev?.lately ?? []) : [])) - backSlack
+  const winHi = prior + TRACK_SPEED * seconds + 2 * accuracy + WINDOW_SLACK_M
+  // (While a turn round is not sure yet, the way back to where it was made from is in the window too: the turn is undone there. See `Progress.turned`.)
+  const unsure = tracked ? (prev?.turned ?? null) : null
+  const inWindow = (c: Pick<Candidate, 'along'>) =>
+    !tracked || (c.along >= winLo && c.along <= winHi) || (!!unsure && c.along >= unsure.from - backSlack - Math.abs(unsure.to - prior) - moved && c.along <= unsure.from + backSlack)
+  /** How far the phone is from the nearest place in the window. */
+  const bestIn = cands.reduce((a, c) => (inWindow(c) ? Math.min(a, c.dist) : a), Infinity)
+  const mayLeave = !tracked || (!poor && bestIn > Math.max(OFF_ROUTE_M, 2 * accuracy))
+  const held = prev ? pointOn(xy, prev) : null
+  /** How near the route comes to where the driver was put, in metres, between these distances along it. */
+  const nearHeld = (from: number, to: number): number => {
+    if (!held) return Infinity
+    let lo = 0
+    let hi = segs - 1
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1
+      if (cum[mid + 1] < from) lo = mid + 1
+      else hi = mid
+    }
+    let best = Infinity
+    for (let i = lo; i < segs && cum[i] <= to; i++) best = Math.min(best, distToSegment(held, xy[i], xy[i + 1]).dist)
+    return best
+  }
+  /** Places outside the window that the driver can have got to without driving the route in between (see LEVEL_M). */
+  const reachable = new Set<Candidate>()
+  if (tracked && !poor && held) {
+    const lostHeld = bestIn > Math.max(LOST_TOUCH_M, 2 * accuracy)
+    for (const c of cands) {
+      if (inWindow(c)) continue
+      if (folded.has(c)) reachable.add(c)
+      else if (lostHeld && c.along > prior && c.along - prior <= EXCURSION_MAX_M) {
+        // (The route goes away and comes back: it is twice LEVEL_M or more longer than the ground between, which a street driven on is not.)
+        const [cx, cy] = pointOn(xy, c)
+        const ground = Math.hypot(cx - held[0], cy - held[1])
+        if (c.along - prior - ground >= 2 * LEVEL_M && nearHeld(c.along - ground - LEVEL_M, c.along) <= LEVEL_M) reachable.add(c)
+      }
+    }
+  }
+  /** The places the driver can be at. With none (a poor fix, nothing on the route in the window in reach), they are held where they were. */
+  const open = mayLeave ? cands : cands.filter((c) => inWindow(c) || reachable.has(c))
+  if (!open.length && prev && held) {
+    const dist = Math.hypot(p[0] - held[0], p[1] - held[1])
+    open.push({ idx: prev.idx, t: prev.t, along: prev.along, dist, geo: dist, cost: 0 })
+  }
+  const byFit = open.reduce((a, b) => (b.geo < a.geo ? b : a))
+  const byCost = open.reduce((a, b) => (b.cost < a.cost ? b : a))
 
   // The cheapest place is the one the driver was at, held on to by the cost of moving. Where the route doubles back (a court, a street
   // driven twice) it can have lost touch with the phone, which has driven on past the junction along the street: the place that fits the
@@ -447,6 +549,8 @@ export function advance(track: Track, prev: Progress | null, fix: GpsFix, headin
   let doubt: Progress['doubt'] = null
   // Whether the driver was moved on at once from a place that lost touch with the phone (see below).
   let skippedOn = false
+  // Whether the driver was moved to a place outside the window that has been seen long enough to be believed.
+  let confirmed = false
   // Coming back from being lost, a place further from where the driver left the route than the phone is from it is a jump like any other: they have
   // not driven the route to it, so it is doubted until the phone is driving along it, and the driver stays lost meanwhile. Taken at once, as the only
   // place in reach at that moment, it was the later pass of the street the phone was coming back to: the two lines a few metres apart, the later one
@@ -457,7 +561,9 @@ export function advance(track: Track, prev: Progress | null, fix: GpsFix, headin
   if (prev && (!fresh || away !== null)) {
     const delta = jump.along - prev.along
     /** Whether moving to this place is a move along the route much bigger than the phone's own, which is not believed at once: the driver stays where they were until the phone has been seen driving along it (see DOUBT_RUN_M). */
-    const leaps = (c: Candidate) => c.along - prev.along > forwardSlack + (away ?? 0) + JUMP_M || c.along - prev.along < -(backSlack + (away ?? 0) + JUMP_M)
+    // (So is any move out of the window, but for one the driver can have made without driving the route in between, which goes as it ever did.)
+    const leaps = (c: Candidate) =>
+      c.along - prev.along > forwardSlack + (away ?? 0) + JUMP_M || c.along - prev.along < -(backSlack + (away ?? 0) + JUMP_M) || (tracked && !reachable.has(c) && !inWindow(c))
     /** How the phone's heading lines up with this place: 1 going the way it runs, -1 against it, 0 across it. Taken to go with it where that can't be told: no heading at all, or too slow for one to mean much. */
     const linedUp = (c: Candidate) => (going && heading !== null ? Math.cos((angleBetween(bearings[c.idx], heading) * Math.PI) / 180) : 1)
     const goesWith = (c: Candidate) => linedUp(c) >= DRIVEN_ON_SHARE
@@ -481,18 +587,30 @@ export function advance(track: Track, prev: Progress | null, fix: GpsFix, headin
             : goesWith(place) || (linedUp(place) <= -DRIVEN_ON_SHARE ? (ground >= TURN_SURE_M ? true : null) : false)
       const run = driving === false ? null : before
       const fixes = (run?.fixes ?? 0) + 1
-      if (fixes < DOUBT_FIXES || !driving) {
-        doubt = { along: place.along, fixes, from: run?.from ?? place.along, start: run?.start ?? fix }
+      const since = run ? (run.since ?? null) : time
+      // Out of the window, it has to have been the place for CONFIRM_FIXES fixes in a row, over CONFIRM_MS (see OFF_ROUTE_M); each with the best place in the
+      // window off the route, or it would not be a place here at all, and the run would have started again.
+      // (A place the driver can have got to without driving the route in between, past a court or a loop, goes as it ever did.)
+      const gated = tracked && !inWindow(place) && !reachable.has(place)
+      const longEnough = !gated || (fixes >= CONFIRM_FIXES && (time === null || since === null || time - since >= CONFIRM_MS))
+      if (fixes < DOUBT_FIXES || !driving || !longEnough) {
+        doubt = { along: place.along, fixes, from: run?.from ?? place.along, start: run?.start ?? fix, since }
         if (away !== null) return stayLost(doubt)
         pick = { idx: prev.idx, t: prev.t, along: prev.along, dist: place.dist, geo: place.geo, cost: place.cost }
       } else {
         pick = place
+        // (Believed as it ever was, past a court or a loop, it is a turn round not sure yet, as the move on at once past one is (see below): the furthest
+        // reached is held until the driver has gone TURN_SURE_M along it, and being put back where it was made from undoes it. Out of the window,
+        // only a move seen long enough moves the furthest reached on: see TRACK_SPEED.)
+        if (tracked && !inWindow(place) && reachable.has(place) && !folded.has(place)) skippedOn = true
+        else confirmed = true
       }
-    } else if (lostTouch && delta > 0) {
+    } else if (lostTouch && delta > 0 && fix.accuracy <= EXCURSION_ACCURACY_M) {
       // A smaller move on, from a place that has lost touch with the phone to the one that fits it, is taken at once: the car has gone on past
       // the junction of a court 20 to 60 m deep, with the street beyond it 40 to 120 m on along the route. The cost of moving that far held the
       // junction until it was out of reach, 50 to 60 m past it, and the driver was then put past the houses just beyond, which never came up.
-      // (It is a turn round not sure yet: see below.)
+      // (It is a turn round not sure yet: see below. Only on a fix accurate enough to say so: see EXCURSION_ACCURACY_M. With GPS error of 15 m a car
+      // crawling up a street had fixes 30 m off it, nearer the road round the corner ahead, and was put 50 to 90 m on along it for a fix or two.)
       pick = jump
       skippedOn = true
     }
@@ -519,10 +637,21 @@ export function advance(track: Track, prev: Progress | null, fix: GpsFix, headin
   // (Not for a driver who has been put further along the stretch than they were three fixes ago, by more than the error of a fix: that is
   // going forwards on it, and a heading that is wrong for a fix or two does not turn them round.)
   if (prev && backward >= BACKWARD_FIXES && !(pick.along - (prev.recent[0] ?? prev.along) > accuracy)) {
-    const bestFit = byFit.geo + RECOVERY_MARGIN
+    const bestFit = fitAll.geo + RECOVERY_MARGIN
     // (Never one that runs against the phone's heading: a heading that is against every pass, as a glitch of the phone's would be, moves nothing.)
     const fits = (c: Candidate) => c.geo <= bestFit && (heading === null || angleBetween(bearings[c.idx], heading) <= AGAINST_DEG)
-    let to = cands.filter((c) => c.along >= prev.along && fits(c)).sort((a, b) => a.along - b.along)[0]
+    // Out of the window, only a way back that passes level with where the driver was, within LEVEL_M, running against the way they were going there:
+    // they turned round. Taken to any place ahead that fitted, a car crawling with GPS error of 15 m, put for a moment on a street 35 m beside the one it
+    // was on, running the other way, was turned round onto the later pass of its own street, a kilometre on. (Not on a poor fix: see POOR_ACCURACY_M.)
+    const turnsRound = (c: Candidate) => {
+      if (poor) return false
+      // (Against the stretch the driver was on, or one within 20 m of them along the route: a corner, or the stub at the end of a street.)
+      let against = false
+      for (let j = prev.idx; j >= 0 && cum[j + 1] >= prior - 20 && !against; j--) against = angleBetween(bearings[c.idx], bearings[j]) > AGAINST_DEG
+      for (let j = prev.idx + 1; j < segs && cum[j] <= prior + 20 && !against; j++) against = angleBetween(bearings[c.idx], bearings[j]) > AGAINST_DEG
+      return against && nearHeld(c.along - 60, c.along + 60) <= LEVEL_M
+    }
+    let to = cands.filter((c) => c.along >= prev.along && fits(c) && (inWindow(c) || reachable.has(c) || turnsRound(c))).sort((a, b) => a.along - b.along)[0]
     let undo = false
     // Nothing ahead fits, just after a turn round that is not sure: the car only backed up on the way out, and is driving on along it,
     // against the way back. It goes back to the way out, as near as where it was put from as the slack, the phone's own movement and how far
@@ -595,6 +724,9 @@ export function advance(track: Track, prev: Progress | null, fix: GpsFix, headin
   // The furthest reached only follows what the last few fixes agree on, so a pass guessed wrong for a fix or two can't push it on; nor a turn
   // round that is not sure yet, which may be undone.
   const recent = [...(prev?.recent ?? []), pick.along].slice(-RECENT)
-  const furthest = !turned && pick.dist <= FURTHEST_GAP_M ? Math.max(prev?.furthest ?? 0, Math.min(...recent)) : (prev?.furthest ?? 0)
-  return { idx: pick.idx, t: pick.t, along: pick.along, furthest, gap: pick.dist, offBy: nearest.dist, at: fix, accuracy: fix.accuracy, time, seen: time, lost: false, doubt, backward, outliers: 0, recent, turned, folding, foldAt }
+  // (And only from a place in the window, or one out of it seen long enough to be believed: never from a poor fix. See TRACK_SPEED.)
+  const furthest =
+    !turned && pick.dist <= FURTHEST_GAP_M && !poor && (inWindow(pick) || confirmed) ? Math.max(prev?.furthest ?? 0, Math.min(...recent)) : (prev?.furthest ?? 0)
+  const lately = [...(tracked ? (prev?.lately ?? []) : []), pick.along].slice(-LATELY)
+  return { idx: pick.idx, t: pick.t, along: pick.along, furthest, gap: pick.dist, offBy: nearest.dist, at: fix, accuracy: fix.accuracy, time, seen: time, lost: false, doubt, backward, outliers: 0, recent, turned, folding, foldAt, lately }
 }

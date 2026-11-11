@@ -10,6 +10,7 @@ const ALERT_DISTANCE_KEY = 'paperround.alertDistance'
 const VOICE_TURNS_KEY = 'paperround.voiceTurns'
 const KEEP_AUDIO_KEY = 'paperround.keepAudioAwake'
 const HEADING_UP_KEY = 'paperround.headingUp'
+const RECORD_DRIVE_KEY = 'paperround.recordDrive'
 
 /** The single route and its progress, as saved by earlier versions of the app. */
 const LEGACY_ROUTE_KEY = 'paperround.route.v1'
@@ -100,6 +101,19 @@ export function saveHeadingUp(on: boolean): void {
     localStorage.setItem(HEADING_UP_KEY, JSON.stringify(on))
   } catch {
     // The phone won't store it; the map starts north up next time.
+  }
+}
+
+/** Whether the round's fixes are being kept for replaying (see driveLog.ts): off unless the driver turned it on. */
+export function loadRecordDrive(): boolean {
+  return read(RECORD_DRIVE_KEY) === true
+}
+
+export function saveRecordDrive(on: boolean): void {
+  try {
+    localStorage.setItem(RECORD_DRIVE_KEY, JSON.stringify(on))
+  } catch {
+    // The phone won't store it; recording is off next time.
   }
 }
 
