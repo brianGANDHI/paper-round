@@ -287,6 +287,13 @@ export function rebaseProgress(track: Track, prev: Progress): Progress {
 }
 
 /**
+ * Whether a fix is of a phone standing where the tracker last put it: going slower than STILL_SPEED, or not saying, and within STILL_M of it (or
+ * 0.7 of its accuracy). `advance` leaves such a phone where it was, however it jitters, and says nothing new: it is seen there all the same.
+ */
+export const standsStill = (prev: Progress, fix: GpsFix): boolean =>
+  !prev.lost && fix.accuracy <= MAX_ACCURACY_M && (fix.speed === null || fix.speed === undefined || fix.speed < STILL_SPEED) && haversine(prev.at, fix) < Math.max(STILL_M, 0.7 * fix.accuracy)
+
+/**
  * The driver's progress after a fix. `prev` is the progress before it (from `startProgress` for a round started
  * part way, or null for one with nothing to go by), `heading` the way the phone is going, in degrees clockwise
  * from north, or null when it can't say.
@@ -307,7 +314,7 @@ export function advance(track: Track, prev: Progress | null, fix: GpsFix, headin
       if (haversine(prev.at, fix) / seconds > OUTLIER_SPEED) return { ...prev, outliers: prev.outliers + 1, seen: time }
     }
     // A phone standing still stays where it was put, however it jitters.
-    if ((fix.speed === null || fix.speed === undefined || fix.speed < STILL_SPEED) && haversine(prev.at, fix) < Math.max(STILL_M, 0.7 * fix.accuracy)) return prev
+    if (standsStill(prev, fix)) return prev
   }
   const p = project(fix, refLat)
   const accuracy = Math.max(5, fix.accuracy)

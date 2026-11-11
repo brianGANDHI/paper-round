@@ -38,8 +38,9 @@ import { holdHeading } from './mapHeading'
 import { MapView, type ViewCmd } from './MapView'
 import { resolveSections } from './namedSections'
 import { SectionBanner } from './SectionBanner'
+import { noVisit, stepVisit, stillSeen, visitOver, type StopVisit } from './stopVisit'
 import { carriedOn, NOTHING_WATCHED, RESUMED_WATCH, SECTION_ROAD_M, sectionAgain, sectionSpeech, startedAt, watchSection, type SectionNote, type SectionWatch } from './sectionWatch'
-import { advance, makeTrack, offRouteGap, OUTLIER_ACCURACY_M, rebaseProgress, startProgress, type Progress } from './progress'
+import { advance, makeTrack, offRouteGap, OUTLIER_ACCURACY_M, rebaseProgress, standsStill, startProgress, type Progress } from './progress'
 import { keptBeforeDrop } from './dropMemory'
 import { continueFrom, sameCourtLegs, slackFor, withCourtLegs } from './resume'
 import { RoundBar, RoundButtons, type Notice } from './RoundBar'
@@ -85,8 +86,6 @@ const END_QUIET_M = 50
 const REACH_NEAR_M = 100
 /** Anywhere else it counts as reached after this many metres on it (crossing it on the way to the start is not that). */
 const REACH_RUN_M = 200
-/** A stop that is away from the route is being visited, not left for, within how far off the route it is, its alert distance and this much, in metres. */
-const OFF_ROUTE_STOP_M = 60
 /** The phone is going the way the route runs, not back down it, if its heading is within this many degrees of the route's (a street coming in from the side counts as going the way it runs). */
 const FORWARD_DEG = 110
 /** Driving this much nearer, in metres, to where the route was left than the place it was rejoined at is going back to it. */
@@ -153,6 +152,8 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
   /** How far along the route the round starts from, and where the phone first touched it, for telling reaching the route from crossing it. */
   const reachAlong = useRef(0)
   const reachRun = useRef<Pt | null>(null)
+  /** The visit to stops away from the route the phone is on, if any: the drive back from one once it is done is part of it (see stopVisit.ts). */
+  const visitRef = useRef<StopVisit>(noVisit)
   /** While being taken back to where the route was left: how far the furthest reached may go, until the driver is back at or before it. */
   const capRef = useRef<number | null>(null)
   /** Whether the driver has asked to be taken back to where the route was left: leaving the route on the way there is not news. */
@@ -393,9 +394,21 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
   )
 
   /**
+   * A fix taken in once the route has been reached, for a visit to stops away from the route (see stopVisit.ts), and whether it is part of one. When
+   * a visit is over, the machine, not asked meanwhile, is told where the phone was last on the route, and whether it came back somewhere else (see `visitOver`).
+   */
+  const seeVisit = useCallback((now: Progress): boolean => {
+    const visit = stepVisit(visitRef.current, now, occsRef.current, handledRef.current, radiusRef.current)
+    visitRef.current = visit.visit
+    offRef.current = visitOver(offRef.current, visit.ended)
+    return visit.beside
+  }, [])
+
+  /**
    * Weighs a fix that was taken in for leaving the route (see offRoute.ts) and tells the driver what it finds. The route is first
    * reached when the phone is on it near where the round starts, or has stayed on it for a good stretch: crossing it on the way
-   * to the start is neither. A trip to a stop that is away from the route is the app's own errand, and is not leaving it.
+   * to the start is neither. A trip to a stop that is away from the route is the app's own errand, and is not leaving it, nor is the drive back
+   * from it once it is done, until the phone is on the route again or out of reach of the stop (see stopVisit.ts).
    */
   const weighOff = useCallback(
     (now: Progress, speed: number | null, forward: boolean) => {
@@ -410,7 +423,7 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
         else return
       }
       const radius = radiusRef.current
-      if (occsRef.current.some((o) => byPosition(o, radius) && !handledRef.current.has(o.key) && haversine(now.at, o.stop) <= o.off + radius[o.stop.type] + OFF_ROUTE_STOP_M)) {
+      if (seeVisit(now)) {
         // The machine is not asked about this fix, so the place it last followed goes stale: the phone is as good as unseen (see `unasked`).
         watchRef.current = unasked(watchRef.current)
         return
@@ -483,7 +496,7 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
       }
       announceOff(event, reading, state)
     },
-    [announceOff, lowerFurthest, saveRound],
+    [announceOff, lowerFurthest, saveRound, seeVisit],
   )
 
   // Each fix moves the driver along the route. Which way the phone is heading tells a return pass from the first, which lie on the
@@ -498,6 +511,8 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
     const course = fix.heading ?? trailHeading(trail.current, fix.accuracy)
     const before = progressRef.current
     let now = advance(track, before, fix, course)
+    // A phone standing still is seen where it was, for a visit to a stop away from the route (see `stillSeen`), though the tracker says nothing new.
+    if (now === before && before && standsStill(before, fix) && startedRef.current && reachedRef.current) visitRef.current = stillSeen(visitRef.current, fix.time ?? null)
     if (!now || now === before) return
     // The way the route runs here, when the phone is on it, and whether the phone is going that way (or can't say).
     const routeBearing = onTheRoute(now.gap, now.accuracy, now.lost) ? (track.bearings[now.idx] ?? null) : null
@@ -534,8 +549,11 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
       } else {
         weighOff(now, fix.speed ?? null, forward)
       }
+    } else if (now.time !== before?.time && startedRef.current && reachedRef.current && !finishedRef.current && now.furthest < routeEndRef.current - END_QUIET_M) {
+      // Standing still is not weighed for leaving the route, but a visit to a stop away from it still sees where the phone is (see `stepVisit`).
+      seeVisit(now)
     }
-  }, [fix, track, weighOff])
+  }, [fix, track, weighOff, seeVisit])
 
   // After the route is edited from the road its points have new numbers: the driver's place is found again from how far along they are.
   useEffect(() => {
@@ -1035,6 +1053,7 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
     setOff(startOffRoute)
     reachedRef.current = false
     watchRef.current = restartWatch(watchRef.current)
+    visitRef.current = noVisit
     reachAlong.current = metres
     reachRun.current = null
     lastStepAt.current = null

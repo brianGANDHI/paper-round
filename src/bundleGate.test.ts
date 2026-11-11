@@ -5,8 +5,9 @@ import { barBundle, caughtUp, dropAllowed, missedAmong, missedNotice, restartedR
 import { bundleList, bundleNameOf, bundleRows, earlierPasses, firstLink, gatedOccurrences, markDropped, nextBundleId, nextInOrder, nextBundleSpeech, notNextAlerts, otherPasses, passStates, rowTotals, wentByUnseen, type BundleRow, type PassStates } from './bundles'
 import { approachingOccurrences, byPosition, haversine, keepPlaced, occurrences, POSITION_MAX_ACCURACY_M, type Occurrence } from './geo'
 import { OFF_MAX_ACCURACY_M, ON_ROUTE_M, startOffRoute, stepOffRoute, type OffState } from './offRoute'
-import { advance, makeTrack, offRouteGap, OUTLIER_ACCURACY_M, startProgress, type Progress } from './progress'
+import { advance, makeTrack, offRouteGap, OUTLIER_ACCURACY_M, standsStill, startProgress, type Progress } from './progress'
 import { continueFrom, slackFor } from './resume'
+import { noVisit, stepVisit, stillSeen, visitOver, type StopVisit } from './stopVisit'
 import { doneNow, heldKeys, holdGoneBy, judgedAt, reachedAt, shownQueue, stepForNext, stepTurnHold, type TurnHold } from './turnHold'
 import type { Pt, RoundState, Route, Stop, StopType } from './types'
 import { alertWordsStale, planVoice } from './voicePlan'
@@ -103,6 +104,7 @@ function car(route: Route, startOrder?: string[], gps: { noise?: number; seed?: 
   let reached = false
   let reachAlong = 0
   let reachRun: Pt | null = null
+  let visit: StopVisit = noVisit
   let lastStepAt: Pt | null = null
   let restartFrom: number | null = null
   let lastJudged: { reach: number; next: string | null; at: Pt } | null = null
@@ -232,6 +234,14 @@ function car(route: Route, startOrder?: string[], gps: { noise?: number; seed?: 
     for (let k = 0; k < 3 && alerts(progress); k++);
   }
 
+  /** The fix effect's `seeVisit`: a fix taken in once the route is reached, for a visit to stops away from the route, and whether it is part of one. */
+  const seeVisit = (now: Progress) => {
+    const visited = stepVisit(visit, now, occs, handledNow(), radius)
+    visit = visited.visit
+    machine = visitOver(machine, visited.ended)
+    return visited.beside
+  }
+
   /** The fix effect's `weighOff`: reaching the route, then the off-route machine. */
   const weigh = (now: Progress, speed: number, forward: boolean) => {
     if (!reached) {
@@ -245,7 +255,7 @@ function car(route: Route, startOrder?: string[], gps: { noise?: number; seed?: 
       else return
     }
     const done = handledNow()
-    if (occs.some((o) => byPosition(o, radius) && !done.has(o.key) && haversine(now.at, o.stop) <= o.off + radius[o.stop.type] + 60)) return
+    if (seeVisit(now)) return
     const before = machine
     const stepped = stepOffRoute(machine, { time: now.time, at: now.at, accuracy: now.accuracy, speed, gap: offRouteGap(now), along: now.along, furthest: now.furthest, lost: now.lost, doubt: now.doubt !== null })
     machine = stepped.state
@@ -277,7 +287,9 @@ function car(route: Route, startOrder?: string[], gps: { noise?: number; seed?: 
     phone = spot([f.x + err[0], f.y + err[1]])
     const course = f.speed >= 1.5 && f.heading !== null ? (f.heading + (gps.noise ? gaussian(rand) * 10 : 0) + 360) % 360 : null
     const before: Progress | null = progress
-    const now = advance(track, before, { ...phone, accuracy: 8, time, speed: f.speed }, course)
+    const fixed = { ...phone, accuracy: 8, time, speed: f.speed }
+    const now = advance(track, before, fixed, course)
+    if (now === before && before && standsStill(before, fixed) && reached) visit = stillSeen(visit, time)
     if (!now || now === before) return
     progress = now
     const bearing = track.bearings[now.idx] ?? null
@@ -288,7 +300,7 @@ function car(route: Route, startOrder?: string[], gps: { noise?: number; seed?: 
       lastStepAt = now.at
       if (roundCounts(occs, handledNow()).finished || now.furthest >= routeEnd - 50) machine = startOffRoute
       else weigh(now, f.speed, forward)
-    }
+    } else if (now.time !== before?.time && reached && !roundCounts(occs, handledNow()).finished && now.furthest < routeEnd - 50) seeVisit(now)
     run()
   }
 
@@ -303,6 +315,7 @@ function car(route: Route, startOrder?: string[], gps: { noise?: number; seed?: 
     progress = startProgress(track, metres)
     machine = startOffRoute
     reached = false
+    visit = noVisit
     reachAlong = metres
     reachRun = null
     lastStepAt = null

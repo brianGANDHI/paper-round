@@ -2839,6 +2839,429 @@ describe('a round over but for its bundles, on the start screen', () => {
   })
 })
 
+describe('the drive back to the route from a bundle away from it, on the real screen', () => {
+  // A street north, with K 130 m out to the east of it at 1 km, too far for the street to bring the car to it, and Z on the street further on.
+  // K's reach, where the phone is beside it, is 130 + 40 + 60 = 230 m.
+  const K = bundle('K', [130, 1000])
+  const Z = bundle('Z', [8, 1800])
+  const ROUTE = routeOf([[0, 0], [0, 2000]], [K, Z])
+  /** Drives `steps` a fix at a time, and gives every phase of the off-route banner that came up. */
+  const watched = (s: ReturnType<typeof roundScreen>, steps: Step[]) => {
+    const seen: string[] = []
+    for (const f of steps) {
+      s.drive([f])
+      const p = s.offRoute()?.phase
+      if (p && seen.at(-1) !== p) seen.push(p)
+    }
+    return seen
+  }
+  /** Parked where the car is, for `seconds`. */
+  const parked = (at: XY, seconds: number): Step[] => Array.from({ length: seconds }, () => ({ x: at[0], y: at[1], speed: 0, heading: 90 }))
+  /** Up the street, out to K on `route`, Dropped tapped (unless not), and parked there for `park` seconds. */
+  const upToK = (route = ROUTE, order = ['K', 'Z'], { tap = true, park = 30 } = {}) => {
+    const s = roundScreen(route, { order })
+    s.press('Start Round')
+    const seen = watched(s, [...legs(10, [0, 0], [0, 1000]), ...legs(4, [0, 1000], [120, 1000])])
+    expect(s.banner()).toEqual(['K'])
+    if (tap) s.tapDropped()
+    seen.push(...watched(s, parked([120, 1000], park)))
+    return { s, seen }
+  }
+  const backToStreet = (s: ReturnType<typeof roundScreen>) => watched(s, [...legs(5, [120, 1000], [0, 1000]), ...legs(10, [0, 1000], [0, 1500])])
+  /** What the driver heard or saw of leaving the route and coming back to it. */
+  const told = (s: ReturnType<typeof roundScreen>) => [...s.said().filter((t) => /route/i.test(t)), ...s.notices.filter((n) => /route|Carrying/.test(n))]
+
+  it('is part of the visit, not leaving the route, once Dropped is tapped', () => {
+    const { s, seen } = upToK()
+    seen.push(...backToStreet(s))
+    expect(seen).toEqual([])
+    expect(told(s)).toEqual([])
+    expect([s.props.round.dropped, s.nextName()]).toEqual([['K'], 'Z'])
+  })
+
+  it('is part of the visit while parked at K after Dropped, with the GPS wandering and no speed given', () => {
+    const { s, seen } = upToK()
+    const wander = Array.from({ length: 60 }, (_, k) => ({ x: 120 + 15 * Math.cos(k * 2.3), y: 1000 + 15 * Math.sin(k * 1.7), speed: null as unknown as number, heading: 0, accuracy: 15 }))
+    seen.push(...watched(s, wander))
+    expect(seen).toEqual([])
+    expect(told(s)).toEqual([])
+  })
+
+  it('is part of the visit while parked at K after Dropped, with one fix of the wandering GPS landing beside the street', () => {
+    const { s, seen } = upToK()
+    const wander = Array.from({ length: 40 }, (_, k) => ({ x: 120 + 15 * Math.cos(k * 2.3), y: 1000 + 15 * Math.sin(k * 1.7), speed: null as unknown as number, heading: 0, accuracy: 15 }))
+    // A good fix (15 m) 35 m from the street, as the GPS wanders under the trees: one on the route is not enough to be back on it.
+    wander.splice(20, 0, { x: 35, y: 1000, speed: null as unknown as number, heading: 0, accuracy: 15 })
+    seen.push(...watched(s, wander))
+    expect(seen).toEqual([])
+    expect(told(s)).toEqual([])
+  })
+
+  it('is part of the visit when K was not tapped, and counts missed on the way back', () => {
+    const { s, seen } = upToK(ROUTE, ['K', 'Z'], { tap: false, park: 0 })
+    seen.push(...backToStreet(s))
+    expect(seen).toEqual([])
+    expect(told(s)).toEqual([])
+    expect([s.props.round.missed, s.nextName()]).toEqual([['K'], 'Z'])
+  })
+
+  it('is not ended by one poor fix that lands beside the route while parked at K', () => {
+    const { s, seen } = upToK()
+    // A fix of 60 m, 15 m from the street, as under the roof of a holiday park's office.
+    seen.push(...watched(s, [{ x: 15, y: 1000, speed: 0, heading: 90, accuracy: 60 }, ...parked([120, 1000], 10)]))
+    seen.push(...backToStreet(s))
+    expect(seen).toEqual([])
+    expect(told(s)).toEqual([])
+  })
+
+  it('is part of the visit past a second bundle up the same drive, back past the first', () => {
+    // L is up the same drive as K, 300 m on: out of K's reach, so the visit has to remember K to cover the drive back past it.
+    const L = bundle('L', [130, 1300])
+    const { s, seen } = upToK(routeOf([[0, 0], [0, 2000]], [K, L, Z]), ['K', 'L', 'Z'])
+    seen.push(...watched(s, legs(5, [120, 1000], [120, 1300])))
+    expect(s.banner()).toEqual(['L'])
+    s.tapDropped()
+    seen.push(...watched(s, [...legs(5, [120, 1300], [120, 1000], [0, 1000]), ...legs(10, [0, 1000], [0, 1500])]))
+    expect(seen).toEqual([])
+    expect(told(s)).toEqual([])
+    expect(s.props.round.dropped).toEqual(['K', 'L'])
+  })
+
+  it('is part of the visit beside a bundle not done yet, nearer the start, that the drive back goes by', () => {
+    // J is later in the list, as far out as K and 220 m before it: beside the phone too on the way back, which heads up the street to 1150 m.
+    const J = bundle('J', [130, 780])
+    const { s, seen } = upToK(routeOf([[0, 0], [0, 2000]], [K, J, Z]), ['K', 'Z', 'J'])
+    seen.push(...watched(s, [...legs(5, [120, 1000], [0, 1150]), ...legs(10, [0, 1150], [0, 1500])]))
+    expect(seen).toEqual([])
+    expect(told(s)).toEqual([])
+  })
+
+  it('is part of the visit after a court on the route beside K, driven on the way there', () => {
+    // A court 80 m deep to the west at 950 m, inside K's reach: driving it moves the place last on the route on, so coming back at 1000 m is no jump.
+    const s = roundScreen(routeOf([[0, 0], [0, 950], [-80, 950], [-80, 958], [0, 958], [0, 2000]], [K, Z]), { order: ['K', 'Z'] })
+    s.press('Start Round')
+    const seen = watched(s, [...legs(10, [0, 0], [0, 950]), ...legs(6, [0, 950], [-80, 950], [-80, 958], [0, 958], [0, 1000]), ...legs(4, [0, 1000], [120, 1000])])
+    expect(s.banner()).toEqual(['K'])
+    s.tapDropped()
+    seen.push(...backToStreet(s))
+    expect(seen).toEqual([])
+    expect(told(s)).toEqual([])
+  })
+
+  it('is over once the car is back on the route: turning off it near K is leaving it', () => {
+    const { s, seen } = upToK()
+    seen.push(...watched(s, legs(5, [120, 1000], [0, 1000])))
+    expect(seen).toEqual([])
+    // Turned off at 1100 m, 100 m on from K and well inside its reach.
+    expect(watched(s, legs(10, [0, 1000], [0, 1100], [200, 1100]))).toContain('off')
+  })
+
+  it('lasts until the car is out of reach of K: driving on away from the route is leaving it only then', () => {
+    const { s, seen } = upToK()
+    // 210 m from K, still beside it.
+    seen.push(...watched(s, legs(10, [120, 1000], [340, 1000])))
+    expect(seen).toEqual([])
+    expect(watched(s, legs(10, [340, 1000], [600, 1000]))).toContain('off')
+  })
+
+  it('is part of the visit beside K not done yet, driving on past two courts without going into them', () => {
+    // Two courts 80 m deep to the west, at 950 m and 1050 m, inside K's reach. The car goes straight up the street, never off it: the tracker moving
+    // on past the courts is the driver's own way, not coming back to the route somewhere else.
+    const s = roundScreen(routeOf([[0, 0], [0, 950], [-80, 950], [-80, 958], [0, 958], [0, 1050], [-80, 1050], [-80, 1058], [0, 1058], [0, 2000]], [K, Z]), { order: ['Z', 'K'] })
+    s.press('Start Round')
+    expect(watched(s, legs(12, [0, 0], [0, 1600]))).toEqual([])
+    expect(told(s)).toEqual([])
+  })
+
+  describe('with poor fixes or none on the way back, then the end of a dead-end street', () => {
+    // Up a dead-end street to its end at 1500 m, round, back down 8 m east and away east. K is 130 m east of it at 1400 m. From K to the way back
+    // down, the fixes are poor or missing, so the app can't tell where the car came back to the street, and going round the end is the route.
+    const KD = bundle('K', [130, 1400])
+    const DEAD_END = routeOf([[0, 0], [0, 1500], [8, 1500], [8, 0], [2000, 0]], [KD, bundle('Z', [1500, 8])])
+    const upToKD = (tap: boolean) => {
+      const s = roundScreen(DEAD_END, { order: ['K', 'Z'] })
+      s.press('Start Round')
+      watched(s, [...legs(10, [0, 0], [0, 1400]), ...legs(4, [0, 1400], [120, 1400])])
+      expect(s.banner()).toEqual(['K'])
+      if (tap) s.tapDropped()
+      watched(s, parked([120, 1400], 30))
+      return s
+    }
+    const roundTheEnd = (accuracy?: number): Step[] =>
+      [...legs(5, [120, 1400], [0, 1400]), ...legs(8, [0, 1400], [0, 1500]), ...legs(3, [0, 1500], [8, 1500]), ...legs(8, [8, 1500], [8, 1300])].map((f) => (accuracy ? { ...f, accuracy } : f))
+    const away: Step[] = [...legs(10, [8, 1300], [8, 0]), ...legs(10, [8, 0], [600, 0])]
+    for (const tap of [true, false]) {
+      it(`is not asked about as coming back elsewhere, with fixes of 50 m (${tap ? 'Dropped tapped' : 'not tapped'})`, () => {
+        const s = upToKD(tap)
+        expect(watched(s, [...roundTheEnd(50), ...away])).toEqual([])
+        expect(told(s)).toEqual([])
+      })
+    }
+    it('is not asked about as coming back elsewhere, with no fixes at all (the app in the background)', () => {
+      const s = upToKD(true)
+      s.noFixFor(roundTheEnd().length)
+      expect(watched(s, away)).toEqual([])
+      expect(told(s)).toEqual([])
+    })
+    it('is quiet with good fixes too', () => {
+      const s = upToKD(true)
+      expect(watched(s, [...roundTheEnd(), ...away])).toEqual([])
+      expect(told(s)).toEqual([])
+    })
+  })
+
+  it('is not asked about as coming back elsewhere when a court after K is driven under poor fixes', () => {
+    // A court 100 m deep to the east at 1150 m, inside K's reach, driven straight after coming back from K under fixes of 50 m.
+    const s = roundScreen(routeOf([[0, 0], [0, 1150], [100, 1150], [100, 1158], [0, 1158], [0, 3000]], [K, bundle('Z', [8, 2500])]), { order: ['K', 'Z'] })
+    s.press('Start Round')
+    watched(s, [...legs(10, [0, 0], [0, 1000]), ...legs(4, [0, 1000], [120, 1000])])
+    expect(s.banner()).toEqual(['K'])
+    s.tapDropped()
+    const back = [...parked([120, 1000], 30), ...legs(5, [120, 1000], [0, 1000]), ...legs(8, [0, 1000], [0, 1150], [100, 1150], [100, 1158], [0, 1158], [0, 1165])]
+    expect(watched(s, [...back.map((f) => ({ ...f, accuracy: 50 })), ...legs(10, [0, 1165], [0, 2000])])).toEqual([])
+    expect(told(s)).toEqual([])
+  })
+
+  it('is not asked about as coming back elsewhere when a court before K was driven with no fixes', () => {
+    // A court 100 m deep at 900 m, driven in full, and K's drive at 1000 m; the phone gives no fix from 880 m until 44 m into the drive. The time
+    // unseen explains the move along the route, as for any time unseen.
+    const s = roundScreen(routeOf([[0, 0], [0, 900], [-100, 900], [-100, 908], [0, 908], [0, 2500]], [K, bundle('Z', [8, 2300])]), { order: ['K', 'Z'] })
+    s.press('Start Round')
+    watched(s, legs(10, [0, 0], [0, 880]))
+    s.noFixFor([...legs(8, [0, 880], [0, 900], [-100, 900], [-100, 908], [0, 908], [0, 1000]), ...legs(4, [0, 1000], [44, 1000])].length)
+    watched(s, legs(4, [44, 1000], [120, 1000]))
+    expect(s.banner()).toEqual(['K'])
+    expect(watched(s, [...legs(5, [120, 1000], [0, 1000]), ...legs(10, [0, 1000], [0, 1700])])).toEqual([])
+    expect(told(s)).toEqual([])
+  })
+
+  describe('beside a stop not done yet, driving the route past it, as with no stop there', () => {
+    // K, a bundle later in the list, is 130 m off the street: the car passes it without visiting it.
+    for (const kmh of [20, 36, 50]) {
+      it(`asks about a turn missed into a loop round a 150 m block beside it, at ${kmh} km/h`, () => {
+        // The route goes round the block, east of the street, from 1000 m; the car goes straight on up the street, 75 m from the loop at most.
+        const loop = routeOf([[0, 0], [0, 1000], [150, 1000], [150, 1150], [0, 1150], [0, 2000]], [bundle('Z', [8, 1800]), bundle('K', [-130, 1075])])
+        const s = roundScreen(loop, { order: ['Z', 'K'] })
+        s.press('Start Round')
+        const seen = watched(s, legs(kmh / 3.6, [0, 0], [0, 1600]))
+        expect(seen).toContain('rejoined')
+        expect(s.said().filter((t) => /^Back on the route, .* further on\.$/.test(t))).toHaveLength(1)
+      })
+      it(`does not ask about two courts 120 m deep beside it, gone by without going into them, at ${kmh} km/h`, () => {
+        const courts = routeOf(
+          [[0, 0], [0, 900], [-120, 900], [-120, 908], [0, 908], [0, 1020], [-120, 1020], [-120, 1028], [0, 1028], [0, 2000]],
+          [bundle('Z', [8, 1800]), bundle('K', [130, 960])],
+        )
+        const s = roundScreen(courts, { order: ['Z', 'K'] })
+        s.press('Start Round')
+        expect(watched(s, legs(kmh / 3.6, [0, 0], [0, 1600]))).toEqual([])
+        expect(told(s)).toEqual([])
+      })
+    }
+  })
+
+  describe('with the tracker for a time on another part of the route, or the sky poor', () => {
+    const stay = (at: XY, seconds: number, accuracy?: number): Step[] => parked(at, seconds).map((f) => (accuracy ? { ...f, accuracy } : f))
+
+    for (const dark of ['the phone locked for 70 s', 'fixes of 80 m for 70 s'] as const) {
+      it(`is not asked about when one coarse fix after a dark spell lands by another street of the route, and the car goes straight back (${dark})`, () => {
+        // A north to 1500 m, across, and B back south 200 m east of A. The bakehouse K is 89 m east of A at 1000 m, 111 m from B. Parked 65 m out,
+        // the bundle walked in with the phone dark, and the first fix after that a coarse one (60 m) 35 m from B: it can't say where the car is.
+        const route = routeOf([[0, 0], [0, 1500], [200, 1500], [200, 0]], [bundle('K', [89, 1000]), bundle('M', [8, 1300]), bundle('Z', [208, 200])])
+        const s = roundScreen(route, { order: ['K', 'M', 'Z'] })
+        s.press('Start Round')
+        const seen = watched(s, [...legs(10, [0, 0], [0, 1000]), ...legs(4, [0, 1000], [65, 1000])])
+        expect(s.banner()).toEqual(['K'])
+        s.tapDropped()
+        seen.push(...watched(s, stay([65, 1000], 5)))
+        if (dark === 'the phone locked for 70 s') s.noFixFor(70)
+        else seen.push(...watched(s, stay([65, 1000], 70, 80)))
+        seen.push(...watched(s, [{ x: 165, y: 1000, speed: 0, heading: 90, accuracy: 60 }, ...stay([65, 1000], 10)]))
+        seen.push(...watched(s, [...legs(5, [65, 1000], [0, 1000]), ...legs(10, [0, 1000], [0, 1500], [200, 1500], [200, 0])]))
+        expect(seen).toEqual([])
+        expect(told(s)).toEqual([])
+      })
+    }
+
+    for (const sky of ['one good fix back on A, then fixes of 50 m', 'fixes of 35 m and 50 m in turn'] as const) {
+      it(`asks about a side street taken from A to a later street of the route, back from K under poor sky (${sky})`, () => {
+        // B is a street of the route 60 m west of A, driven later going south; a side street at 1050 m joins them. Taking it after K skips the rest of
+        // A, the top and the top of B. Within 39 m of A or B, and until 880 m down B (out of K's reach), the sky is poor.
+        const route = routeOf([[0, 0], [0, 1500], [-60, 1500], [-60, 0]], [bundle('K', [89, 1000]), noThrowAt('N', [8, 1200]), bundle('M', [8, 1300]), bundle('Z', [-68, 200])])
+        const s = roundScreen(route, { order: ['K', 'M', 'Z'] })
+        s.press('Start Round')
+        watched(s, [...legs(10, [0, 0], [0, 1000]), ...legs(4, [0, 1000], [65, 1000])])
+        expect(s.banner()).toEqual(['K'])
+        s.tapDropped()
+        watched(s, stay([65, 1000], 30))
+        const path = [...legs(5, [65, 1000], [0, 1000]), ...legs(10, [0, 1000], [0, 1050], [-60, 1050], [-60, 0])]
+        const poor = (f: Step) => f.x < 39 && !(f.x === -60 && f.y < 880)
+        let k = 0
+        const seen = watched(s, path.map((f) => (!poor(f) ? f : ++k === 1 ? f : sky === 'fixes of 35 m and 50 m in turn' ? { ...f, accuracy: k % 2 ? 35 : 50 } : { ...f, accuracy: 50 })))
+        expect(s.said().filter((t) => /^Back on the route, .* further on\.$/.test(t))).toHaveLength(1)
+        expect(seen).toContain('rejoined')
+      })
+    }
+
+    it('is not asked about when the tracker first puts the car on the way back down a dead-end side street, K up a drive off it', () => {
+      // A 200 m dead-end side street east at 600 m, out along y = 600 and back along y = 608, the way back 8 m nearer K, which is up a drive off it 80 m
+      // before its end. K is not tapped, so its pass on A after the side street is still to do.
+      const route = routeOf([[0, 0], [0, 600], [200, 600], [200, 608], [0, 608], [0, 1500]], [bundle('K', [120, 698]), bundle('Z', [8, 1300])])
+      const s = roundScreen(route, { order: ['K', 'Z'] })
+      s.press('Start Round')
+      const seen = watched(s, [...legs(10, [0, 0], [0, 600]), ...legs(7, [0, 600], [120, 600]), ...legs(4.5, [120, 600], [120, 688]), ...stay([120, 688], 15)])
+      seen.push(...watched(s, [...legs(5, [120, 688], [120, 600]), ...legs(7, [120, 600], [200, 600], [200, 608], [0, 608]), ...legs(10, [0, 608], [0, 1500])]))
+      expect(seen).toEqual([])
+      expect(told(s)).toEqual([])
+    })
+
+    it('is not asked about when the end of a dead-end street is driven after a visit to K, not next in the list', () => {
+      const route = routeOf([[0, 0], [0, 780], [8, 780], [8, 390], [700, 390]], [bundle('K', [113, 700]), bundle('Z', [500, 398])])
+      const s = roundScreen(route, { order: ['Z', 'K'] })
+      s.press('Start Round')
+      const seen = watched(s, [...legs(10, [0, 0], [0, 700]), ...legs(4.5, [0, 700], [103, 700]), ...stay([103, 700], 10), ...legs(5, [103, 700], [0, 700])])
+      seen.push(...watched(s, [...legs(8, [0, 700], [0, 780]), ...legs(4, [0, 780], [8, 780]), ...legs(10, [8, 780], [8, 390], [700, 390])]))
+      expect(seen).toEqual([])
+      expect(told(s)).toEqual([])
+    })
+
+    it('is not asked about when fixes of 55 m at K and on the way back leave the tracker on a deep court just past it', () => {
+      // A 208 m court west at 793 m; K 109 m west of A at 711 m, 82 m short of the court's legs. Not tapped.
+      const route = routeOf([[0, 0], [0, 793], [-208, 793], [-208, 801], [0, 801], [0, 1900]], [bundle('K', [-109, 711]), bundle('Z', [8, 1700])])
+      const s = roundScreen(route, { order: ['K', 'Z'] })
+      s.press('Start Round')
+      const seen = watched(s, [...legs(13, [0, 0], [0, 711]), ...legs(4.7, [0, 711], [-96, 716])])
+      seen.push(...watched(s, [...stay([-96, 716], 10), ...legs(5, [-96, 716], [0, 711])].map((f) => ({ ...f, accuracy: 55 }))))
+      seen.push(...watched(s, [...legs(8, [0, 711], [0, 793], [-208, 793], [-208, 801], [0, 801]), ...legs(13, [0, 801], [0, 1900])]))
+      expect(seen).toEqual([])
+      expect(told(s)).toEqual([])
+    })
+
+    it('asks about a lane to a later street driven under poor sky, the GPS wandering', () => {
+      // B 189 m east of A; K 89 m east of A at 1000 m, on a lane through to B. Dropped as the alert comes up; then fixes of 55 m wandering 12 m.
+      const route = routeOf([[0, 0], [0, 1500], [189, 1500], [189, 0]], [bundle('K', [89, 1000]), bundle('M', [8, 1300]), bundle('Z', [197, 200])])
+      const s = roundScreen(route, { order: ['K', 'M', 'Z'] })
+      s.press('Start Round')
+      watched(s, legs(10, [0, 0], [0, 1000]))
+      for (const f of legs(4, [0, 1000], [79, 1000])) {
+        watched(s, [f])
+        if (!(s.props.round.dropped ?? []).includes('K') && s.banner()[0] === 'K') s.tapDropped()
+      }
+      watched(s, stay([79, 1000], 5))
+      const wander = (f: Step, k: number): Step => ({ ...f, x: f.x + 12 * Math.cos(k * 2.3), y: f.y + 12 * Math.sin(k * 1.7), accuracy: 55 })
+      watched(s, [...stay([79, 1000], 20), ...legs(5, [79, 1000], [189, 1000])].map(wander))
+      watched(s, legs(10, [189, 1000], [189, 300]))
+      expect(s.said().filter((t) => /^Back on the route, .* further on\.$/.test(t))).toHaveLength(1)
+    })
+  })
+
+  describe('leaving K by a lane onto another street of the route', () => {
+    // Up street A to 1500 m, across, and back down street B. K is 130 m east of A at 1000 m, on a lane through to B, which is 260 m east of A (inside
+    // K's reach) or 380 m (250 m from K, just out of it). M, a bundle, and N, a no-throw house, are on A after K: going down B skips them.
+    const laneTo = (xb: number) => routeOf([[0, 0], [0, 1500], [xb, 1500], [xb, 0]], [K, bundle('M', [8, 1300]), noThrowAt('N', [8, 1200]), bundle('Z', [xb + 8, 200])])
+    /** How the end of the lane goes: poor fixes, none, or a wait, just before B (none of which is the car driving the route: a wait is seen). */
+    type LaneEnd = 'clear' | 'poor 120 m' | 'no fix 12 s' | 'wait 12 s 43 m short' | 'wait 90 s 43 m short'
+    const cases: { xb: number; tap: boolean; park: number; speed: number; end?: LaneEnd; poorOnB?: boolean; parkFirst?: number }[] = [
+      { xb: 260, tap: true, park: 0, speed: 5 },
+      { xb: 260, tap: true, park: 30, speed: 5 },
+      { xb: 260, tap: false, park: 0, speed: 5 },
+      { xb: 260, tap: true, park: 30, speed: 15 },
+      { xb: 260, tap: true, park: 30, speed: 5, poorOnB: true },
+      { xb: 260, tap: true, park: 30, speed: 5, parkFirst: 90 },
+      { xb: 380, tap: true, park: 30, speed: 5 },
+      { xb: 380, tap: false, park: 0, speed: 5 },
+      ...(['poor 120 m', 'no fix 12 s', 'wait 12 s 43 m short', 'wait 90 s 43 m short'] as const).flatMap((end) => [
+        { xb: 380, tap: true, park: 30, speed: 5, end },
+        { xb: 380, tap: false, park: 0, speed: 5, end },
+      ]),
+    ]
+    it('is asked about after a long stay at a stop near enough the route for the tracker to keep the car on it, then a lane under poor sky', () => {
+      // The bakehouse K2, 89 m east of A at 1000 m, on a lane through to B 100 m beyond it. With fixes of 30 m the tracker keeps the parked car on A,
+      // 65 m out, and says nothing new while it stands still: that is the car seen there, not 70 s unseen, which would explain B's 1.2 km.
+      const s = roundScreen(routeOf([[0, 0], [0, 1500], [189, 1500], [189, 0]], [bundle('K2', [89, 1000]), bundle('M', [8, 1300]), bundle('Z', [197, 200])]), { order: ['K2', 'M', 'Z'] })
+      s.press('Start Round')
+      watched(s, [...legs(10, [0, 0], [0, 1000]), ...legs(4, [0, 1000], [65, 1000]).map((f) => (f.x > 30 ? { ...f, accuracy: 30 } : f))])
+      expect(s.banner()).toEqual(['K2'])
+      s.tapDropped()
+      const lane = legs(5, [65, 1000], [189, 1000]).map((f) => ({ ...f, accuracy: 55 }))
+      const seen = watched(s, [...parked([65, 1000], 70).map((f) => ({ ...f, accuracy: 30 })), ...lane, ...legs(10, [189, 1000], [189, 300])])
+      expect(s.said().filter((t) => /^Back on the route, .* further on\.$/.test(t))).toHaveLength(1)
+      expect(seen).toContain('rejoined')
+    })
+
+    it('is asked about when the street the lane comes out on passes another stop away from the route straight away', () => {
+      // J, a bundle later in the list, is 120 m east of B at 760 m: its reach starts 46 m down B from where the lane comes out, before the car has
+      // gone far enough along B for the jump to be asked, and lasts to 576 m. The question waits through the visit beside J.
+      const s = roundScreen(routeOf([[0, 0], [0, 1500], [260, 1500], [260, 0]], [K, bundle('M', [8, 1300]), bundle('Z', [268, 200]), bundle('J', [380, 760])]), { order: ['K', 'M', 'Z', 'J'] })
+      s.press('Start Round')
+      watched(s, [...legs(10, [0, 0], [0, 1000]), ...legs(4, [0, 1000], [120, 1000])])
+      expect(s.banner()).toEqual(['K'])
+      s.tapDropped()
+      const seen = watched(s, [...parked([120, 1000], 10), ...legs(5, [120, 1000], [260, 1000]), ...legs(10, [260, 1000], [260, 300])])
+      expect(s.said().filter((t) => /^Back on the route, .* further on\.$/.test(t))).toHaveLength(1)
+      expect(seen).toContain('rejoined')
+    })
+    for (const xb of [260, 380]) {
+      const asked = (s: ReturnType<typeof roundScreen>) => {
+        expect(s.said().filter((t) => /^Back on the route, .* further on\.$/.test(t))).toHaveLength(1)
+        expect(s.offRoute()?.phase).toBe('rejoined')
+      }
+      const lane = legs(5, [120, 1000], [xb, 1000])
+      const downB = legs(10, [xb, 1000], [xb, 400])
+      it(`is asked about after one poor fix beside A while parked at K for a minute (B ${xb - 130} m from K)`, () => {
+        const { s } = upToK(laneTo(xb), ['K', 'M', 'Z'], { park: 60 })
+        watched(s, [{ x: 15, y: 1000, speed: 0, heading: 90, accuracy: 60 }, ...parked([120, 1000], 10), ...lane, ...downB])
+        asked(s)
+      })
+      it(`is asked about after one poor fix beside A as the car sets off down the lane (B ${xb - 130} m from K)`, () => {
+        const { s } = upToK(laneTo(xb), ['K', 'M', 'Z'], { park: 90 })
+        watched(s, [...lane.map((f, k) => (k === 1 ? { ...f, x: 20, accuracy: 60 } : f)), ...downB])
+        asked(s)
+      })
+      it(`is asked about after poor fixes on the way in to K and while there, the phone in a pocket (B ${xb - 130} m from K)`, () => {
+        const s = roundScreen(laneTo(xb), { order: ['K', 'M', 'Z'] })
+        s.press('Start Round')
+        watched(s, [...legs(10, [0, 0], [0, 1000]), ...legs(4, [0, 1000], [120, 1000]).map((f) => (f.x > 30 ? { ...f, accuracy: 50 } : f))])
+        watched(s, parked([120, 1000], 60).map((f) => ({ ...f, accuracy: 50 })))
+        // Back in the car, the phone on the dashboard: good fixes as it backs out 10 m, and K's alert comes up.
+        watched(s, legs(2, [120, 1000], [110, 1000]))
+        expect(s.banner()).toEqual(['K'])
+        s.tapDropped()
+        watched(s, [...legs(5, [110, 1000], [xb, 1000]), ...downB])
+        asked(s)
+      })
+    }
+    for (const { xb, tap, park, speed, end = 'clear', poorOnB, parkFirst } of cases) {
+      const how = [`B ${xb - 130} m from K`, tap ? `Dropped tapped, parked ${park} s` : 'not tapped', `${speed} m/s`, end === 'clear' ? '' : end, poorOnB ? 'fixes of 60 m on B' : '', parkFirst ? `parked ${parkFirst} s on A first` : '']
+      it(`is asked about as coming back elsewhere, from where the car left A (${how.filter(Boolean).join(', ')})`, () => {
+        const s = roundScreen(laneTo(xb), { order: ['K', 'M', 'Z'] })
+        s.press('Start Round')
+        watched(s, [...legs(10, [0, 0], [0, 1000]), ...parked([0, 1000], parkFirst ?? 0), ...legs(4, [0, 1000], [120, 1000])])
+        expect(s.banner()).toEqual(['K'])
+        if (tap) s.tapDropped()
+        watched(s, parked([120, 1000], park))
+        const lane = legs(speed, [120, 1000], [xb, 1000])
+        if (end === 'clear') watched(s, lane)
+        else if (end === 'poor 120 m') watched(s, lane.map((f) => (f.x >= xb - 120 ? { ...f, accuracy: 50 } : f)))
+        else if (end === 'no fix 12 s') {
+          watched(s, legs(speed, [120, 1000], [xb - 60, 1000]))
+          s.noFixFor(12)
+        } else {
+          const [wait, short] = end === 'wait 12 s 43 m short' ? [12, 43] : [90, 43]
+          watched(s, [...legs(speed, [120, 1000], [xb - short, 1000]), ...parked([xb - short, 1000], wait), ...legs(speed, [xb - short, 1000], [xb, 1000])])
+        }
+        // Poor fixes, if any, on B while the car is still within 250 m of K.
+        watched(s, legs(10, [xb, 1000], [xb, 400]).map((f) => (poorOnB && f.y >= 800 ? { ...f, accuracy: 60 } : f)))
+        expect(s.said().filter((t) => /^Back on the route, .* further on\.$/.test(t))).toHaveLength(1)
+        expect(told(s).filter((t) => /Off route/.test(t))).toEqual([])
+        expect(s.offRoute()?.phase).toBe('rejoined')
+        // The visit is no time off the route: the place it was left at is where the car turned off A for K, and that is where it is taken back to.
+        expect(Math.abs((s.offRoute()?.leftAt ?? 0) - 1000)).toBeLessThan(20)
+      })
+    }
+  })
+})
+
 describe('carrying on from where the route is rejoined, on the real screen', () => {
   // Up a street and back down one 100 m east. The car goes by A with no drop, marks D, 100 m from the end, dropped from the list, and at 200 m cuts across
   // to the second street, past L and the house J, which are before where it comes back on, at about 1,400 m. K, a house further on, is after it, as D is.
