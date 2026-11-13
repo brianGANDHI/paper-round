@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { driveJson, parseDrive, type DriveEntry } from './driveLog'
-import { FOLDING_ROUTES, foldingTrack, lineThrough, replayDrive, score, simDrive, simTrack, spot, type SimOptions, type SimScore } from './driveSim'
+import { FOLDING_ROUTES, foldingTrack, gaussian, lineThrough, random, replayDrive, score, simDrive, simTrack, spot, type SimOptions, type SimScore } from './driveSim'
 import { advance, makeTrack, type GpsFix, type Progress } from './progress'
 
 /*
@@ -162,6 +162,70 @@ describe('the window of where the driver can have got to', () => {
     expect(steps.at(-1)!.along).toBeLessThan(100 + 27)
     // (The same fix with the phone's own course, at 1.5 m/s or more, is believed: the car has turned round.)
     expect(play(court, [...upTo(96), [at([0, 100], 13, { speed: 3 }), 45], ...into, [at([24, 106.5], 21, { speed: 2 }), 270]]).at(-1)!.along).toBeGreaterThan(130)
+  })
+
+  describe('a side street onto a later street of the route beside the one the car left', () => {
+    // Up a street to 1,500 m, across the top and back down a street `apart` m west of it. The car turns off at 1,050 m down a side street to the second
+    // street and goes on down it: the place level with it there is 1,500 + `apart` + (1,500 - y) m on along the route. Within 60 m the street it left
+    // is in reach all the way, and in the window, going back along it as the car goes on: the driver was kept on it, with nothing said.
+    const sideStreet = (apart: number, every: number) => makeTrack(lineThrough([[0, 0], [0, 1500], [-apart, 1500], [-apart, 0]], every))
+    /** Fixes a second apart at `speed` m/s along straight lines through `spots`, each with the way it is going and GPS error from `error`. */
+    const legs = (speed: number, spots: [number, number][], error: () => [number, number] = () => [0, 0], heading: () => number = () => 0): [GpsFix, number | null][] => {
+      const out: [GpsFix, number | null][] = []
+      for (let i = 1; i < spots.length; i++) {
+        const [a, b] = [spots[i - 1], spots[i]]
+        const n = Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / speed - 1e-9)
+        const way = ((Math.atan2(b[0] - a[0], b[1] - a[1]) * 180) / Math.PI + 360) % 360
+        for (let k = 1; k <= n; k++) {
+          const [ex, ey] = error()
+          out.push([at([a[0] + ((b[0] - a[0]) * k) / n + ex, a[1] + ((b[1] - a[1]) * k) / n + ey], out.length + 1, { speed }), (way + heading() + 360) % 360])
+        }
+      }
+      return out
+    }
+    const truth = (apart: number, y: number) => 1500 + apart + 1500 - y
+
+    it('is where the driver is put, by the sixth good fix on it, held at the turn till then', () => {
+      for (const apart of [40, 50, 60, 80, 100, 150]) {
+        for (const every of [0, 10]) {
+          const label = `${apart} m apart${every ? `, a point every ${every} m` : ''}`
+          const turned = legs(10, [[0, 0], [0, 1050]]).length
+          const down = legs(10, [[0, 0], [0, 1050], [-apart, 1050]]).length
+          const steps = play(sideStreet(apart, every), legs(10, [[0, 0], [0, 1050], [-apart, 1050], [-apart, 0]]))
+          const on = steps.findIndex((p, k) => k >= down && p.along > 1500 + apart)
+          expect(on - down, label).toBeGreaterThanOrEqual(0)
+          expect(on - down, label).toBeLessThan(6)
+          for (const p of steps.slice(turned, on)) expect(p.along, label).toBeGreaterThan(1050 - 25)
+          steps.slice(on).forEach((p, k) => expect(Math.abs(p.along - truth(apart, 1050 - 10 * (on - down + k + 1))), label).toBeLessThan(15))
+          expect(Math.max(...steps.map((p) => p.furthest)), label).toBeLessThanOrEqual(truth(apart, 0) + 1)
+        }
+      }
+    })
+
+    it('is where the driver is put within 7 fixes, with GPS error of 5 m, though some of them are within 35 m of the street left', () => {
+      // (A street running against a phone going 3 m/s or more, more than 25 m from it, is not on the route for it: see OFF_ROUTE_M. Taken as on it, a fix
+      // within 35 m of it, 40 m apart, started the count again, and the driver was kept on the street left, going back along it, for up to 20 s.)
+      for (const apart of [40, 50, 60]) {
+        for (const speed of [5, 10]) {
+          for (let seed = 1; seed <= 10; seed++) {
+            const r = random(seed)
+            let e = [0, 0]
+            const error = (): [number, number] => {
+              e = e.map((v) => 0.7 * v + Math.sqrt(1 - 0.49) * gaussian(r) * 5)
+              return [e[0], e[1]]
+            }
+            const label = `${apart} m apart, ${speed} m/s, seed ${seed}`
+            const turned = legs(speed, [[0, 0], [0, 1050]]).length
+            const down = legs(speed, [[0, 0], [0, 1050], [-apart, 1050]]).length
+            const steps = play(sideStreet(apart, 10), legs(speed, [[0, 0], [0, 1050], [-apart, 1050], [-apart, 0]], error, () => gaussian(r) * 10))
+            const on = steps.findIndex((p, k) => k >= down && p.along > 1500 + apart)
+            expect(on - down, label).toBeGreaterThanOrEqual(0)
+            expect(on - down, label).toBeLessThan(7)
+            for (const p of steps.slice(turned, on)) expect(p.along, label).toBeGreaterThan(1050 - 40)
+          }
+        }
+      }
+    })
   })
 
   it('still turns the driver round onto a way back that passes level with them, but not onto a street 35 m beside the one they are on', () => {

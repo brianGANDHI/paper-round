@@ -250,8 +250,9 @@ const TRACK_SPEED = 25
 const WINDOW_SLACK_M = 40
 /**
  * A place outside that window can be where the driver is only once the best place within it is off the route: further than this from the phone,
- * in metres, or twice its accuracy if more. And then it is believed only once it has been the place for CONFIRM_FIXES fixes in a row, over
- * CONFIRM_MS milliseconds at least (as well as the phone being seen driving along it: see DOUBT_RUN_M).
+ * in metres, or twice its accuracy if more (or, for a place running against a phone going AGAINST_SPEED or more, further than LEVEL_M). And then it
+ * is believed only once it has been the place for CONFIRM_FIXES fixes in a row, over CONFIRM_MS milliseconds at least (as well as the phone being
+ * seen driving along it: see DOUBT_RUN_M).
  */
 const OFF_ROUTE_M = 35
 const CONFIRM_FIXES = 4
@@ -488,7 +489,12 @@ export function advance(track: Track, prev: Progress | null, fix: GpsFix, given:
     !tracked || (c.along >= winLo && c.along <= winHi) || (!!unsure && c.along >= unsure.from - backSlack - Math.abs(unsure.to - prior) - moved && c.along <= unsure.from + backSlack)
   /** How far the phone is from the nearest place in the window. */
   const bestIn = cands.reduce((a, c) => (inWindow(c) ? Math.min(a, c.dist) : a), Infinity)
-  const mayLeave = !tracked || (!poor && bestIn > Math.max(OFF_ROUTE_M, 2 * accuracy))
+  // (A place in the window that runs against a phone going at AGAINST_SPEED or more, further than LEVEL_M from it, is not on the route for it: a car that
+  // turned off onto a later street of the route 40 m beside the one it left, the way the later one runs, had fixes within 35 m of the one it left now and
+  // then with GPS error of 5 to 8 m, and was held on it, going back along it, for up to 40 s. A car that has turned round on the street is on it.)
+  const againstPhone = (c: Candidate) => going && heading !== null && typeof fix.speed === 'number' && fix.speed >= AGAINST_SPEED && angleBetween(bearings[c.idx], heading) > AGAINST_DEG
+  const onIn = cands.reduce((a, c) => (inWindow(c) && !(againstPhone(c) && c.dist > LEVEL_M) ? Math.min(a, c.dist) : a), Infinity)
+  const mayLeave = !tracked || (!poor && onIn > Math.max(OFF_ROUTE_M, 2 * accuracy))
   const held = prev ? pointOn(xy, prev) : null
   /** How near the route comes to where the driver was put, in metres, between these distances along it. */
   const nearHeld = (from: number, to: number): number => {
@@ -569,7 +575,11 @@ export function advance(track: Track, prev: Progress | null, fix: GpsFix, given:
     const goesWith = (c: Candidate) => linedUp(c) >= DRIVEN_ON_SHARE
     // (Where the cheapest place runs against the phone and the one that fits it runs with it, it is that one that can come to be believed: a car that
     // missed the turn into a loop back down the street it is on was held until it had gone by the whole of the loop's way down.)
-    const place = leaps(jump) && !goesWith(jump) && leaps(byFit) && goesWith(byFit) ? byFit : jump
+    // (So it is where the cheapest place is in the window but off the route (see OFF_ROUTE_M), and runs against the phone or across it: a car that turned
+    // off down a side street onto a later street of the route 40 to 60 m beside the one it left, the way the later one runs, was held on the one it left,
+    // going back along it as the car went on, with nothing said, since that was in reach and in the window; and the run of fixes going back takes the
+    // driver out of the window only where they turned round. Doubted, it is gated as any move out of the window is.)
+    const place = (leaps(jump) || (tracked && mayLeave)) && !goesWith(jump) && leaps(byFit) && goesWith(byFit) ? byFit : jump
     if (leaps(place)) {
       const before = prev.doubt !== null && Math.abs(prev.doubt.along - place.along) <= DOUBT_NEAR_M + (prev.lost ? lastStep : moved) ? prev.doubt : null
       const ground = before?.start ? haversine(before.start, fix) : 0

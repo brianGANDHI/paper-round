@@ -2897,6 +2897,35 @@ describe('carrying on from where the route is rejoined, on the real screen', () 
   })
 })
 
+describe('a side street onto a later street of the route beside the one left, on the real screen', () => {
+  // Up a street to 1,500 m, across the top and back down a street `apart` m west of it. The car turns off at 1,050 m down a side street to the second
+  // street and goes on down it, with no stop and good fixes (8 m) all the way: N and M, further up the first street, are left behind. Within 60 m, the
+  // first street is in reach of the car all the way down the second, and the tracker kept the car on it, going back along it, with nothing said.
+  for (const apart of [40, 60, 80, 100, 150]) {
+    it(`asks about it within 20 s of the car turning down the second street, ${apart} m from the first`, () => {
+      const route = routeOf([[0, 0], [0, 1500], [-apart, 1500], [-apart, 0]], [noThrowAt('N', [8, 1200]), bundle('M', [8, 1300]), bundle('Z', [-apart - 8, 200])])
+      const s = roundScreen(route, { order: ['M', 'Z'] })
+      s.press('Start Round')
+      const down = legs(10, [0, 0], [0, 1050], [-apart, 1050]).length
+      let asked = -1
+      for (const [k, f] of legs(10, [0, 0], [0, 1050], [-apart, 1050], [-apart, 0]).entries()) {
+        s.drive([f])
+        if (asked < 0 && s.offRoute()?.phase === 'rejoined') asked = k
+      }
+      expect(asked).toBeGreaterThanOrEqual(down)
+      expect(asked - down).toBeLessThan(20)
+      // (150 m apart, the car is out of reach of both streets halfway across, and off the route for a moment.)
+      expect(s.said()).toEqual([
+        ...(apart > 100 ? ['Off route.'] : []),
+        expect.stringMatching(/^Back on the route, 1\.[12] kilometres further on\.$/),
+        'Carrying on from here.',
+        'Next bundle is behind you.',
+      ])
+      expect(s.notices).toContain('Next bundle M is behind you. Mark it or move it in the Bundles list.')
+    })
+  }
+})
+
 describe('the voice, on the real screen', () => {
   const route = routeOf(LOOP, [A, B, C])
   const sideCalls = () => vi.mocked(say).mock.calls.map(([text, options]) => [text, options])
