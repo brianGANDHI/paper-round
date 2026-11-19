@@ -1617,11 +1617,13 @@ describe('never holding the list in silence, on the real screen', () => {
     const s = started(routeOf([[0, 0], [0, 600], [90, 600], [90, 0]], [bundle('A', [8, 250]), bundle('Z', [98, 20])]))
     s.drive(up(100))
     s.noFixFor(25)
-    s.drive(legs(10, [90, 320], [90, 160]))
+    // (Asked at 140 m: the move along the route, further than a car can have gone, is believed only once it has been seen for 5 s. See TRACK_SPEED in
+    // progress.ts. It was 160 m, three fixes sooner.)
+    s.drive(legs(10, [90, 320], [90, 140]))
     expect(s.offRoute()?.phase).toBe('rejoined')
     s.offRoute()?.onCarryOn()
     s.update()
-    s.drive(legs(10, [90, 160], [90, 130]))
+    s.drive(legs(10, [90, 140], [90, 130]))
     expect(s.notices).toEqual([])
     s.drive(legs(10, [90, 130], [90, 110]))
     expect(s.notices).toEqual([behind('A')])
@@ -3398,6 +3400,73 @@ describe('carrying on from where the route is rejoined, on the real screen', () 
     expect(s.banner()).toEqual(['L'])
     s.tapDropped()
     expect(s.props.round.dropped).toEqual(['D', 'L'])
+  })
+})
+
+describe('a side street onto a later street of the route beside the one left, on the real screen', () => {
+  // Up a street to 1,500 m, across the top and back down a street `apart` m west of it. The car turns off at 1,050 m down a side street to the second
+  // street and goes on down it, with no stop and good fixes (8 m) all the way: N and M, further up the first street, are left behind. Within 60 m, the
+  // first street is in reach of the car all the way down the second, and the tracker kept the car on it, going back along it, with nothing said.
+  for (const apart of [40, 60, 80, 100, 150]) {
+    it(`asks about it within 20 s of the car turning down the second street, ${apart} m from the first`, () => {
+      const route = routeOf([[0, 0], [0, 1500], [-apart, 1500], [-apart, 0]], [noThrowAt('N', [8, 1200]), bundle('M', [8, 1300]), bundle('Z', [-apart - 8, 200])])
+      const s = roundScreen(route, { order: ['M', 'Z'] })
+      s.press('Start Round')
+      const down = legs(10, [0, 0], [0, 1050], [-apart, 1050]).length
+      let asked = -1
+      for (const [k, f] of legs(10, [0, 0], [0, 1050], [-apart, 1050], [-apart, 0]).entries()) {
+        s.drive([f])
+        if (asked < 0 && s.offRoute()?.phase === 'rejoined') asked = k
+      }
+      expect(asked).toBeGreaterThanOrEqual(down)
+      expect(asked - down).toBeLessThan(20)
+      // (150 m apart, the car is out of reach of both streets halfway across, and off the route for a moment.)
+      expect(s.said()).toEqual([
+        ...(apart > 100 ? ['Off route.'] : []),
+        expect.stringMatching(/^Back on the route, 1\.[12] kilometres further on\.$/),
+        'Carrying on from here.',
+        'Next bundle is behind you.',
+      ])
+      expect(s.notices).toContain('Next bundle M is behind you. Mark it or move it in the Bundles list.')
+    })
+  }
+})
+
+describe('a phone that was dark for a time, and wakes with a fix on a later street of the route beside the one the car is on, on the real screen', () => {
+  // Up a street to 1,000 m, west 100 m, down to 500 m, east to a street `apart` m east of the first, and up that the way the first runs. The car is 300 m up
+  // the first street when the phone goes dark for 90 s (in the background, say), going on up it at 5 m/s. The phone wakes with a fix that claims 10 m
+  // but is off toward the second street, then poor fixes, then good ones, all on the first. Nothing is said but the route's own turns: not a word of the
+  // route, or of M (on the first street, ahead of the car) being behind. (The first street was out of the window once the place on the second, doubted
+  // in it after so long, had been held for a fix; let the poor fixes go on with that place alone, they followed it to the second street, it was believed,
+  // and the turns on the way there went unsaid.)
+  const drive = (apart: number, wake: number, poor: (f: Step, i: number) => Step) => {
+    const route = routeOf(
+      [[0, 0], [0, 1000], [-100, 1000], [-100, 500], [apart, 500], [apart, 1400], [apart + 300, 1400]],
+      [bundle('M', [-8, 950]), bundle('N', [-108, 700]), bundle('P', [apart - 8, 1200]), bundle('Z', [apart + 200, 1408])],
+    )
+    const s = roundScreen(route, { order: ['M', 'N', 'P', 'Z'] })
+    s.press('Start Round')
+    s.drive(legs(10, [0, 0], [0, 300]))
+    // (Every word said from the dark spell on, whether or not it is still to be said: a turn's words go stale once the turn is passed.)
+    const before = vi.mocked(say).mock.calls.length
+    s.noFixFor(90)
+    s.drive([{ x: wake, y: 750, speed: 5, heading: 0, accuracy: 10 }])
+    s.drive(legs(5, [0, 750], [0, 1000]).map(poor))
+    s.drive(legs(10, [0, 1000], [-100, 1000], [-100, 500], [apart, 500], [apart, 1400], [apart + 250, 1400]))
+    return { s, heard: vi.mocked(say).mock.calls.slice(before).map(([text]) => text) }
+  }
+
+  it('says every turn when the fix it wakes with is on the second street, 90 m east, and the next two (50 m) are on the first', () => {
+    const { heard } = drive(90, 90, (f, i) => (i < 2 ? { ...f, accuracy: 50 } : f))
+    expect(heard.filter((t) => /turn/i.test(t))).toHaveLength(10)
+    expect(heard.filter((t) => /behind|route/i.test(t))).toEqual([])
+  })
+
+  it('says nothing of M being behind when the fix it wakes with is 72 m east, and the next five (30 m) are halfway to the second street, 110 m east', () => {
+    const { s, heard } = drive(110, 72, (f, i) => (i < 5 ? { ...f, x: 55, accuracy: 30 } : f))
+    expect(heard.filter((t) => /behind|route/i.test(t))).toEqual([])
+    expect(s.notices.filter((t) => /behind/.test(t))).toEqual([])
+    expect(heard.filter((t) => /turn/i.test(t))).toHaveLength(10)
   })
 })
 

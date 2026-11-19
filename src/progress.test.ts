@@ -473,17 +473,24 @@ describe('a fix that cannot be right', () => {
   })
 
   describe('a jump to another part of the route', () => {
-    // A street out 60 m, across 80 m and back: the way back is too far from the way out to be mistaken for it, but a long way along the route.
-    const hairpin = makeTrack(through([0, 0], [0, 60], [80, 60], [80, 0]))
+    // A street out 60 m, across 80 m and back (and on): the way back is too far from the way out to be mistaken for it, but a long way along the route.
+    const hairpin = makeTrack(through([0, 0], [0, 60], [80, 60], [80, -100]))
     let t = 0
     const onHairpin = (xy: [number, number], seconds = 1) => ({ ...spot(xy), accuracy: 5, time: (t += seconds * 1000), speed: 15 })
 
-    it('is believed at once when it is not much more than the phone moved', () => {
+    it('is held for 5 s even when it is not much more than the phone moved, being further along the route than a car can have got', () => {
+      // (It was believed at once. Across to the way back is 80 m by the phone in four seconds, but 180 m along the route, more than a car can have
+      // driven in that time (25 m/s, and the slack of the accuracy): out of the window, which a move along the route has to stay in until the place
+      // has been seen for 4 fixes over 5 s. See TRACK_SPEED in progress.ts.)
       let p = advance(hairpin, null, onHairpin([0, 5]), 0)!
       p = advance(hairpin, p, onHairpin([0, 10]), 0)!
-      // Across to the way back, 80 m by the phone in four seconds, and 180 m further on along the route.
-      p = advance(hairpin, p, onHairpin([80, 10], 4), null)!
-      expect(Math.round(p.along)).toBe(60 + 80 + 50)
+      const seen: number[] = []
+      for (const [i, y] of [10, 0, -10, -20, -30, -40].entries()) {
+        p = advance(hairpin, p, onHairpin([80, y], i === 0 ? 4 : 1), 180)!
+        seen.push(Math.round(p.along))
+      }
+      expect(seen.slice(0, 5)).toEqual([10, 10, 10, 10, 10])
+      expect(seen[5]).toBe(60 + 80 + 100)
       expect(p.doubt).toBeNull()
     })
 
@@ -496,13 +503,14 @@ describe('a fix that cannot be right', () => {
       p = advance(long, p, onLong([0, 110]), 0)!
       // Across to the way back, which is 80 m by the phone and about 460 m further along the route, and then on along it.
       const seen: number[] = []
-      for (const [i, xy] of ([[80, 110], [80, 100], [80, 90], [80, 80], [80, 70]] as [number, number][]).entries()) {
+      for (const [i, xy] of ([[80, 110], [80, 100], [80, 90], [80, 80], [80, 70], [80, 60], [80, 50]] as [number, number][]).entries()) {
         p = advance(long, p, onLong(xy, i === 0 ? 4 : 1), 180)!
         seen.push(Math.round(p.along))
       }
-      expect(seen[0]).toBe(110)
-      expect(seen[1]).toBe(110)
-      expect(seen[2]).toBeGreaterThan(500)
+      // (Believed at the sixth fix, 5 s after it was first seen, with the place held off the route all the while: it was the third. See TRACK_SPEED in
+      // progress.ts.)
+      expect(seen.slice(0, 5)).toEqual([110, 110, 110, 110, 110])
+      expect(seen[5]).toBeGreaterThan(500)
       expect(p.along).toBeGreaterThan(500)
       expect(p.doubt).toBeNull()
     })
@@ -2071,11 +2079,13 @@ describe('a car that turns round where the route itself turns round close by', (
         const out = { speed, heading: 270 }
         if (speed < 1.5) {
           // (Fixes 7 to 8 m apart, as a crawling phone's wander can put them, so that neither is taken for standing still: the fold's own speed is
-          // what leaves the driver on the road before the corner.)
+          // what leaves the driver off the way back. The heading given below 1.5 m/s, which only the way the phone has been going can be, picks no
+          // place either now, so the first fix, 5 m into the side street, is put 4 m along its way in, where it fits, not on the road before the corner,
+          // which only that heading had it on; the second, back at the road, is on it. See `advance` in progress.ts.)
           const crawl = fixes(track, upTheRoad(track).at(-1)!, [{ at: [5, 298], ...out }, { at: [-2.5, 298], ...out }], 13_000)
           crawl.forEach((p, k) => {
             expect(p.time, `${label}, ${k}`).toBe(13_000 + 1000 * k)
-            expect(p.along, `${label}, ${k}`).toBeLessThan(300)
+            expect(p.along, `${label}, ${k}`).toBeLessThan([305, 300][k])
             expect(p.folding, `${label}, ${k}`).toBe(0)
           })
           continue

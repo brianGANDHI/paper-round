@@ -48,7 +48,8 @@ import { RoundMenu } from './RoundMenu'
 import { afterUserMove, barCover, FREE_LOOK_MS } from './roundView'
 import { formatDistance, paintMetres, routeLength } from './routeEdit'
 import { markTurnSaid } from './saidTurns'
-import { loadAlertDistance, loadHeadingUp, loadKeepAudioAwake, loadVoiceTurns, saveAlertDistance, saveHeadingUp, saveKeepAudioAwake, saveVoiceTurns } from './storage'
+import { loadAlertDistance, loadHeadingUp, loadKeepAudioAwake, loadRecordDrive, loadVoiceTurns, saveAlertDistance, saveHeadingUp, saveKeepAudioAwake, saveRecordDrive, saveVoiceTurns } from './storage'
+import { logFix, startDrive } from './driveLog'
 import { RouteChip, Segmented } from './ui'
 import { sideChangeNote, sideExtents, type ExtentKey } from './driveEdit'
 import { createSideCue, sideAtAlong, sideLookAheadM, sideWords, testVoice } from './sideVoice'
@@ -136,6 +137,9 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
   const [headingDeg, setHeadingDeg] = useState<number | null>(null)
   /** Whether the map turns to point the way the driver is heading, instead of north. */
   const [headingUp, setHeadingUp] = useState(loadHeadingUp)
+  /** Whether the round's fixes are being kept for replaying (Record this round), and the drive they go to once the phone has begun it. */
+  const [recordDrive, setRecordDrive] = useState(loadRecordDrive)
+  const driveRef = useRef<string | null>(null)
   /** The way the map is turned to, smoothed from fix to fix and held while the phone can't say (unwrapped degrees, so it never turns the long way round). */
   const [mapHeading, setMapHeading] = useState<number | null>(null)
   /** When the fix that last moved the map's heading was taken, for how long it has been since. */
@@ -513,6 +517,8 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
     let now = advance(track, before, fix, course)
     // A phone standing still is seen where it was, for a visit to a stop away from the route (see `stillSeen`), though the tracker says nothing new.
     if (now === before && before && standsStill(before, fix) && startedRef.current && reachedRef.current) visitRef.current = stillSeen(visitRef.current, fix.time ?? null)
+    // Kept for replaying, while that is on: the fix as the phone gave it, and where the tracker put the driver (nothing, for a fix it set aside).
+    if (driveRef.current) logFix(driveRef.current, fix, now && now !== before ? now : null)
     if (!now || now === before) return
     // The way the route runs here, when the phone is on it, and whether the phone is going that way (or can't say).
     const routeBearing = onTheRoute(now.gap, now.accuracy, now.lost) ? (track.bearings[now.idx] ?? null) : null
@@ -554,6 +560,25 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
       seeVisit(now)
     }
   }, [fix, track, weighOff, seeVisit])
+
+  // Record this round: a drive is begun when it is turned on, and again for a route edited from the road, so each drive has the line it was driven on.
+  useEffect(() => {
+    driveRef.current = null
+    if (!recordDrive) return
+    let gone = false
+    void startDrive(routeName, route.points).then((id) => {
+      if (!gone) driveRef.current = id
+    })
+    return () => {
+      gone = true
+      driveRef.current = null
+    }
+  }, [recordDrive, routeName, route.points])
+  const changeRecordDrive = () => {
+    setRecordDrive(!recordDrive)
+    saveRecordDrive(!recordDrive)
+    setToast({ message: recordDrive ? 'Stopped recording this round.' : 'Recording this round. Save it from Setup.' })
+  }
 
   // After the route is edited from the road its points have new numbers: the driver's place is found again from how far along they are.
   useEffect(() => {
@@ -1617,6 +1642,8 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
           onAlertDistance={() => void pickDistance()}
           onReset={() => void reset()}
           onBundles={() => setBundlesOpen(true)}
+          recording={recordDrive}
+          onRecording={changeRecordDrive}
         />
       )}
 
