@@ -85,15 +85,32 @@ interface Props {
   bundleOrder?: readonly string[]
   onBundleOrder: (order: string[]) => void
   onGoRoutes: () => void
+  /** Setup opens on the Throw Side step with this stretch picked and in view, as Edit in Setup from Preview the Drive asks. */
+  stretch?: number | null
+  /** Back to the preview of the drive that was left for Setup, where it was. Left out when none was. */
+  onBackToPreview?: () => void
 }
 
-export function Setup({ route, routeName, onChange, sections: named, onSections, streets, onStreets, bundleOrder, onBundleOrder, onGoRoutes }: Props) {
-  const [tab, setTab] = useState<Tab>('route')
+export function Setup({
+  route,
+  routeName,
+  onChange,
+  sections: named,
+  onSections,
+  streets,
+  onStreets,
+  bundleOrder,
+  onBundleOrder,
+  onGoRoutes,
+  stretch: openAt = null,
+  onBackToPreview,
+}: Props) {
+  const [tab, setTab] = useState<Tab>(openAt !== null ? 'sides' : 'route')
   const [tool, setTool] = useState<Tool>('none')
   const [expanded, setExpanded] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
   const [view, setView] = useState<ViewCmd>()
-  const [focus, setFocus] = useState<number | null>(null)
+  const [focus, setFocus] = useState<number | null>(openAt)
   const [recording, setRecording] = useState(false)
   const [trace, setTrace] = useState<Pt[]>([])
   const [stopType, setStopType] = useState<StopType>('nothrow')
@@ -602,6 +619,7 @@ export function Setup({ route, routeName, onChange, sections: named, onSections,
         follow={recording}
         fit={tool !== 'draw'}
         bottomFrac={tool === 'draw' || tool === 'paint' || tool === 'split' ? 0.42 : 0.5}
+        startAt={openAt !== null ? views[openAt]?.points : undefined}
         highlight={picking ? views[picking.index]?.points : tab === 'sides' ? highlight : tab === 'sections' && focused ? pathBetween(route.points, focused.startM, focused.endM) : undefined}
         marks={tab === 'sections' ? marks : undefined}
         editable={tool === 'draw'}
@@ -641,7 +659,15 @@ export function Setup({ route, routeName, onChange, sections: named, onSections,
         header={
           tool === 'draw' || tool === 'paint' || tool === 'split' ? undefined : (
             <div className="head-stack">
-              <RouteChip name={routeName} onClick={onGoRoutes} />
+              <div className="head-line">
+                <RouteChip name={routeName} onClick={onGoRoutes} />
+                {onBackToPreview && (
+                  <button className="btn secondary small" onClick={onBackToPreview}>
+                    <Icon name="play" size={14} fill />
+                    Back to Preview
+                  </button>
+                )}
+              </div>
               <Segmented tabs label="Setup step" value={tab} options={TAB_OPTIONS} onChange={switchTab} />
             </div>
           )

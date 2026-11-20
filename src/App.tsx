@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Icon, type IconName } from './Icon'
 import { activeRoute, adjustActiveRoute, editActiveRoute, setActiveRound, setActiveSections, setActiveStreets, setBundleOrder, setLoad } from './library'
+import type { PreviewSpeed } from './playback'
 import { Round } from './Round'
 import { Routes } from './Routes'
 import { Setup } from './Setup'
@@ -23,6 +24,13 @@ export default function App() {
   const [library, setLibrary] = useState<Library>(loadLibrary)
   const [saveTrouble, setSaveTrouble] = useState<SaveTrouble | null>(() => (canSave() ? null : 'blocked'))
   const latest = useRef(library)
+  /**
+   * Where Preview the Drive was left for Edit in Setup, for the route it was of: the stretch to open Setup at, and where to carry on from.
+   * Forgotten when the preview is closed with Done. `open` takes the Round tab straight into the preview (Back to Preview, in Setup).
+   */
+  const [previewLeft, setPreviewLeft] = useState<{ routeId: string; stretch: number; along: number; speed: PreviewSpeed; open: boolean } | null>(null)
+  /** Setup opens on the Throw Side step at this stretch, once, after Edit in Setup. */
+  const [setupStretch, setSetupStretch] = useState<number | null>(null)
 
   // Ask the browser not to clear our data when space runs short. Harmless if it declines.
   useEffect(() => {
@@ -55,6 +63,15 @@ export default function App() {
   const onBundleOrder = (order: string[]) => update((lib) => setBundleOrder(lib, routeId, order))
   // What is loaded before the round is kept with the route it was set for, as the order is.
   const onLoad = (list: LoadList) => update((lib) => setLoad(lib, routeId, list))
+  // The preview left for Setup is only for the route it was of.
+  const left = previewLeft?.routeId === routeId ? previewLeft : null
+
+  /** A tab chosen in the bar along the bottom: Setup opens as usual, and the Round tab on its start screen. */
+  const chooseTab = (t: Tab) => {
+    setSetupStretch(null)
+    setPreviewLeft((p) => (p ? { ...p, open: false } : p))
+    setTab(t)
+  }
 
   return (
     <div className="app">
@@ -84,6 +101,13 @@ export default function App() {
             onAdjustRoute={(r) => update((lib) => adjustActiveRoute(lib, r))}
             onGoSetup={() => setTab('setup')}
             onGoRoutes={() => setTab('routes')}
+            preview={left}
+            onPreviewClosed={() => setPreviewLeft(null)}
+            onEditStretch={(stretch, along, speed) => {
+              setPreviewLeft({ routeId, stretch, along, speed, open: false })
+              setSetupStretch(stretch)
+              setTab('setup')
+            }}
           />
         )}
         {tab === 'routes' && <Routes library={library} update={update} onGoSetup={() => setTab('setup')} />}
@@ -99,12 +123,22 @@ export default function App() {
             bundleOrder={current.bundleOrder}
             onBundleOrder={onBundleOrder}
             onGoRoutes={() => setTab('routes')}
+            stretch={left ? setupStretch : null}
+            onBackToPreview={
+              left
+                ? () => {
+                    setSetupStretch(null)
+                    setPreviewLeft({ ...left, open: true })
+                    setTab('round')
+                  }
+                : undefined
+            }
           />
         )}
       </main>
       <nav className="tabbar" aria-label="Main">
         {TABS.map((t) => (
-          <button key={t.id} aria-current={tab === t.id ? 'page' : undefined} onClick={() => setTab(t.id)}>
+          <button key={t.id} aria-current={tab === t.id ? 'page' : undefined} onClick={() => chooseTab(t.id)}>
             <Icon name={t.icon} size={24} fill={tab === t.id} />
             <span>{t.label}</span>
           </button>

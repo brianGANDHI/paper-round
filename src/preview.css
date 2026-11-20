@@ -1,0 +1,363 @@
+/*
+ * Preview the Drive (Preview.tsx): the route's map over the round's start screen, the throw side big at the top, the map's buttons down the right,
+ * and at the bottom a panel with where the marker is, a bar to drag along the route, the controls and the way to change a side.
+ */
+.preview {
+  position: absolute;
+  inset: 0;
+  z-index: 2500;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+/* The marker is an arrow of its own, so the chevron the round shows ahead of the phone's dot is not wanted here. */
+.preview .heading-chevron {
+  display: none;
+}
+
+/* The marker: a dark disc with a white arrow, turned the way the route goes (by the screen, on the disc). */
+.preview-car {
+  pointer-events: none;
+}
+
+.preview-car-disc {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  box-sizing: border-box;
+  border: 3px solid #fff;
+  border-radius: 50%;
+  background: #1c1c1e;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
+/* ------------------------------------------------------------------ *
+ * The side, big and plain, the width of the screen, in the colour of its line on the map. Tapping it changes it.
+ * ------------------------------------------------------------------ */
+.preview-side {
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 8px 16px 7px;
+  border: 0;
+  border-radius: 20px;
+  color: #fff;
+  box-shadow: var(--shadow);
+  transition: background 0.25s;
+  pointer-events: auto;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.preview-side:active {
+  opacity: 0.85;
+}
+
+.preview-side-word {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 34px;
+  font-weight: 800;
+  line-height: 1.1;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  animation: preview-pop 0.3s ease-out;
+}
+
+.preview-side-hint {
+  font-size: 13px;
+  font-weight: 600;
+  opacity: 0.88;
+}
+
+/* A new side pops in, so a change is seen even from across the table. */
+@keyframes preview-pop {
+  from {
+    opacity: 0.3;
+    transform: scale(0.82);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .preview-side-word {
+    animation: none;
+  }
+}
+
+/* On a wide screen the side and the notice under it keep to a phone's width, in the middle. */
+@media (min-width: 640px) {
+  .preview-side,
+  .preview-notice {
+    align-self: center;
+    width: min(100%, 560px);
+  }
+}
+
+@media (max-width: 350px) {
+  .preview-side-word {
+    gap: 6px;
+    font-size: 28px;
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * The bottom: the panel along the bottom, and the map's buttons and its credit just above it (the panel's height is --panel-h, measured).
+ * ------------------------------------------------------------------ */
+.preview-panel {
+  position: absolute;
+  z-index: 1000;
+  left: max(8px, env(safe-area-inset-left, 0px));
+  right: max(8px, env(safe-area-inset-right, 0px));
+  bottom: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px 14px;
+  border-radius: 20px;
+  background: var(--material);
+  box-shadow: var(--shadow);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  backdrop-filter: saturate(180%) blur(20px);
+}
+
+/* Down the right edge, as on the round, so the middle of the map, where the marker is, is clear of them. */
+.preview-buttons {
+  position: absolute;
+  z-index: 1000;
+  right: max(8px, env(safe-area-inset-right, 0px));
+  bottom: calc(var(--panel-h, 0px) + 16px);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  pointer-events: none;
+}
+
+.preview-buttons .round-btn {
+  pointer-events: auto;
+}
+
+.preview > .map-credit {
+  position: absolute;
+  z-index: 1000;
+  left: max(8px, env(safe-area-inset-left, 0px));
+  bottom: calc(var(--panel-h, 0px) + 16px);
+  max-width: 50%;
+}
+
+/* On a wide screen (a computer) the panel keeps to a phone's width at the left, clear of the middle of the map. */
+@media (min-width: 640px) {
+  .preview-panel {
+    right: auto;
+    width: 440px;
+  }
+}
+
+/* A short screen (a small phone, or Safari with its bars): the buttons in a row, and everything a little tighter, so the map keeps some room. */
+@media (max-height: 600px) {
+  .preview-buttons {
+    flex-direction: row;
+  }
+
+  .preview-side {
+    padding: 6px 12px;
+  }
+
+  .preview-side-word {
+    font-size: 27px;
+  }
+
+  .preview-side-hint {
+    display: none;
+  }
+
+  .preview-panel {
+    gap: 8px;
+    padding: 10px 12px 12px;
+  }
+
+  .preview-btn {
+    width: 38px;
+    height: 38px;
+  }
+
+  .preview-btn.play {
+    width: 46px;
+    height: 46px;
+  }
+
+  .preview-panel .btn-row .btn {
+    min-height: 40px;
+  }
+}
+
+/*
+ * A phone on its side: the side and the turn keep to the left (as on the round), the panel goes to the right, and the buttons (with the credit over
+ * them) to the bottom left, so the marker has the part of the map to the left of the panel, under the side. The map points north here (see Preview.tsx).
+ */
+@media (orientation: landscape) and (max-height: 600px) {
+  .preview-panel {
+    left: auto;
+    right: max(8px, env(safe-area-inset-right, 0px));
+    width: clamp(300px, 48%, 420px);
+    max-height: calc(100% - 16px);
+    overflow-y: auto;
+  }
+
+  .preview-buttons {
+    right: auto;
+    left: max(8px, env(safe-area-inset-left, 0px));
+    bottom: 8px;
+  }
+
+  .preview > .map-credit {
+    bottom: 66px;
+  }
+}
+
+.preview-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.preview-pass {
+  font-weight: 400;
+  color: var(--label-2);
+}
+
+.preview-done {
+  flex: none;
+  margin: -8px -8px 0 0;
+}
+
+/* What a side change did, with Undo, under the side at the top: dark, in light mode as well, as the round's notices are. */
+.preview-notice {
+  align-self: stretch;
+  pointer-events: auto;
+  box-shadow: var(--shadow);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 8px 8px 12px;
+  border-radius: 12px;
+  color: #fff;
+  background: rgba(28, 28, 30, 0.94);
+  font-size: 14px;
+  line-height: 1.3;
+}
+
+.preview-notice span {
+  flex: 1;
+}
+
+.preview-notice .btn {
+  flex: none;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.18);
+}
+
+/* The bar to drag along: the route itself, coloured by the side of each stretch (`--track`), with a white knob for where the marker is. */
+.preview-scrub {
+  -webkit-appearance: none;
+  appearance: none;
+  display: block;
+  width: 100%;
+  height: 30px;
+  margin: 0;
+  background: transparent;
+}
+
+.preview-scrub::-webkit-slider-runnable-track {
+  height: 12px;
+  border-radius: 6px;
+  background: var(--track);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.1);
+}
+
+.preview-scrub::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 28px;
+  height: 28px;
+  margin-top: -8px;
+  box-sizing: border-box;
+  border: 4px solid #1c1c1e;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+}
+
+.preview-scrub::-moz-range-track {
+  height: 12px;
+  border-radius: 6px;
+  background: var(--track);
+}
+
+.preview-scrub::-moz-range-thumb {
+  width: 20px;
+  height: 20px;
+  border: 4px solid #1c1c1e;
+  border-radius: 50%;
+  background: #fff;
+}
+
+.preview-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.preview-transport {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.preview-controls .segmented {
+  flex: 1 1 110px;
+  max-width: 180px;
+}
+
+.preview-controls .segmented button {
+  padding: 0 4px;
+}
+
+.preview-btn {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  color: var(--tint);
+  background: var(--fill);
+  transition: opacity 0.15s;
+}
+
+.preview-btn.play {
+  width: 52px;
+  height: 52px;
+  color: #fff;
+  background: var(--tint);
+}
+
+.preview-btn:active:not(:disabled) {
+  opacity: 0.6;
+}
+
+.preview-btn:disabled {
+  opacity: 0.35;
+}
+
+.preview-panel .btn-row .btn {
+  min-height: 44px;
+  padding: 0 12px;
+}

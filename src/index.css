@@ -1820,6 +1820,25 @@ button.row:active:not(:disabled) {
   align-self: stretch;
 }
 
+/* The route in use, and the way back to Preview the Drive when Setup was opened from it, on one line. */
+.head-line {
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.head-line .route-chip {
+  min-width: 0;
+}
+
+.head-line .btn {
+  flex: none;
+  gap: 6px;
+}
+
 .alert-input {
   display: block;
   width: 100%;

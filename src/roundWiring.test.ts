@@ -12,9 +12,11 @@ import { DEFAULT_LOAD } from './load'
 import { LoadCard } from './LoadCard'
 import { Round } from './Round'
 import { OffRouteBanner } from './OffRouteBanner'
+import { Preview } from './Preview'
 import { RoundBar, RoundButtons } from './RoundBar'
 import { RoundMenu } from './RoundMenu'
 import { SectionBanner } from './SectionBanner'
+import { Setup } from './Setup'
 import { VOICE_TEST_GAP_MS, sideWords } from './sideVoice'
 import { sound } from './sound'
 import { say, stopSpeaking, unlockSpeech } from './speech'
@@ -171,7 +173,10 @@ const legs = (speed: number, ...spots: XY[]): Step[] => spots.slice(1).flatMap((
  * The round screen on a route, with what `App` does for it: a round, an order and a list that come back as props. The car and the driver's taps go in
  * through what the screen uses, and each is settled before the next.
  */
-function roundScreen(route: Route, { order, round = { handledStopIds: [] }, load, sections = [] }: { order?: string[]; round?: RoundState; load?: LoadList; sections?: NamedSection[] } = {}) {
+function roundScreen(
+  route: Route,
+  { order, round = { handledStopIds: [] }, load, sections = [], preview }: { order?: string[]; round?: RoundState; load?: LoadList; sections?: NamedSection[]; preview?: Parameters<typeof Round>[0]['preview'] } = {},
+) {
   play.slots = []
   play.fix = null
   let time = 1_000_000
@@ -198,6 +203,7 @@ function roundScreen(route: Route, { order, round = { handledStopIds: [] }, load
     onAdjustRoute: () => {},
     onGoSetup: () => {},
     onGoRoutes: () => {},
+    preview,
   }
   let drawn: unknown = settle(() => Round(props))
   const update = () => (drawn = settle(() => Round(props)))
@@ -3804,7 +3810,102 @@ describe('the start screen', () => {
   })
 })
 
+describe('Preview the Drive, from the start screen', () => {
+  const route = routeOf(LOOP, [A, B, C])
+  const preview = (s: ReturnType<typeof roundScreen>) => s.find<Parameters<typeof Preview>[0]>(Preview)
+  const buttons = (s: ReturnType<typeof roundScreen>) => s.all().filter((e) => e.type === 'button').map(words)
+
+  it('is a button under Choose Where to Start, and opens the preview paused at the start of the route at 10 times real time', () => {
+    const s = roundScreen(route)
+    const list = buttons(s)
+    expect(list.indexOf('Preview the Drive')).toBe(list.indexOf('Choose Where to Start') + 1)
+    expect(s.line('Plays the route on the map')).toBe(
+      'Plays the route on the map from the start, faster than driving it, with the side thrown along each part, to check them with someone before the round.',
+    )
+    s.press('Preview the Drive')
+    expect(preview(s)).toMatchObject({ from: 0, speed: 10, route })
+  })
+
+  it('leaves the round as it was, a round part done included, and nothing alerts while it is open', () => {
+    const round: RoundState = { handledStopIds: ['A'], dropped: ['A'], furthest: 300 }
+    const s = roundScreen(route, { round })
+    s.press('Preview the Drive')
+    s.drive(up(250, 150))
+    expect(s.props.round).toBe(round)
+    expect(beeps()).toBe(0)
+    preview(s)?.onClose()
+    s.update()
+    expect(preview(s)).toBeUndefined()
+    expect(s.button('Continue Round')).toBeDefined()
+    expect(s.props.round).toBe(round)
+  })
+
+  it('carries on from where it was left for Setup, and the start screen says so', () => {
+    const s = roundScreen(route, { preview: { along: 1234, speed: 30, open: false } })
+    expect(s.line('Plays the route on the map')).toBe('Plays the route on the map with the side thrown along each part, carrying on from 1.2 km, where you left it.')
+    expect(preview(s)).toBeUndefined()
+    s.press('Preview the Drive')
+    expect(preview(s)).toMatchObject({ from: 1234, speed: 30 })
+  })
+
+  it('opens straight into the preview from Back to Preview in Setup', () => {
+    const s = roundScreen(route, { preview: { along: 600, speed: 60, open: true } })
+    expect(preview(s)).toMatchObject({ from: 600, speed: 60 })
+  })
+
+  it('hands the side changed from the preview on as a change made on the road, which keeps the round', () => {
+    const adjusted: Route[] = []
+    const s = roundScreen(route)
+    s.change({ onAdjustRoute: (next) => void adjusted.push(next) })
+    s.press('Preview the Drive')
+    const changed = { ...route, sideChanges: [{ idx: 0, side: 'left' as const }] }
+    preview(s)?.onAdjustRoute(changed)
+    expect(adjusted).toEqual([changed])
+  })
+})
+
 describe('the app', () => {
+  it('opens Setup at the stretch from Edit in Setup, and Back to Preview opens the preview where it was; Done forgets it', () => {
+    play.slots = []
+    let drawn = settle(() => App())
+    const find = <P,>(type: unknown) => [...elements(drawn)].find((e) => e.type === type)?.props as P | undefined
+    const round = () => find<Parameters<typeof Round>[0]>(Round)
+    const setup = () => find<Parameters<typeof Setup>[0]>(Setup)
+    expect(round()?.preview).toBeNull()
+    round()?.onEditStretch?.(4, 1234, 30)
+    drawn = settle(() => App())
+    expect(round()).toBeUndefined()
+    expect(setup()?.stretch).toBe(4)
+    expect(typeof setup()?.onBackToPreview).toBe('function')
+    setup()?.onBackToPreview?.()
+    drawn = settle(() => App())
+    expect(setup()).toBeUndefined()
+    expect(round()?.preview).toMatchObject({ along: 1234, speed: 30, open: true })
+    round()?.onPreviewClosed?.()
+    drawn = settle(() => App())
+    expect(round()?.preview).toBeNull()
+  })
+
+  it('opens Setup as usual from the tab bar, and the Round tab on its start screen, still carrying on from where the preview was', () => {
+    play.slots = []
+    let drawn = settle(() => App())
+    const find = <P,>(type: unknown) => [...elements(drawn)].find((e) => e.type === type)?.props as P | undefined
+    const tab = (name: string) => {
+      const b = [...elements(drawn)].find((e) => e.type === 'button' && [...elements(e)].some((x) => words(x) === name))
+      if (!b) throw new Error(`No tab ${name}`)
+      ;(b.props.onClick as () => void)()
+      drawn = settle(() => App())
+    }
+    find<Parameters<typeof Round>[0]>(Round)?.onEditStretch?.(2, 500, 10)
+    drawn = settle(() => App())
+    tab('Routes')
+    tab('Setup')
+    expect(find<Parameters<typeof Setup>[0]>(Setup)?.stretch).toBeNull()
+    expect(typeof find<Parameters<typeof Setup>[0]>(Setup)?.onBackToPreview).toBe('function')
+    tab('Round')
+    expect(find<Parameters<typeof Round>[0]>(Round)?.preview).toMatchObject({ along: 500, speed: 10, open: false })
+  })
+
   it('hands the round the list kept with the route, and keeps a change to it there', () => {
     play.slots = []
     const app = () => settle(() => App())

@@ -55,6 +55,8 @@ import { sideChangeNote, sideExtents, type ExtentKey } from './driveEdit'
 import { createSideCue, sideAtAlong, sideLookAheadM, sideWords, testVoice } from './sideVoice'
 import { sound } from './sound'
 import { say, speechAvailable, stopSpeaking, unlockSpeech } from './speech'
+import { Preview } from './Preview'
+import { FIRST_SPEED, type PreviewSpeed } from './playback'
 import { StartPicker } from './StartPicker'
 import { missingQueries, nameTurns } from './streets'
 import { cueToSay, guidanceToShow, turnKey } from './transitView'
@@ -119,10 +121,38 @@ interface Props {
   onAdjustRoute: (route: Route) => void
   onGoSetup: () => void
   onGoRoutes: () => void
+  /**
+   * Where Preview the Drive was left to edit a stretch in Setup, to carry on from there, and whether to open straight into it (Back to Preview in
+   * Setup). Null or left out, it starts at the beginning of the route.
+   */
+  preview?: { along: number; speed: PreviewSpeed; open: boolean } | null
+  /** The preview was closed with Done: where it was is forgotten. */
+  onPreviewClosed?: () => void
+  /** Edit in Setup, from the preview: the stretch the marker is in, and where the preview was. */
+  onEditStretch?: (index: number, along: number, speed: PreviewSpeed) => void
 }
 
-export function Round({ route, round, routeName, sections, streets, bundleOrder, onBundleOrder, load, onLoad, onRound, onAdjustRoute, onGoSetup, onGoRoutes }: Props) {
+export function Round({
+  route,
+  round,
+  routeName,
+  sections,
+  streets,
+  bundleOrder,
+  onBundleOrder,
+  load,
+  onLoad,
+  onRound,
+  onAdjustRoute,
+  onGoSetup,
+  onGoRoutes,
+  preview,
+  onPreviewClosed,
+  onEditStretch,
+}: Props) {
   const [started, setStarted] = useState(false)
+  /** Preview the Drive is open, over the start screen. Back to Preview in Setup opens the round screen straight into it. */
+  const [previewing, setPreviewing] = useState(() => !!preview?.open)
   const [overview, setOverview] = useState(false)
   // Alerts wait their turn so a bundle prompt can never hide a no-throw warning.
   const [queue, setQueue] = useState<Occurrence[]>([])
@@ -1388,6 +1418,27 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
     )
   }
 
+  if (!started && previewing) {
+    return (
+      <div className="screen">
+        <Preview
+          route={route}
+          sections={sections}
+          streets={streets}
+          reachM={reachM}
+          from={preview?.along ?? 0}
+          speed={preview?.speed ?? FIRST_SPEED}
+          onAdjustRoute={onAdjustRoute}
+          onEditStretch={(index, along, speed) => onEditStretch?.(index, along, speed)}
+          onClose={() => {
+            setPreviewing(false)
+            onPreviewClosed?.()
+          }}
+        />
+      </div>
+    )
+  }
+
   if (!started && picker === 'start') {
     return (
       <div className="screen">
@@ -1432,6 +1483,15 @@ export function Round({ route, round, routeName, sections, streets, bundleOrder,
           <Icon name="flag" size={18} />
           Choose Where to Start
         </button>
+        <button className="btn secondary block" onClick={() => setPreviewing(true)}>
+          <Icon name="play" size={18} fill />
+          Preview the Drive
+        </button>
+        <p className="fine">
+          {preview
+            ? `Plays the route on the map with the side thrown along each part, carrying on from ${formatDistance(preview.along)}, where you left it.`
+            : 'Plays the route on the map from the start, faster than driving it, with the side thrown along each part, to check them with someone before the round.'}
+        </p>
       </>
     )
     return (
