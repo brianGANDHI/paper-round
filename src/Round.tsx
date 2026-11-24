@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { AlertBanner } from './AlertBanner'
+import { AlertPhoto } from './AlertPhoto'
 import { barBundle, caughtUp, dropAllowed, freshStart, leftBehindNotice, missedAmong, missedNotice, nextRoundRows, restartedRound, restartEffect, restoreBundle, savedRound, stillNextNotice } from './bundleFlow'
 import { bundleList, bundleNameOf, bundleRows, bundlesBehind, bundlesLeft, earlierPasses, firstLink, gatedOccurrences, markDropped, NEXT_BEHIND_SPEECH, nextBundleId, nextBundleSpeech, nextHoldsUp, nextInOrder, nextLeftBehind, nextStillAhead, notNextAlerts, otherPasses, passStates, stillNextSpeech, wentByUnseen, type PassStates } from './bundles'
 import { BundlesSheet } from './BundlesSheet'
@@ -40,6 +41,7 @@ import { resolveSections } from './namedSections'
 import { SectionBanner } from './SectionBanner'
 import { noVisit, stepVisit, stillSeen, visitOver, type StopVisit } from './stopVisit'
 import { carriedOn, NOTHING_WATCHED, RESUMED_WATCH, SECTION_ROAD_M, sectionAgain, sectionSpeech, startedAt, watchSection, type SectionNote, type SectionWatch } from './sectionWatch'
+import { photoFor, stillPutAway } from './photos'
 import { advance, makeTrack, offRouteGap, OUTLIER_ACCURACY_M, rebaseProgress, standsStill, startProgress, type Progress } from './progress'
 import { keptBeforeDrop } from './dropMemory'
 import { continueFrom, sameCourtLegs, slackFor, withCourtLegs } from './resume'
@@ -48,7 +50,7 @@ import { RoundMenu } from './RoundMenu'
 import { afterUserMove, barCover, FREE_LOOK_MS } from './roundView'
 import { formatDistance, paintMetres, routeLength } from './routeEdit'
 import { markTurnSaid } from './saidTurns'
-import { loadAlertDistance, loadHeadingUp, loadKeepAudioAwake, loadRecordDrive, loadVoiceTurns, saveAlertDistance, saveHeadingUp, saveKeepAudioAwake, saveRecordDrive, saveVoiceTurns } from './storage'
+import { loadAlertDistance, loadHeadingUp, loadKeepAudioAwake, loadPhotoNoThrow, loadRecordDrive, loadVoiceTurns, saveAlertDistance, saveHeadingUp, saveKeepAudioAwake, savePhotoNoThrow, saveRecordDrive, saveVoiceTurns } from './storage'
 import { logFix, startDrive } from './driveLog'
 import { RouteChip, Segmented } from './ui'
 import { sideChangeNote, sideExtents, type ExtentKey } from './driveEdit'
@@ -64,6 +66,7 @@ import { TurnCard } from './TurnCard'
 import { doneNow, endTurnHold, heldKeys, holdGoneBy, holdLeftBehind, judgedAt, NOTHING_HELD, reachedAt, shownQueue, stepForNext, stepTurnHold, type TurnHold } from './turnHold'
 import { onTheRoute, routeTurns, TURN_KM_M, TURN_PASSED_M, type TurnCue } from './turns'
 import { alertWordsLevel, alertWordsStale, planVoice } from './voicePlan'
+import { usePhotoIds } from './usePhotos'
 import { SIDES, type LoadList, type NamedSection, type Pt, type RoundState, type Route, type Side, type StopType, type TurnStreet } from './types'
 
 /** The furthest reached is kept with the round this many metres at a time. */
@@ -101,6 +104,8 @@ const STEP_MOVED_M = 5
  * sharp bends can fall outside it too, and then the bundle is told of as left behind (see `nextLeftBehind`), not missed.
  */
 const DRIVEN_SLACK_M = 100
+
+const NONE_AWAY: ReadonlySet<string> = new Set()
 
 interface Props {
   route: Route
@@ -281,6 +286,11 @@ export function Round({
   const [voice, setVoice] = useState(loadVoiceTurns)
   /** Whether a near-silent signal keeps the audio link to a car or speaker open while the voice is on. */
   const [keepAudio, setKeepAudio] = useState(loadKeepAudioAwake)
+  /** The stops with a photo of the place, whether those of no-throw houses show with their alerts too, and the ones put away while their alert is up (by occurrence). */
+  const photoIds = usePhotoIds()
+  const [photoNoThrow, setPhotoNoThrow] = useState(loadPhotoNoThrow)
+  const [putAway, setPutAway] = useState<ReadonlySet<string>>(NONE_AWAY)
+  const noThrowPhotos = useMemo(() => route.stops.filter((s) => s.type === 'nothrow' && photoIds.has(s.id)).length, [route.stops, photoIds])
   /** What has been said about each turn, by how far along the route it is, so each is said once. */
   const saidTurn = useRef(new Map<number, TurnCue>())
   /** The alerts already said out loud, by occurrence, so a row of houses is said once, not house by house. */
@@ -911,6 +921,11 @@ export function Round({
   const bundleUp = bannerBundle(shown, current)
   const toDrop = current?.stop.type === 'bundle' ? current : bundleUp
   const waiting = bannerWaiting(shown, [...row, ...(blockAhead ? [blockAhead] : []), ...(bundleUp ? [bundleUp] : [])], driven, along, here0, radius)
+  // The photo of the place, if the driver has taken one: of the stop the alert is for, the next house of a row of them.
+  const picture = photoFor({ current, bundleUp, blockAhead }, photoIds, photoNoThrow, putAway)
+  // One put away comes back with the stop's next alert.
+  const stillAway = stillPutAway(putAway, queue)
+  if (stillAway !== putAway) setPutAway(stillAway)
   // On the map, the houses the alert is for stand out, with their numbers.
   const activeStops = row.map((o) => o.stop.id)
   // Off the route: a line from the phone to where the route was left, and how far and which way that is.
@@ -978,6 +993,11 @@ export function Round({
   useEffect(() => {
     if (started && voice && keepAudio && fix) sound.nudge()
   }, [fix, started, voice, keepAudio])
+
+  const changePhotoNoThrow = (on: boolean) => {
+    setPhotoNoThrow(on)
+    savePhotoNoThrow(on)
+  }
 
   const changeVoice = (on: boolean) => {
     setVoice(on)
@@ -1534,6 +1554,23 @@ export function Round({
                 In metres. An alert comes up when you are within {alertDistance} m of a stop, and goes by itself once you are further away than that.
               </p>
             </div>
+            {noThrowPhotos > 0 && (
+              <div className="alert-setting">
+                <div className="brush-label">Photos of no-throw houses</div>
+                <Segmented
+                  label="Whether photos of no-throw houses show with their alerts"
+                  value={photoNoThrow ? 'on' : 'off'}
+                  options={[
+                    { value: 'off', label: 'Off' },
+                    { value: 'on', label: 'On' },
+                  ]}
+                  onChange={(v) => changePhotoNoThrow(v === 'on')}
+                />
+                <p className="fine">
+                  {plural(noThrowPhotos, 'no-throw house has', 'no-throw houses have')} a photo. Photos of special requests, bundle drops and apartment blocks always show with their alerts. Tap one to put it away.
+                </p>
+              </div>
+            )}
             {speechAvailable() && (
               <div className="alert-setting">
                 <div className="brush-label">Voice</div>
@@ -1660,6 +1697,9 @@ export function Round({
           />
         )}
         {sectionNote && !sectionCovered && <SectionBanner {...sectionNote} />}
+        {/* Last, under everything the driver has to read, and small, so the map stays in view. Not over a sheet or a question, which it would cover part of.
+            Its key is not a stop's bare id, which is the alert's own key on the first pass: two the same here would have React draw the alert again and again. */}
+        {picture && !sectionCovered && <AlertPhoto key={`photo ${picture.stop.id}`} stop={picture.stop} onPutAway={() => setPutAway((was) => new Set([...was, picture.key]))} />}
       </div>
 
       {/* The bottom is kept slim: the few buttons for driving and the map's credit over one bar, which also carries any notice or GPS problem, so the top stays for what the driver is looking out for. */}
@@ -1704,6 +1744,8 @@ export function Round({
           onBundles={() => setBundlesOpen(true)}
           recording={recordDrive}
           onRecording={changeRecordDrive}
+          noThrowPhotos={photoNoThrow}
+          onNoThrowPhotos={noThrowPhotos > 0 ? () => changePhotoNoThrow(!photoNoThrow) : undefined}
         />
       )}
 

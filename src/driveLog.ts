@@ -248,12 +248,12 @@ export async function deleteDrives(): Promise<void> {
 }
 
 /**
- * Saves a drive's file: on a phone by its share sheet (which has Save to Files and AirDrop), on a computer as a download. Says whether it was saved:
+ * Saves a drive's file (or another, under its own title, given whole or in pieces): on a phone by its share sheet (which has Save to Files and AirDrop), on a computer as a download. Says whether it was saved:
  * closing the share sheet without choosing anything is not.
  */
-export async function saveDriveFile(text: string, fileName: string, type: string): Promise<boolean> {
+export async function saveDriveFile(text: string | readonly string[], fileName: string, type: string, title = 'Paper Round drive'): Promise<boolean> {
   try {
-    const file = new File([text], fileName, { type })
+    const file = new File(typeof text === 'string' ? [text] : [...text], fileName, { type })
     if (!matchMedia('(pointer: coarse)').matches || !navigator.canShare?.({ files: [file] })) {
       const url = URL.createObjectURL(file)
       const link = document.createElement('a')
@@ -265,7 +265,7 @@ export async function saveDriveFile(text: string, fileName: string, type: string
       setTimeout(() => URL.revokeObjectURL(url), 10_000)
       return true
     }
-    await navigator.share({ files: [file], title: 'Paper Round drive' })
+    await navigator.share({ files: [file], title })
     return true
   } catch {
     return false

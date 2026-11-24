@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { addedOffRouteNote } from './addedStops'
 import { onlyInTransit, quietHouseIds, quietNote, quietReachFor, quietText, sideGuessed, stopOffRoute, stopQuietReasons, stopRoadSides, type RoadSide } from './alerts'
 import { BundleOrderEditor } from './BundleOrderEditor'
@@ -24,9 +25,11 @@ import {
   stopName,
   stopWhere,
 } from './routeEdit'
+import { PhotoDialog } from './PhotoDialog'
 import { StopDialog } from './StopDialog'
 import { loadAlertDistance } from './storage'
 import { Empty, Segmented } from './ui'
+import { usePhotoIds } from './usePhotos'
 import type { Pt, Route, Stop, StopType } from './types'
 import './block.css'
 
@@ -126,6 +129,9 @@ export function StopsTab(p: Props) {
   const [busy, setBusy] = useState(false)
   /** The stop whose name, address and papers are being changed. */
   const [editing, setEditing] = useState<string | null>(null)
+  /** The stop whose photo is up. */
+  const [picturing, setPicturing] = useState<string | null>(null)
+  const photoIds = usePhotoIds()
   const abort = useRef<AbortController | null>(null)
   const isBundle = p.type === 'bundle'
   const isBlock = p.type === 'block'
@@ -226,6 +232,7 @@ export function StopsTab(p: Props) {
   // A stop is added with the name (and papers) typed beside it, and the address that was looked up.
   const badQty = counted && chosen.some((r) => qtyProblem(r.qty))
   const editingStop = editing ? p.route.stops.find((s) => s.id === editing) : undefined
+  const picturingStop = picturing ? p.route.stops.find((s) => s.id === picturing) : undefined
 
   const addChosen = () => {
     const hits = chosen.flatMap((r) => {
@@ -475,7 +482,15 @@ export function StopsTab(p: Props) {
                       {unknown ? 'Set side' : SIDE_WORD[sides.find((x) => x) as RoadSide]}
                     </button>
                   )}
-                  <button className={far ? 'icon-btn edit solo' : 'icon-btn edit'} aria-label={`Edit ${stopName(s)}`} onClick={() => setEditing(s.id)}>
+                  <button
+                    className="icon-btn edit photo"
+                    data-on={photoIds.has(s.id) || undefined}
+                    aria-label={`${photoIds.has(s.id) ? 'Photo' : 'Add a photo'} of ${stopName(s)}, and Street View`}
+                    onClick={() => setPicturing(s.id)}
+                  >
+                    <Icon name="camera" size={20} />
+                  </button>
+                  <button className="icon-btn edit" aria-label={`Edit ${stopName(s)}`} onClick={() => setEditing(s.id)}>
                     <Icon name="edit" size={20} />
                   </button>
                   <button className="icon-btn" aria-label={`Delete ${stopName(s)}`} onClick={() => p.onRemove(s.id)}>
@@ -513,6 +528,8 @@ export function StopsTab(p: Props) {
           onClose={() => setEditing(null)}
         />
       )}
+      {/* On the page itself: in the sheet it would have only the sheet's height, which is too little for a photo and its buttons. */}
+      {picturingStop && createPortal(<PhotoDialog key={picturingStop.id} stop={picturingStop} points={p.route.points} onClose={() => setPicturing(null)} />, document.body)}
     </>
   )
 }

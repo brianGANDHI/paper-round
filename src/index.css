@@ -748,8 +748,8 @@ button.row:active:not(:disabled) {
   color: var(--tint);
 }
 
-/* A narrow phone has no room for the name and four buttons in one line, so the buttons drop to a line of their own. */
-@media (max-width: 350px) {
+/* A phone has no room for the name and four buttons in one line, so the buttons drop to a line of their own: the side at the left, under the name, and the others at the right. */
+@media (max-width: 430px) {
   .stop-row {
     flex-wrap: wrap;
   }
@@ -758,9 +758,12 @@ button.row:active:not(:disabled) {
     flex: 1 1 calc(100% - 24px);
   }
 
-  .stop-row .chip-btn,
-  .stop-row .icon-btn.solo {
+  .stop-row .chip-btn {
     margin-left: 24px;
+  }
+
+  .stop-row .icon-btn.photo {
+    margin-left: auto;
   }
 }
 

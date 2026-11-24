@@ -809,7 +809,6 @@ describe('the list of stops on the route', () => {
       const [row] = rows(list(road('left', east(65))))
       expect(chip(row)).toEqual({ label: 'Starboard', warn: false })
       expect(row).toContain('class="icon-btn edit"')
-      expect(row).not.toContain('solo')
       // One that alerts there, on the side thrown, has it too.
       expect(chip(rows(list(road('right', east(65))))[0])).toEqual({ label: 'Starboard', warn: false })
     })
@@ -817,7 +816,9 @@ describe('the list of stops on the route', () => {
     it('has no side button once it is met by where the driver is, further out than that', () => {
       const [row] = rows(list(road('left', east(75))))
       expect(row).not.toContain('chip-btn')
-      expect(row).toContain('class="icon-btn edit solo"')
+      // The buttons left keep to the right, where they are in the other rows.
+      expect(row).toContain('class="icon-btn edit photo"')
+      expect(row).toContain('class="icon-btn edit"')
     })
 
     it('goes by the alert distance in use for the button too: at 60 m a house 85 m out has it, and one 95 m out not', () => {

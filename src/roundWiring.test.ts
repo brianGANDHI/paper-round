@@ -2,6 +2,7 @@
 import { isValidElement, type ReactElement } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AlertBanner } from './AlertBanner'
+import { AlertPhoto } from './AlertPhoto'
 import App from './App'
 import { freshStart, restartEffect } from './bundleFlow'
 import { BundlesSheet } from './BundlesSheet'
@@ -12,6 +13,7 @@ import { DEFAULT_LOAD } from './load'
 import { LoadCard } from './LoadCard'
 import { Round } from './Round'
 import { OffRouteBanner } from './OffRouteBanner'
+import { tidyPhotos } from './photoStore'
 import { Preview } from './Preview'
 import { RoundBar, RoundButtons } from './RoundBar'
 import { RoundMenu } from './RoundMenu'
@@ -43,6 +45,9 @@ const play = vi.hoisted(() => ({
   between: null as null | (() => void),
   voice: true,
   keepAudio: true,
+  /** The stops with a photo, and whether those of no-throw houses show, as last chosen and as chosen since. */
+  photos: new Set<string>() as ReadonlySet<string>,
+  photoNoThrow: false,
 }))
 
 vi.mock('react', async (importOriginal) => {
@@ -95,7 +100,14 @@ vi.mock('./storage', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./storage')>()),
   loadVoiceTurns: () => play.voice,
   loadKeepAudioAwake: () => play.keepAudio,
+  loadPhotoNoThrow: () => play.photoNoThrow,
+  savePhotoNoThrow: (on: boolean) => {
+    play.photoNoThrow = on
+    return true
+  },
 }))
+vi.mock('./usePhotos', () => ({ usePhotoIds: () => play.photos, usePhotoInfos: () => null, usePhotoUrl: () => null }))
+vi.mock('./photoStore', async (importOriginal) => ({ ...(await importOriginal<typeof import('./photoStore')>()), tidyPhotos: vi.fn(async () => 0) }))
 vi.mock('./sound', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./sound')>()),
   sound: Object.fromEntries(
@@ -341,6 +353,8 @@ beforeEach(() => {
   vi.clearAllMocks()
   play.voice = true
   play.keepAudio = true
+  play.photos = new Set()
+  play.photoNoThrow = false
 })
 afterEach(() => {
   vi.useRealTimers()
@@ -4327,5 +4341,203 @@ describe('the banner where a named section starts and ends, on the real screen',
       'Start section finished. Moving on to Section 1, Oak Estate.',
       'Section 1 finished. Moving on to Section 2, Beach Road.',
     ])
+  })
+})
+
+describe('photos with the alerts, on the real screen', () => {
+  // A street with a bundle drop, a row of four no-throw houses, a special request and an apartment block.
+  const row = [noThrowAt('h1', [-14, 420]), noThrowAt('h2', [-14, 445]), noThrowAt('h3', [-14, 470]), noThrowAt('h4', [-14, 495])]
+  const request: Stop = { id: 'r', type: 'request', pathIdx: 0, note: 'Blue gate', ...spot([14, 700]) }
+  const block: Stop = { id: 'k', type: 'block', pathIdx: 0, label: 'Lakeside', qty: 9, ...spot([14, 900]) }
+  const STOPS = [bundle('b', [8, 200]), ...row, request, block]
+  const street = () => routeOf([[0, 0], [0, 2000]], STOPS)
+  const ALL = new Set(STOPS.map((x) => x.id))
+  const begin = (photos: ReadonlySet<string>, noThrow = false, route = street()) => {
+    play.photos = photos
+    play.photoNoThrow = noThrow
+    const s = roundScreen(route)
+    s.press('Start Round')
+    return s
+  }
+  const photo = (s: ReturnType<typeof roundScreen>) => s.find<Parameters<typeof AlertPhoto>[0]>(AlertPhoto)
+  const photoOf = (s: ReturnType<typeof roundScreen>) => photo(s)?.stop.id ?? null
+  /** What is drawn down the top of the map, in order. */
+  const top = (s: ReturnType<typeof roundScreen>) => s.all().find((e) => e.props.className === 'map-top')!
+
+  it('come up with the alert of a bundle drop, a special request and an apartment block, and go with it', () => {
+    const s = begin(ALL)
+    s.drive(up(150))
+    expect([s.banner(), photoOf(s)]).toEqual([[], null])
+    s.drive(up(180, 150))
+    expect([s.banner(), photoOf(s)]).toEqual([['b'], 'b'])
+    s.tapDropped()
+    expect([s.banner(), photoOf(s)]).toEqual([[], null])
+    s.drive(up(690, 180))
+    expect([s.banner(), photoOf(s)]).toEqual([['r'], 'r'])
+    s.drive(up(800, 690))
+    expect([s.banner(), photoOf(s)]).toEqual([[], null])
+    s.drive(up(890, 800))
+    expect([s.banner(), photoOf(s)]).toEqual([['k'], 'k'])
+  })
+
+  it('of no-throw houses show only with the switch on, one at a time: the next house of the row, and none for one that has no photo', () => {
+    const off = begin(ALL)
+    off.drive(up(180))
+    off.tapDropped()
+    off.drive(up(400, 180))
+    expect([off.banner(), photoOf(off)]).toEqual([['h1', 'h2', 'h3', 'h4'], null])
+    const on = begin(new Set(['h1', 'h2', 'h4']), true)
+    on.drive(up(180))
+    on.tapDropped()
+    const seen: [string, string | null][] = []
+    for (let y = 180; y < 500; y += 5) {
+      on.drive(legs(5, [0, y], [0, y + 5]))
+      const [first] = on.banner()
+      expect(on.all().filter((e) => e.type === AlertPhoto).length).toBeLessThanOrEqual(1)
+      if (first && seen.at(-1)?.[0] !== first) seen.push([first, photoOf(on)])
+    }
+    expect(seen).toEqual([
+      ['h1', 'h1'],
+      ['h2', 'h2'],
+      ['h3', null],
+      ['h4', 'h4'],
+    ])
+  })
+
+  it('never have the same key as anything else in the column, which would draw the alert over and over', () => {
+    const s = begin(ALL, true)
+    for (let y = 0; y < 950; y += 10) {
+      s.drive(up(y + 10, y))
+      const keys = (top(s).props.children as unknown[]).flatMap((c) => (isValidElement(c) && c.key !== null ? [c.key] : []))
+      expect(new Set(keys).size).toBe(keys.length)
+      if (photo(s)) expect(keys.length).toBeGreaterThan(1)
+    }
+  })
+
+  it('are drawn after the alert, and change nothing of it, the sounds or the words', () => {
+    const drive = (photos: ReadonlySet<string>) => {
+      vi.clearAllMocks()
+      const s = begin(photos, true)
+      const banners: unknown[] = []
+      for (let y = 0; y < 950; y += 10) {
+        s.drive(up(y + 10, y))
+        if (s.banner()[0] === 'b') s.tapDropped()
+        const { onDropped, ...props } = s.find<Parameters<typeof AlertBanner>[0]>(AlertBanner) ?? ({} as Parameters<typeof AlertBanner>[0])
+        banners.push([JSON.stringify(props), !!onDropped])
+        const children = (top(s).props.children as unknown[]).flatMap((c) => (isValidElement(c) ? [c.type] : []))
+        if (photo(s)) expect(children.indexOf(AlertPhoto)).toBe(children.length - 1)
+      }
+      const sounds = [sound.bundle, sound.noThrow, sound.request, sound.block].map((f) => vi.mocked(f).mock.calls.length)
+      return { banners, sounds, said: vi.mocked(say).mock.calls.map(([text]) => text), round: s.props.round, notices: s.notices }
+    }
+    const without = drive(new Set())
+    expect(without.said.length).toBeGreaterThan(3)
+    expect(drive(ALL)).toEqual(without)
+  })
+
+  it('are put away by a tap, and come back with the next alert, for another stop or the same one', () => {
+    const s = begin(ALL, true)
+    s.drive(up(180))
+    photo(s)?.onPutAway()
+    s.update()
+    expect([s.banner(), photoOf(s)]).toEqual([['b'], null])
+    s.drive(up(210, 180))
+    expect([s.banner(), photoOf(s)]).toEqual([['b'], null])
+    s.tapDropped()
+    s.drive(up(400, 210))
+    expect(photoOf(s)).toBe('h1')
+    photo(s)?.onPutAway()
+    s.update()
+    expect([s.banner(), photoOf(s)]).toEqual([['h1', 'h2', 'h3', 'h4'], null])
+    s.drive(up(435, 400))
+    // The next house of the row is another alert's photo.
+    expect([s.banner()[0], photoOf(s)]).toEqual(['h2', 'h2'])
+  })
+
+  it('come back for the same stop on another pass of it', () => {
+    const s = begin(new Set(['h']), true, routeOf([[0, 0], [0, 900], [0, 0]], [noThrowAt('h', [-14, 300])]))
+    s.drive(up(280))
+    photo(s)?.onPutAway()
+    s.update()
+    expect([s.banner(), photoOf(s)]).toEqual([['h'], null])
+    s.drive(legs(10, [0, 280], [0, 900], [0, 320]))
+    expect([s.banner(), photoOf(s)]).toEqual([['h'], 'h'])
+  })
+
+  it('are of the bundle drop carried in a house’s banner when the house has none to show', () => {
+    const both = routeOf([[0, 0], [0, 2000]], [noThrowAt('h', [-14, 300]), bundle('b', [8, 305])])
+    const s = begin(new Set(['h', 'b']), false, both)
+    s.drive(up(290))
+    expect([s.banner(), photoOf(s)]).toEqual([['h'], 'b'])
+    const on = begin(new Set(['h', 'b']), true, both)
+    on.drive(up(290))
+    expect([on.banner(), photoOf(on)]).toEqual([['h'], 'h'])
+  })
+
+  it('are out of the way of the menu and the list, and back when they close', () => {
+    const s = begin(ALL)
+    s.drive(up(180))
+    expect(photoOf(s)).toBe('b')
+    s.find<Parameters<typeof RoundBar>[0]>(RoundBar)?.onMenu()
+    s.update()
+    expect([s.banner(), photoOf(s)]).toEqual([['b'], null])
+    s.find<Parameters<typeof RoundMenu>[0]>(RoundMenu)?.onClose()
+    s.update()
+    expect(photoOf(s)).toBe('b')
+  })
+
+  it('turn up part way through a round, as when the phone is slow to say which there are', () => {
+    const s = begin(new Set())
+    s.drive(up(180))
+    expect([s.banner(), photoOf(s)]).toEqual([['b'], null])
+    play.photos = ALL
+    s.update()
+    expect([s.banner(), photoOf(s)]).toEqual([['b'], 'b'])
+  })
+
+  it('of no-throw houses have a switch on the start screen and in the menu, once there is one, which the phone keeps', () => {
+    const label = 'Whether photos of no-throw houses show with their alerts'
+    const picker = (s: ReturnType<typeof roundScreen>) => s.all().find((e) => e.type === Segmented && e.props.label === label)
+    const menu = (s: ReturnType<typeof roundScreen>) => {
+      s.find<Parameters<typeof RoundBar>[0]>(RoundBar)?.onMenu()
+      s.update()
+      return s.find<Parameters<typeof RoundMenu>[0]>(RoundMenu)!
+    }
+    play.photos = new Set(['b', 'r'])
+    const without = roundScreen(street())
+    expect(picker(without)).toBeUndefined()
+    without.press('Start Round')
+    without.drive(up(20))
+    expect(menu(without).onNoThrowPhotos).toBeUndefined()
+
+    play.photos = new Set(['b', 'h1', 'h2'])
+    const s = roundScreen(street())
+    expect(picker(s)?.props.value).toBe('off')
+    expect(s.all().some((e) => words(e).includes('Photos of special requests, bundle drops and apartment blocks always show'))).toBe(true)
+    ;(picker(s)!.props.onChange as (v: string) => void)('on')
+    s.update()
+    expect([picker(s)?.props.value, play.photoNoThrow]).toEqual(['on', true])
+    s.press('Start Round')
+    s.drive(up(180))
+    s.tapDropped()
+    s.drive(up(400, 180))
+    expect(photoOf(s)).toBe('h1')
+    const open = menu(s)
+    expect(open.noThrowPhotos).toBe(true)
+    open.onClose()
+    open.onNoThrowPhotos?.()
+    s.update()
+    expect([photoOf(s), play.photoNoThrow]).toEqual([null, false])
+  })
+
+  it('are tidied once as the app opens, by every stop of every route', () => {
+    const other = { ...street(), stops: [bundle('other', [8, 300])] }
+    const library = { routes: [street(), other].map((route, i) => ({ id: `r${i}`, name: `R${i}`, route, round: { handledStopIds: [] }, updatedAt: 1 })), activeId: 'r1' }
+    vi.stubGlobal('localStorage', { getItem: (key: string) => (key === 'paperround.library.v2' ? JSON.stringify(library) : null), setItem: () => {}, removeItem: () => {} })
+    play.slots = []
+    settle(() => App())
+    settle(() => App())
+    expect(vi.mocked(tidyPhotos).mock.calls).toEqual([[new Set([...ALL, 'other'])]])
+    vi.unstubAllGlobals()
   })
 })

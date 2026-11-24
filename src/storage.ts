@@ -11,6 +11,7 @@ const VOICE_TURNS_KEY = 'paperround.voiceTurns'
 const KEEP_AUDIO_KEY = 'paperround.keepAudioAwake'
 const HEADING_UP_KEY = 'paperround.headingUp'
 const RECORD_DRIVE_KEY = 'paperround.recordDrive'
+const PHOTO_NOTHROW_KEY = 'paperround.photoNoThrow'
 
 /** The single route and its progress, as saved by earlier versions of the app. */
 const LEGACY_ROUTE_KEY = 'paperround.route.v1'
@@ -114,6 +115,21 @@ export function saveRecordDrive(on: boolean): void {
     localStorage.setItem(RECORD_DRIVE_KEY, JSON.stringify(on))
   } catch {
     // The phone won't store it; recording is off next time.
+  }
+}
+
+/** Whether the photo of a no-throw house shows with its alert, as last chosen. Off until someone turns it on: the other kinds of stop always show theirs. */
+export function loadPhotoNoThrow(): boolean {
+  return read(PHOTO_NOTHROW_KEY) === true
+}
+
+/** Returns false when the phone won't store it, and the switch is off again next time. */
+export function savePhotoNoThrow(on: boolean): boolean {
+  try {
+    localStorage.setItem(PHOTO_NOTHROW_KEY, JSON.stringify(on))
+    return true
+  } catch {
+    return false
   }
 }
 

@@ -16,6 +16,9 @@ interface Props {
   /** Whether the round's fixes are being kept for replaying, and turning that on or off (see driveLog.ts). Without it there is no such row. */
   recording?: boolean
   onRecording?: () => void
+  /** Whether photos of no-throw houses show with their alerts, and turning that on or off. Without it there is no such row. */
+  noThrowPhotos?: boolean
+  onNoThrowPhotos?: () => void
 }
 
 interface RowProps {
@@ -49,7 +52,7 @@ function MenuRow({ icon, title, detail, value, danger, onClick }: RowProps) {
  * or section, the alert distance, the bundle drops, starting the round again, and the map's credit. Choosing a row closes the sheet
  * first, so what it asks next (a question, the map to pick a spot on) isn't under it. An alert still shows above the sheet.
  */
-export function RoundMenu({ alertDistance, onClose, onWholeRoute, onSkip, onAlertDistance, onReset, onBundles, recording, onRecording }: Props) {
+export function RoundMenu({ alertDistance, onClose, onWholeRoute, onSkip, onAlertDistance, onReset, onBundles, recording, onRecording, noThrowPhotos, onNoThrowPhotos }: Props) {
   /** Closes the menu, then does `action`. */
   const pick = (action: () => void) => () => {
     onClose()
@@ -69,6 +72,9 @@ export function RoundMenu({ alertDistance, onClose, onWholeRoute, onSkip, onAler
           <MenuRow icon="flag" title="Skip to a Spot or Section" detail="Carry on from somewhere else on the route" onClick={pick(onSkip)} />
           <MenuRow icon="sliders" title="Alert Distance" detail="How close to a stop its alert comes up" value={`${alertDistance} m`} onClick={pick(onAlertDistance)} />
           {onBundles && <MenuRow icon="package" title="Bundles" detail="Every bundle drop, and which are done" onClick={pick(onBundles)} />}
+          {onNoThrowPhotos && (
+            <MenuRow icon="camera" title="Photos of no-throw houses" detail="Show your photo of a house with its alert" value={noThrowPhotos ? 'On' : 'Off'} onClick={pick(onNoThrowPhotos)} />
+          )}
           {onRecording && (
             <MenuRow icon="download" title="Record this round" detail="Keep the GPS on this phone, to save from Setup" value={recording ? 'On' : 'Off'} onClick={pick(onRecording)} />
           )}

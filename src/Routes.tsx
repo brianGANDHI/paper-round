@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { backupFileName, makeBackup, toBackupRoute, type BackupRoute } from './backup'
 import { BackupDialog, RestoreDialog } from './BackupDialogs'
@@ -21,9 +21,12 @@ import {
 import { acceptOptimised, NO_ROOM_REASON, NO_SAVE_REASON, STALE_REASON, type AcceptOutcome } from './optimise/accept'
 import type { OptimiseResult } from './optimise/types'
 import { OptimiseSheet } from './OptimiseSheet'
+import { BackUpPhotosDialog, RestorePhotosDialog } from './PhotoBackup'
+import { stopIdsOf, UNUSED_DAYS } from './photos'
 import { formatDistance, routeLength } from './routeEdit'
 import type { SaveTrouble } from './storage'
 import { Banner } from './ui'
+import { usePhotoIds } from './usePhotos'
 import type { Library, SavedRoute } from './types'
 
 interface Props {
@@ -34,7 +37,7 @@ interface Props {
 }
 
 type Notice = { text: string; warn?: boolean }
-type Sheet = { kind: 'backup'; title: string; text: string; fileName: string } | { kind: 'restore' } | { kind: 'optimise' } | null
+type Sheet = { kind: 'backup'; title: string; text: string; fileName: string } | { kind: 'restore' } | { kind: 'optimise' } | { kind: 'photos' } | { kind: 'restorePhotos' } | null
 
 function describe(r: SavedRoute): string {
   const { points, stops } = r.route
@@ -49,6 +52,9 @@ export function Routes({ library, update, onGoSetup }: Props) {
   const [notice, setNotice] = useState<Notice | null>(null)
   const [sheet, setSheet] = useState<Sheet>(null)
   const active = activeRoute(library)
+  const photoIds = usePhotoIds()
+  const used = useMemo(() => stopIdsOf(library.routes), [library.routes])
+  const kept = [...used].filter((id) => photoIds.has(id)).length
 
   const choose = (id: string) => {
     update((lib) => selectRoute(lib, id))
@@ -87,9 +93,14 @@ export function Routes({ library, update, onGoSetup }: Props) {
   }
 
   const remove = async () => {
+    // A stop on another route here, as in a copy of this one, keeps its photo.
+    const elsewhere = stopIdsOf(library.routes.filter((r) => r.id !== active.id))
+    const losing = active.route.stops.filter((s) => photoIds.has(s.id) && !elsewhere.has(s.id)).length
     const ok = await confirm({
       title: `Delete “${active.name}”?`,
-      message: 'This removes the route, its throw sides, its named sections, its street names, its stops and its progress from this phone. Back it up first if you might want it again.',
+      message: `This removes the route, its throw sides, its named sections, its street names, its stops and its progress from this phone. Back it up first if you might want it again.${
+        losing ? ` ${losing === 1 ? 'The photo of one of its stops is' : `The photos of ${losing} of its stops are`} kept for ${UNUSED_DAYS} days, in case you restore it.` : ''
+      }`,
       confirmLabel: 'Delete',
       destructive: true,
     })
@@ -238,6 +249,21 @@ export function Routes({ library, update, onGoSetup }: Props) {
             </span>
             <span className="grow title">Restore from Backup</span>
           </button>
+          <button className="row" onClick={() => setSheet({ kind: 'photos' })}>
+            <span className="icon-tint">
+              <Icon name="camera" size={22} />
+            </span>
+            <div className="grow">
+              <div className="title">Back Up Photos</div>
+              <div className="sub">{kept ? `${plural(kept, 'stop has', 'stops have')} a photo. They go in a file of their own.` : 'Photos of your stops go in a file of their own'}</div>
+            </div>
+          </button>
+          <button className="row" onClick={() => setSheet({ kind: 'restorePhotos' })}>
+            <span className="icon-tint">
+              <Icon name="upload" size={22} />
+            </span>
+            <span className="grow title">Restore Photos</span>
+          </button>
         </div>
 
         <p className="footnote">
@@ -247,6 +273,8 @@ export function Routes({ library, update, onGoSetup }: Props) {
       </div>
 
       {sheet?.kind === 'backup' && <BackupDialog title={sheet.title} text={sheet.text} fileName={sheet.fileName} onClose={() => setSheet(null)} />}
+      {sheet?.kind === 'photos' && <BackUpPhotosDialog used={used} onClose={() => setSheet(null)} />}
+      {sheet?.kind === 'restorePhotos' && <RestorePhotosDialog used={used} onClose={() => setSheet(null)} />}
       {sheet?.kind === 'restore' && <RestoreDialog onClose={() => setSheet(null)} onRestore={restore} />}
       {/* On the page itself, as the papers to load are, so that it is over the tab bar as well: a run can't be left to go and change the route. */}
       {sheet?.kind === 'optimise' && createPortal(<OptimiseSheet saved={active} onAccept={acceptRun} onClose={() => setSheet(null)} />, document.body)}

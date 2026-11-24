@@ -2,6 +2,7 @@ import { normalizeBundleOrder } from './bundles'
 import { cleanName, normalizeStreets } from './library'
 import { normalizeLoad } from './load'
 import { normalizeSections } from './namedSections'
+import { isPhotosFile } from './photos'
 import { newStopId, normalizeRoute } from './routeEdit'
 import { isSide, type LoadList, type NamedSection, type Pt, type Route, type SavedRoute, type SideChange, type Stop, type TurnStreet } from './types'
 
@@ -18,6 +19,7 @@ const LIMITS = { chars: 5_000_000, routes: 100, points: 20_000, stops: 5_000 }
 export const MAX_BACKUP_CHARS = LIMITS.chars
 
 const HEADER = 'Paper Round backup'
+export const PHOTOS_NOT_ROUTES = "That's a photos file. Use Restore Photos for it."
 const NOT_A_BACKUP = "That doesn't look like a Paper Round backup. Paste the whole text you copied."
 
 export interface BackupRoute {
@@ -203,6 +205,7 @@ function readJson(text: string): unknown {
 
 /** Read text pasted back in. Strict about the contents, forgiving about how it got here. */
 export function parseBackup(text: string): ParseResult {
+  if (isPhotosFile(text)) return fail(PHOTOS_NOT_ROUTES)
   if (text.length > LIMITS.chars) return fail('That text is too long to be a backup.')
   const start = text.indexOf('{')
   const end = text.lastIndexOf('}')

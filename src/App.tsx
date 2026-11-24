@@ -5,6 +5,8 @@ import type { PreviewSpeed } from './playback'
 import { Round } from './Round'
 import { Routes } from './Routes'
 import { Setup } from './Setup'
+import { stopIdsOf } from './photos'
+import { tidyPhotos } from './photoStore'
 import { canSave, loadLibrary, saveLibrary, type SaveTrouble } from './storage'
 import type { Library, LoadList } from './types'
 
@@ -40,6 +42,10 @@ export default function App() {
       // Not supported here.
     }
   }, [])
+
+  // Photos of stops that have been on no route for a month go, whatever took the stop away. Looked at only as the app opens, from the routes as they were
+  // saved, so nothing done or undone meanwhile can take a photo with it.
+  useEffect(() => void tidyPhotos(stopIdsOf(latest.current.routes)), [])
 
   /**
    * Every change goes through here, so it is saved the moment it happens. It says what kept the phone from saving it, or null when it was saved: when

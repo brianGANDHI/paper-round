@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react'
-import { MAX_BACKUP_CHARS, parseBackup, type BackupRoute } from './backup'
+import { MAX_BACKUP_CHARS, parseBackup, PHOTOS_NOT_ROUTES, type BackupRoute } from './backup'
+import { isPhotosFile } from './photos'
 import { inSafariTab } from './device'
 import { Icon } from './Icon'
 import { Banner } from './ui'
@@ -135,8 +136,10 @@ export function RestoreDialog({ onRestore, onClose }: RestoreDialogProps) {
 
   const readFile = async (file: File | undefined) => {
     if (!file) return
-    if (file.size > MAX_BACKUP_CHARS) return setError('That file is too big to be a backup.')
     try {
+      // A photos file is nearly always too big to be a backup, and is better told what to do with than that.
+      if (isPhotosFile(await file.slice(0, 200).text())) return setError(PHOTOS_NOT_ROUTES)
+      if (file.size > MAX_BACKUP_CHARS) return setError('That file is too big to be a backup.')
       setText(await file.text())
       setError(null)
     } catch {

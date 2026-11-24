@@ -1,0 +1,185 @@
+/*
+ * The driver's photos of places on the round: the small picture that comes up with an alert, and the photo's own dialog in Setup.
+ */
+
+/* ------------------------------------------------------------------ *
+ * On the round: a small square under the alert, at the left, where nothing of the round is (the map's buttons are down the right, and the driver's dot
+ * is in the middle). It is never wider, so the map either side of it stays in view. It takes one touch, to put it away. The column it is in ends above the
+ * bar along the bottom, and where a tall alert leaves little room the picture gives way, as nothing else in the column does.
+ * ------------------------------------------------------------------ */
+.map-top:has(.alert-photo:not([hidden])) {
+  max-height: calc(100% - var(--safe-top) - 10px - 80px);
+}
+
+.map-top:has(.alert-photo:not([hidden])) > :not(.alert-photo) {
+  flex: none;
+}
+
+.map-top > .alert-photo {
+  --photo: 112px;
+  position: relative;
+  flex: 0 1 var(--photo);
+  align-self: flex-start;
+  box-sizing: border-box;
+  width: var(--photo);
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 3px solid var(--kind);
+  border-radius: 16px;
+  background: var(--kind);
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.3);
+  pointer-events: auto;
+}
+
+.alert-photo.nothrow {
+  --kind: #e0241b;
+}
+
+.alert-photo.bundle {
+  --kind: #0a63d6;
+}
+
+.alert-photo.request {
+  --kind: #7e3ec9;
+}
+
+.alert-photo.block {
+  --kind: #00796b;
+}
+
+/* Placed, not sized by its own shape, so the picture is square whatever shape the photo is. */
+.alert-photo img {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 12px;
+  object-fit: cover;
+}
+
+/* Which house it is of, as it can be one of a row, in the colour of its alert. */
+.alert-photo-tag {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  overflow: hidden;
+  padding: 1px 6px 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: center;
+  color: #fff;
+  background: var(--kind);
+  font-size: 15px;
+  font-weight: 800;
+  line-height: 1.35;
+}
+
+/* Says it can be put away. */
+.alert-photo-x {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.5);
+}
+
+/* A short screen: a smaller picture. */
+@media (max-height: 680px) {
+  .map-top > .alert-photo {
+    --photo: 92px;
+  }
+}
+
+/* A phone on its side: the alert fills the column, so the picture goes beside it, at the top, just right of the middle: the driver's dot is below it, and the road ahead up the middle is left clear. */
+@media (orientation: landscape) and (max-height: 600px) {
+  .map-top:has(.alert-photo:not([hidden])) {
+    max-height: none;
+  }
+
+  .map-top > .alert-photo {
+    --photo: 84px;
+    position: absolute;
+    top: 0;
+    left: calc(100% + 56px);
+    height: var(--photo);
+  }
+
+  /* The banner for a named section, which goes there too, makes way for it. */
+  .map-top:has(.alert-photo:not([hidden])) .section-banner {
+    left: calc(100% + 146px);
+    width: max(130px, min(180px, calc(100vw - 100% - 210px)));
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * In Setup: the button in the list of stops (filled once there is a photo), and the photo's dialog.
+ * ------------------------------------------------------------------ */
+.icon-btn.photo {
+  color: var(--label-2);
+}
+
+.icon-btn.photo[data-on] {
+  color: var(--tint);
+}
+
+.icon-btn.photo[data-on] .icon path {
+  fill: currentColor;
+}
+
+.icon-btn.photo[data-on] .icon circle {
+  fill: var(--card);
+  stroke: var(--card);
+}
+
+.photo-view {
+  display: block;
+  width: 100%;
+  max-height: 38dvh;
+  border-radius: 12px;
+  object-fit: contain;
+  background: var(--fill);
+}
+
+.photo-view.none {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 130px;
+  font-size: 15px;
+  color: var(--label-2);
+}
+
+.photo-switch {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.photo-picks .btn {
+  gap: 6px;
+  padding: 0 6px;
+  font-size: 16px;
+  white-space: nowrap;
+}
+
+.btn-row > .btn.wide {
+  grid-column: 1 / -1;
+}
+
+a.btn {
+  text-decoration: none;
+}
+
+.dialog p.photo-note {
+  font-size: 13px;
+}
