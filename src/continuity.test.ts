@@ -85,7 +85,7 @@ describe('progress along a route that folds back on itself stays continuous', ()
 
   it('slips no more than 100 m, for no more than 5 s, with GPS error of 15 m that the phone claims is 15 m', { timeout: 120_000 }, () => {
     // (Here a fix is often 30 m off the street for several seconds: nearer the street round the next corner, or one beside it. Before the window, in
-    // these same 1,296 drives the tracker put the driver on another pass 8 times, once 1,306 m on for 10 s, and once 346 m back for 9 s. Now 4 times,
+    // these same 432 drives the tracker put the driver on another pass 8 times, once 1,306 m on for 10 s, and once 346 m back for 9 s. Now 4 times,
     // none over 70 m or 4 s: held back at a corner while the fixes said the car was round it, or on for a fix.)
     const runs = runAll(15)
     const spells = runs.flatMap((r) => r.score.spells.map((s) => ({ ...s, run: label(r) })))
